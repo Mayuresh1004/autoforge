@@ -1,0 +1,240 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// =============================================================================
+// Enums
+// =============================================================================
+
+enum ScanStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+enum VulnerabilitySeverity {
+  CRITICAL
+  HIGH
+  MEDIUM
+  LOW
+  INFO
+}
+
+enum VulnerabilityStatus {
+  DETECTED
+  CONFIRMED
+  EXPLOITABLE
+  PATCHED
+  FALSE_POSITIVE
+  ACCEPTED
+}
+
+enum ExploitStatus {
+  PENDING
+  CONFIRMED
+  FAILED
+  NOT_EXPLOITABLE
+}
+
+enum PatchStatus {
+  GENERATED
+  VALIDATED
+  APPLIED
+  REJECTED
+  FAILED
+}
+
+enum AgentType {
+  SCOUT
+  SNIPER
+  ENGINEER
+  CRITIC
+}
+
+enum AgentExecutionStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+  TIMEOUT
+}
+
+enum RepositoryProvider {
+  GITHUB
+  GITLAB
+  BITBUCKET
+  LOCAL
+}
+
+// =============================================================================
+// Models
+// =============================================================================
+
+/// A security scan session targeting one or more repositories
+model Scan {
+  id          String     @id @default(cuid())
+  name        String
+  description String?
+  status      ScanStatus @default(PENDING)
+  startedAt   DateTime?
+  completedAt DateTime?
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  repositories     ScanRepository[]
+  vulnerabilities  Vulnerability[]
+  agentExecutions  AgentExecution[]
+
+  @@index([status])
+  @@index([createdAt])
+  @@map("scans")
+}
+
+/// Source code repository being scanned
+model Repository {
+  id         String             @id @default(cuid())
+  name       String
+  url        String
+  provider   RepositoryProvider @default(GITHUB)
+  branch     String             @default("main")
+  language   String?
+  isPrivate  Boolean            @default(false)
+  createdAt  DateTime           @default(now())
+  updatedAt  DateTime           @updatedAt
+
+  scans ScanRepository[]
+
+  @@unique([url, branch])
+  @@index([provider])
+  @@map("repositories")
+}
+
+/// Join table: Scan <-> Repository (many-to-many)
+model ScanRepository {
+  id           String   @id @default(cuid())
+  scanId       String
+  repositoryId String
+  createdAt    DateTime @default(now())
+
+  scan       Scan       @relation(fields: [scanId], references: [id], onDelete: Cascade)
+  repository Repository @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+
+  @@unique([scanId, repositoryId])
+  @@map("scan_repositories")
+}
+
+/// Detected security vulnerability
+model Vulnerability {
+  id          String                @id @default(cuid())
+  scanId      String
+  title       String
+  description String?
+  severity    VulnerabilitySeverity @default(MEDIUM)
+  status      VulnerabilityStatus   @default(DETECTED)
+  filePath    String?
+  lineNumber  Int?
+  cweId       String?
+  cveRecordId String?
+  createdAt   DateTime              @default(now())
+  updatedAt   DateTime              @updatedAt
+
+  scan      Scan       @relation(fields: [scanId], references: [id], onDelete: Cascade)
+  cveRecord CVERecord? @relation(fields: [cveRecordId], references: [id])
+  exploits  Exploit[]
+  patches   Patch[]
+
+  @@index([scanId])
+  @@index([severity])
+  @@index([status])
+  @@index([cveRecordId])
+  @@map("vulnerabilities")
+}
+
+/// Exploitability confirmation for a vulnerability (Sniper Agent output)
+model Exploit {
+  id              String        @id @default(cuid())
+  vulnerabilityId String
+  status          ExploitStatus @default(PENDING)
+  proofOfConcept  String?
+  attackVector    String?
+  impact          String?
+  confirmedAt     DateTime?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  vulnerability Vulnerability @relation(fields: [vulnerabilityId], references: [id], onDelete: Cascade)
+
+  @@index([vulnerabilityId])
+  @@index([status])
+  @@map("exploits")
+}
+
+/// AI-generated patch for a vulnerability (Engineer Agent output)
+model Patch {
+  id              String      @id @default(cuid())
+  vulnerabilityId String
+  status          PatchStatus @default(GENERATED)
+  diffContent     String?
+  filePath        String?
+  explanation     String?
+  validatedAt     DateTime?
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+
+  vulnerability Vulnerability @relation(fields: [vulnerabilityId], references: [id], onDelete: Cascade)
+
+  @@index([vulnerabilityId])
+  @@index([status])
+  @@map("patches")
+}
+
+/// Execution record for an autonomous agent run
+model AgentExecution {
+  id           String               @id @default(cuid())
+  scanId       String
+  agentType    AgentType
+  status       AgentExecutionStatus @default(PENDING)
+  input        Json?
+  output       Json?
+  errorMessage String?
+  startedAt    DateTime?
+  completedAt  DateTime?
+  durationMs   Int?
+  createdAt    DateTime             @default(now())
+  updatedAt    DateTime             @updatedAt
+
+  scan Scan @relation(fields: [scanId], references: [id], onDelete: Cascade)
+
+  @@index([scanId])
+  @@index([agentType])
+  @@index([status])
+  @@map("agent_executions")
+}
+
+/// CVE (Common Vulnerabilities and Exposures) reference record
+model CVERecord {
+  id          String    @id @default(cuid())
+  cveId       String    @unique
+  description String?
+  severity    VulnerabilitySeverity?
+  cvssScore   Float?
+  cvssVector  String?
+  publishedAt DateTime?
+  modifiedAt  DateTime?
+  references  Json?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  vulnerabilities Vulnerability[]
+
+  @@index([cveId])
+  @@index([severity])
+  @@map("cve_records")
+}
