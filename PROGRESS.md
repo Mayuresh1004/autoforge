@@ -37,10 +37,16 @@ append new milestones below prior ones.
 | 5 | Architecture & API Analyzer | +16 | ✅ Complete |
 | 6 | Profile Generator + API | +5 | ✅ Complete |
 | 7 | Static Scanner (Module 2) | +38 | ✅ Complete |
+| 8 | Sandboxing (Layer 1) | +11 | ✅ Complete |
+| 9 | Sandbox Manager (SandboxInfrastructure) | +21 | ✅ Complete |
+| 10 | Pipeline through the Manager (M10) | +5 | ✅ Complete |
+| 11 | Route wired to sandboxed orchestrator (M11) | +1 | ✅ Complete |
+| 12 | Runnable stack / Docker E2E (M12) | +0 (infra) | ✅ Complete |
 
-- **Total tests:** 105 passing across 24 test files
-  (analyzer 18+17+5+6+16+5=67 + static-scanner 38, incl. the full GitHub → Analyzer → Static Scanner → UVM chain test).
-- `npx tsc --noEmit` → exit 0 · `npm run build` → clean · compiled CJS loads.
+- **Total tests:** 143 passing across 31 test files
+  (analyzer 67 + static-scanner 38 + sandbox processes/container/manager/pipeline 37).
+- `npx tsc --noEmit` → exit 0 · `npm run build` → clean · compiled CJS loads
+  (with `DATABASE_URL`/env set — the app's env validation runs at import).
 - All implementation files are `< 300` lines (max = 253, file-system-analyzer).
 - New runtime deps (CJS-compatible, all verified): `@iarna/toml`, `yaml`,
   `fast-xml-parser`.
@@ -427,12 +433,157 @@ Vulnerability Model**, and persists them (reusing the existing `Scan` /
 
 ---
 
+# Sandboxing (Layer 1) — Module Status
+
+**Location:** `backend/src/sandbox/`
+
+Every operation that runs on (untrusted) repository code — git clone **and**
+all scanner CLIs — now goes through one sandbox boundary (`SandboxRuntime`
+port), with a process-level implementation. OS/container isolation (gVisor /
+per-scan container) is prepared as a deployment-layer handoff (Layer 2),
+not claimed as done here.
+
+## Milestone 8 — Sandboxed execution ✅
+
+### Built
+
+- **Port** (`sandbox/domain/ports/sandbox.ts`): `SandboxRuntime`
+  (`run` + `createWorkspace`/`dispose`), `SandboxRunOptions` (argv-only,
+  cwd, hard timeout, maxBuffer, **env allowlist**, safe env overrides,
+  network policy `'none' | 'net'`), `SandboxOutput`, `SandboxWorkspace`.
+  Interchangeable — a container/gVisor backend can implement the same port.
+- **Process-level implementation** (`sandbox/infrastructure/process-sandbox.ts`):
+  - `buildEnv` — child env is built **only from an allowlist** (+ safe
+    overrides); secrets/tokens/project config never reach child processes.
+  - `withNetIsolation` (pure) — when egress is blocked and the host
+    supports it, wraps argv with `unshare --user --map-root-user --net --`
+    (private network namespace, loopback-only, no egress).
+  - `ProcessSandboxRuntime` — `execFile` (no shell), SIGTERM-on-timeout,
+    bounded buffer, **feature-detects** unprivileged namespaces once
+    (cached; degrades with a logged warning when unavailable instead of
+    failing scans), throwaway `createWorkspace` dirs with idempotent
+    recursive disposal.
+- **Wiring (all code-touching ops are now sandboxed):**
+  - `ProcessScannerExecutor` → delegates to `ProcessSandboxRuntime` with a
+    minimal env allowlist and per-scanner network policy
+    (`ScannerCommand.network`, set from each scanner's
+    `metadata.networkAccess` — only npm-audit/pip-audit opt in to egress).
+  - `GitRepositoryCloner` → runs `git clone` (network allowed — fetching the
+    target is the point, env allowlisted + `GIT_TERMINAL_PROMPT=0`) and
+    `git rev-parse` (network blocked) through the sandbox; failures are now
+    detected via exit codes (the sandbox doesn't throw) and wrapped as
+    `RepositoryCloneError`.
+- **Docker hardening** (`backend/Dockerfile`): runs as non-root `amass`
+  (already), adds `util-linux` (provides `unshare` for net isolation),
+  dedicated owned workspace dir (`ANALYZER_WORKSPACE_DIR=/app/workspace`).
+- **Tests (+11 → 116):** env allowlist strips secrets (incl. a real child
+  process observing the env), `withNetIsolation` pure decision (wrap /
+  pass-through), success/exit-code/timeout behavior (children killed,
+  `timedOut=true`, never hang), throwaway workspace create+idempotent
+  dispose, `ProcessScannerExecutor` end-to-end (no secrets visible, exit
+  codes/timeouts). All existing clone/scan/profile suites still green
+  through the sandboxed paths.
+
+### Challenges
+
+- **Sandboxes report, they don't throw**: `execFile`-style failures used to
+  reject; the sandbox returns `{ exitCode, timedOut }`. The git cloner had
+  to switch to checking `exitCode !== 0` (and stderr truncation) before
+  raising `RepositoryCloneError`.
+- **Unprivileged net namespaces are host-dependent**: `unshare --net` needs
+  user namespaces (often disabled in Docker). Instead of failing or faking
+  isolation, the runtime probes once and degrades to a logged best-effort
+  (scanners still get offline-friendly semantics via the network flag).
+- **Network policy must be explicit per command**: cloning needs egress
+  (fetching the repo) while analysis/scanners must not — so the port
+  carries an explicit `network` field rather than assuming either way.
+- **Env leakage is default-dangerous**: plain `execFile` inherits
+  `process.env`; the allowlist makes the safe path the default.
+
+---
+
+# Sandbox Manager — Milestone 9 ✅ (sandbox infrastructure for ALL agents)
+
+**Location:** `backend/src/sandbox/`
+
+The sandbox is the substrate every phase operates in — clone, analyze, scan,
+and the future Scout/Sniper/Engineer/Critic agents. No phase talks to Docker;
+they request typed operations from the **Sandbox Manager**, which is the only
+component that knows Docker.
+
+## Milestone 9 — Sandbox Manager ✅
+
+### Built
+
+- **Domain model** (`domain/models/sandbox.ts`): `SandboxType`
+  (analysis | runtime), `SandboxStatus` lifecycle, `SandboxNetworkPolicy`
+  (`none` | `internal` | `egress`+allowlist), `SandboxSpec`, `Sandbox`
+  (id, scanId, type, status, image, repositoryPath, network, containerId,
+  networkId, timestamps), `ExecRequest` (argv-only, env allowlist, timeout),
+  `ExecResult`, `SandboxPatch`. No Docker primitives leak into the model.
+- **Ports** (`domain/ports/sandbox-manager.ts`):
+  - `SandboxManager` — the ONLY agent-facing surface: `createSandbox`,
+    `waitUntilReady`, `execute`, `copyFile`, `applyPatch`, `restart`,
+    `collectLogs`, `destroy` (idempotent), `sweepOrphans`.
+  - `SandboxBackend` — the Docker-only seam (create/start/execute/copy/
+    writeFile/restart/logs/destroy/sweep). Held by the manager only; never
+    exposed to agents.
+  - `SandboxStore` — persistence for lookup + the reaper.
+- **Application** (`application/services/sandbox-manager.service.ts`):
+  orchestrates lifecycle with guarantees: unique scan-scoped ids
+  (`sbx_<scanId>_<uuid>` — no collisions under concurrency), hard timeouts
+  on create/exec, **analysis sandboxes can never egress** (forced `none`),
+  runtime sandboxes default to `internal` with egress only via explicit
+  allowlist, `destroy()` is idempotent + best-effort (cleans up even when
+  the backend throws), failed creates auto-destroy, `applyPatch` writes
+  through the backend (never to the host) then restarts, `sweepOrphans`
+  reclaims crashed leftovers.
+- **Docker layer** (`infrastructure/docker/`):
+  - `docker-cli.ts` — argv-only `docker` runner (injectable for tests) + pure
+    `buildCreateCommand` (hardened detached container: `--network none` or
+    an internal per-scan network, `--read-only`, `--cap-drop ALL`,
+    `--security-opt no-new-privileges`, non-root `--user`, memory/cpu caps,
+    repo bind at `/workspace`).
+  - `docker-sandbox-backend.ts` — the ONLY Docker-touching implementation:
+    create (with internal network creation for runtime), start, isReady via
+    inspect, exec (workdir + allowlisted env), copyFile, writeFile (temp file
+    → `docker cp` → cleanup), restart, logs, destroy (container + network),
+    sweep (labeled resources).
+- **Store**: `infrastructure/store/memory-sandbox-store.ts` (headless tests;
+  a Prisma store is a later swap).
+- **Tests (+21 → 137):** manager with a fake backend (analysis egress
+  forced off, runtime internal default + explicit egress, unique
+  collision-free ids, waitUntilReady healthy/timeout, controlled exec,
+  idempotent destroy, applyPatch→restart, orphan sweep), Docker backend
+  with a fake docker runner (hardened create command, internal network
+  creation, inspect readiness, exec shape, temp-file patch cleanup, destroy
+  removes network), pure container-arg builders (network/caps/uid/limits/gVisor
+  runtime), plus the existing process-sandbox tests.
+
+### Challenges
+
+- **Two execution models**: `ContainerSandboxRuntime` runs a throwaway
+  container per command; the Manager needs a *long-lived* named container
+  (exec/logs/restart over time). `buildCreateCommand` therefore creates a
+  detached container kept alive (`tail -f /dev/null`) that the backend execs
+  into — deliberate, and both models stay behind the same port family.
+- **Network policy must be per-sandbox-type**: analysis is forced `none`;
+  runtime needs siblings to talk (internal network) but no host egress;
+  egress only when explicitly allowlisted. Enforced at the manager, not the
+  backend.
+- **Cleanup on crash**: `destroy()` alone is not enough — labeled resources
+  (`amass.manager=1`, `amass.scan=…`) + `sweepOrphans()` are the reaper.
+- **Testability without Docker**: every layer above the CLI is tested with
+  fakes; `docker` itself is never required in CI.
+
+---
+
 ## How to run / verify
 
 ```
 cd backend
 npx tsc --noEmit                 # must exit 0
-npx vitest run                    # 105 tests green
+npx vitest run                    # 143 tests green
 npm run build                     # clean CJS emit
 ```
 Tests are headless (they set their own `DATABASE_URL` via vitest config); the
@@ -440,25 +591,152 @@ API server itself needs a real `.env` (`DATABASE_URL` required).
 
 ---
 
+## Milestone 10 ✅ — Pipeline through the Sandbox Manager
+
+**Location:** `backend/src/sandbox/` + a shared scanner flow.
+
+The static pipeline now genuinely *runs in a sandbox the manager owns*.
+`SandboxedScanOrchestrator` (clone → analyze → scan → destroy) only ever talks
+to the `SandboxManager`; no phase touches Docker/`child_process` directly.
+
+### Built
+
+- **`ProcessSandboxBackend`** (`infrastructure/process-sandbox-backend.ts`)
+  — a real, no-Docker `SandboxBackend` that makes the manager usable headless:
+  each sandbox is a throwaway workspace dir under a temp root; commands run via
+  `ProcessSandboxRuntime` (argv-only, hard timeout, bounded buffer, `unshare
+  --net` isolation, allowlisted env); `writeFile`/`copyFile` reject paths that
+  escape the workspace; `destroy`/`sweep` reclaim the dirs.
+- **`SandboxedScannerExecutor`** (`infrastructure/pipeline/`)
+  — implements the static-scanner `ScannerExecutor` port by routing each
+  scanner command through `manager.execute` (per-call egress honors each
+  scanner's `networkAccess`).
+- **`SandboxedScanOrchestrator`** (`application/services/`)
+  — one ephemeral analysis sandbox per scan: create (egress allowlisted to the
+  repo host so the clone can egress) → `manager.execute(git clone)` (network
+  egress, the only sanctioned egress call) → analyze the sandboxed tree
+  (trusted code, nothing from the repo is executed) → run the scanner suite
+  with network `none` → `manager.destroy` in `finally` (reaper backstop).
+- **`sandbox-factory.ts`** — composition root choosing the backend from
+  `SANDBOX_RUNTIME` (`'process'` default, `'docker'` for host deploy).
+- **Shared scanner flow** (`static-scanner/application/services/scan-flow.ts`)
+  — extracted the deterministic tail (select → run → normalize → dedupe →
+  persist → summarize) so the classic route and the sandboxed orchestrator
+  share ONE code path (`ScanService` now delegates to it too).
+- **Scanner factory** (`infrastructure/scanning/factory/scanner-factory.ts`)
+  — single source of truth for the built-in scanner set, bound to whatever
+  executor is in effect (direct or manager-routed). `scan.routes.ts` now uses
+  it.
+
+### A note on the manager network rule (refined)
+
+`analysis` sandboxes **default to no egress**, but the clone step legitimately
+needs egress. The manager now honors an **explicit, allowlisted `egress`** on
+an analysis sandbox while enforcing that a **per-call `network` override can
+never be more permissive than the sandbox policy.** Cloning is the single
+sanctioned egress call; every scanner runs with `network: 'none'`.
+
+### Fixed (bugs found while wiring)
+
+- Manager was passing its own `id` to the backend instead of the resolved
+  `containerId` for `execute`/`waitUntilReady`/`copyFile`/`applyPatch`/
+  `restart`/`logs`/`destroy`. All backend calls now go through a containerId
+  resolver (this used to break the long-lived-container path and made headless
+  readiness poll forever).
+
+### Proof (integration test)
+
+`sandboxed-scan-orchestrator.test.ts` clones a REAL local git repo → analyzes
+it in the sandbox tree → runs a probe scanner that executes `git rev-parse`
+**inside the sandbox workspace** → persists the UVM → destroys the sandbox.
+It asserts the manager surface was the gate (clone + scan exec ≥ 2 calls,
+≥ 1 destroy) and that the sandbox workspace is empty afterwards.
+
+---
+
+## Milestone 11 ✅ — HTTP route runs in the sandbox
+
+**Composition change, zero scanner-code change.** `scan.routes.ts` now builds
+a `StaticScanGateway` port: `STATIC_SCAN_RUNTIME=sandboxed` (default) → the
+controller calls `SandboxedScanGateway`, whose create runs the whole
+clone→analyze→scan inside a manager sandbox (`SANDBOX_RUNTIME` picks the
+backend); reads (overview/results/statistics) still go to `ScanService` over
+the same Prisma repository. `STATIC_SCAN_RUNTIME=classic` keeps the old
+preparer-cloned path as a fallback. Env vars documented in `.env.example`.
+
+---
+
+## Milestone 12 ✅ — Runnable end-to-end stack (Docker)
+
+The backend now actually runs on real infra and the whole product loop is
+verified **live against a real Postgres + Redis + Qdrant + Docker** (not just
+headless tests).
+
+### Added
+- **`docker-compose.yml`** (repo root): `postgres` (with healthcheck + volume),
+  `redis`, `qdrant`, and `backend` (built from `backend/Dockerfile`).
+- **Initial Prisma migration** `backend/prisma/migrations/<ts>_init` generated
+  against a real Postgres, so the schema is versioned and `prisma migrate
+  deploy` applies on container start.
+- Backend container runs `prisma migrate deploy` then serves the API; the
+  Dockerfile HEALTHCHECK was pinned to `127.0.0.1` (busybox `wget` was
+  resolving `localhost` → `::1`, which the IPv4-bound server refused).
+- Root `.dockerignore` (build-context hygiene for the repo-root context).
+- Root `package.json` `docker:*` scripts realigned to the actual compose file;
+  README **Docker** section corrected to the working stack.
+
+### Verified live (this workspace, Docker present)
+```
+docker compose up -d --build
+curl POST /api/scan/static {"url":"https://github.com/octocat/Hello-World"}  → 201 COMPLETED
+GET /api/scan/<id>(/statistics)                                   → reads from Postgres
+GET /health                                                       → healthy (pg/redis/qdrant up)
+docker compose ps                                                 → backend healthy
+psql: select from scans → COMPLETED row persisted
+```
+Two real scans of public GitHub repos cloned through the sandbox, analyzed,
+routed through the manager, and persisted — read back over the API. Stack
+was verified then torn down (`docker compose down`); data volumes remain so
+`docker compose up --build` brings it straight back.
+
+---
+
 ## Open / deferred items (optional follow-ups)
-- **Harden**/*isolation* of the scanner tool processes at deploy time: the
-  executor already uses `execFile` (argv, no shell) and a minimal env — a
-  future container could mount scanner binaries read-only / sandbox them.
+- **Live-container end-to-end verification** (Docker host): run `/api/scan/static`
+  with `SANDBOX_RUNTIME=docker` and watch per-scan containers appear/destroy.
+- **Runtime sandboxes for post-static phases** (run the app, dynamic checks,
+  exploit validation; internal net + DB/Redis + test data), then the
+  Scout/Sniper/Engineer/Critic agents consuming only the manager surface.
+- **Live-container verification**: `DockerSandboxBackend` + `ContainerSandboxRuntime`
+  are unit-tested against fake runners; real `docker run`/gVisor execution
+  needs a host runtime (deploy-time).
+- **Prisma `SandboxStore`** (persist sandbox records across restarts; the
+  in-memory store is for headless runs).
+- **Image-build guardrails** for runtime sandboxes (digest-pinned base images,
+  `--network=none` builds, resource caps) — building from untrusted repos is
+  the riskiest path and is NOT yet enabled.
+- **Agent adoption**: Scout/Sniper/Engineer/Critic must use only the Manager
+  surface (`execute`/`applyPatch`/`collectLogs`); never raw exec/Docker.
+- **Offline scan data**: npm/pip-audit declare `networkAccess: true`. For fully
+  air-gapped deploys, vendor local advisory DBs so egress can stay `none`.
 - **DB wiring / containers**: a Postgres container so the running API can
-  actually use `PrismaScanRepository` + `PrismaRepositoryProfile`
-  (`DATABASE_URL`). Then an end-to-end **HTTP integration test** for both
-  `/api/repositories` and `/api/scan/*`. Current DB-dependent code is compile-
-  and unit-verified only (no DB in CI).
+  actually use `PrismaScanRepository` (`DATABASE_URL`). Then an end-to-end
+  **HTTP integration test** for `/api/repositories` and `/api/scan/*`.
+  DB-dependent code is compile- and unit-verified only (no DB in CI).
 - **git init** in the `repository-analysis/` folder (git history for the module).
 - **ESLint config** — `backend/.eslintrc` missing, so `npm run lint` is
   currently a no-op (observed as pre-existing).
-- **Module barrel exports** (`index.ts`) for `repository-analysis` and
-  `static-scanner`.
-- **Profiles still not persisted** (analyzer returns them as JSON only; only
-  the scanner persists `Scan`/`Repository`/`Vulnerability`). Optional: persist
-  profiles too.
+- **Module barrel exports** — `index.ts` for `repository-analysis`, `static-scanner`, `sandbox`.
+- **Profiles still not persisted** (analyzer returns them as JSON only).
 - **Mounting next agents** (Scout / Sniper / Engineer / Critic) —
   `RepositoryProfile` is the typed handoff for them; `ScanResult`/UVM is the
   typed handoff for Sniper.
 - Next **Scout agent** (Python/FastAPI/LangGraph) requires LLM keys + Qdrant
   — deferred to a later phase, awaiting explicit direction.
+
+---
+
+**(See the Milestone 9 section above — the six corrections you approved are
+implemented: typed ops (no raw agent exec), no Docker socket in the API
+(backend seam holds it), layered on the existing SandboxRuntime port,
+reaper-based cleanup, per-type network policy, applyPatch→restart→validate.)**

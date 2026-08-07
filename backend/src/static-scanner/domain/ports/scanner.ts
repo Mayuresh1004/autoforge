@@ -17,6 +17,8 @@ export interface ScannerCommand {
   readonly argv: readonly string[];
   readonly cwd: string;
   readonly timeoutMs: number;
+  /** Whether this tool requires network egress; defaults to blocked. */
+  readonly network?: boolean;
 }
 
 /**

@@ -1,5 +1,5 @@
 import type { Request, Response } from 'express';
-import { ScanService } from '../../application/services/scan.service';
+import type { StaticScanGateway } from '../../application/ports/static-scan-gateway';
 import { createSuccessResponse } from '../../../utils/response';
 import { asyncHandler } from '../../../middlewares/request.middleware';
 import { ValidationError, NotFoundError } from '../../../utils/errors';
@@ -10,11 +10,11 @@ import {
 
 /**
  * HTTP adapter for the static scanner. Runs a scan and exposes its results /
- * statistics. No security decisions happen here — the service does the work
+ * statistics. No security decisions happen here — the gateway does the work
  * and the controller just transports.
  */
 export class ScanController {
-  constructor(private readonly scanService: ScanService) {}
+  constructor(private readonly scanService: StaticScanGateway) {}
 
   createStaticScan = asyncHandler(async (req: Request, res: Response) => {
     const parsed = ScanStaticRequestSchema.safeParse(req.body);

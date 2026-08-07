@@ -52,6 +52,7 @@ export class SemgrepScanner extends BaseScanner {
     return {
       argv: ['semgrep', 'scan', '--json', '--quiet', context.localPath, ...config.extraArgs],
       cwd: context.localPath,
+      network: this.metadata.networkAccess,
       timeoutMs: config.timeoutMs,
     };
   }

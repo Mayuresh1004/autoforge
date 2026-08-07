@@ -1,0 +1,9 @@
+# Build-context hygiene for docker-compose (context = repo root).
+# Never ship workspace-local build output / deps / env into an image build.
+node_modules
+dist
+coverage
+*.log
+.env
+backend/dist
+docs/

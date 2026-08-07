@@ -50,6 +50,7 @@ export class NpmAuditScanner extends BaseScanner {
     return {
       argv: ['npm', 'audit', '--json', ...config.extraArgs],
       cwd: context.localPath,
+      network: this.metadata.networkAccess,
       timeoutMs: config.timeoutMs,
     };
   }

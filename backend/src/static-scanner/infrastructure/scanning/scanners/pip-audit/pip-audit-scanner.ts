@@ -61,6 +61,7 @@ export class PipAuditScanner extends BaseScanner {
         ...config.extraArgs,
       ],
       cwd: context.localPath,
+      network: this.metadata.networkAccess,
       timeoutMs: config.timeoutMs,
     };
   }

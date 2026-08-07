@@ -1,0 +1,82 @@
+# AMASS dev/demo stack — Postgres + API.
+#
+#   docker compose up -d --build       # start everything (API on :3001)
+#   docker compose down                 # stop
+#   docker compose down -v              # stop AND wipe the DB volume
+#
+# The backend applies schema migrations on startup, then serves the API.
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: amass
+      POSTGRES_PASSWORD: amass
+      POSTGRES_DB: amass
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U amass -d amass"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrantdata:/qdrant/storage
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+    environment:
+      NODE_ENV: production
+      BACKEND_HOST: 0.0.0.0
+      BACKEND_PORT: "3001"
+      DATABASE_URL: postgresql://amass:amass@postgres:5432/amass
+      REDIS_URL: redis://redis:6379
+      QDRANT_URL: http://qdrant:6333
+      STATIC_SCAN_RUNTIME: sandboxed
+      SANDBOX_RUNTIME: process
+      LOG_LEVEL: info
+      # Analyzer workspace is rooted inside the container; the sandbox process
+      # backend uses this and the container tmp dir for throwaway workspaces.
+      ANALYZER_WORKSPACE_DIR: /app/workspace
+    ports:
+      - "3001:3001"
+    # Apply schema migrations, then serve the API.
+    command:
+      - sh
+      - -c
+      - |
+        npx prisma migrate deploy
+        node dist/index.js
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  qdrantdata:

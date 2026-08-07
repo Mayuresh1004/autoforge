@@ -49,6 +49,7 @@ export class BanditScanner extends BaseScanner {
     return {
       argv: ['bandit', '-r', context.localPath, '-f', 'json', ...config.extraArgs],
       cwd: context.localPath,
+      network: this.metadata.networkAccess,
       timeoutMs: config.timeoutMs,
     };
   }

@@ -33,6 +33,7 @@ const envSchema = z.object({
   ANALYZER_KEEP_REPO_DIR: z.enum(['true', 'false']).default('false'),
 
   SCANNER_DEFAULT_TIMEOUT_MS: z.coerce.number().default(60_000),
+  STATIC_SCAN_RUNTIME: z.enum(['classic', 'sandboxed']).default('sandboxed'),
   SCANNER_SEVERITY_THRESHOLD: z
     .enum(['INFO', 'LOW', 'MEDIUM', 'HIGH', 'CRITICAL'])
     .default('INFO'),
@@ -120,12 +121,15 @@ export interface ScannerConfigEntry {
 export interface StaticScannerConfig {
   readonly defaultTimeoutMs: number;
   readonly severityThreshold: 'INFO' | 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
+  /** 'classic' = preparer-cloned `ScanService`; 'sandboxed' = manager sandbox. */
+  readonly runtime: 'classic' | 'sandboxed';
   readonly scanners: Record<'bandit' | 'semgrep' | 'npmAudit' | 'pipAudit', ScannerConfigEntry>;
 }
 
 export const staticScannerConfig: StaticScannerConfig = {
   defaultTimeoutMs: config.SCANNER_DEFAULT_TIMEOUT_MS,
   severityThreshold: config.SCANNER_SEVERITY_THRESHOLD,
+  runtime: config.STATIC_SCAN_RUNTIME,
   scanners: {
     bandit: {
       enabled: scannerEnabled(config.SCANNER_BANDIT_ENABLED),

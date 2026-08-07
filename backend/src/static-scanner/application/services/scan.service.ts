@@ -1,9 +1,6 @@
 import { logger } from '../../../config/logger';
-import type { RepositoryProfile } from '../../../repository-analysis/domain/models/repository-profile';
-import type { ScanTargetProfile } from '../../domain/models/scan-target';
 import type { Severity } from '../../domain/models/severity';
 import type {
-  ScanContext,
   ScanOverview,
   ScanResult,
   ScannerStatistics,
@@ -15,6 +12,7 @@ import type { ScannerRunnerPort } from '../../domain/ports/scanner-runner';
 import type { FindingDeduplicator } from '../../domain/ports/deduplicator';
 import type { ScanRepository } from '../../domain/ports/scan-repository';
 import type { RepositoryPreparer } from '../ports/repository-preparer';
+import { runScannerFlow, toScanTargetProfile } from './scan-flow';
 
 export interface ScanServiceOptions {
   readonly preparer: RepositoryPreparer;
@@ -63,55 +61,26 @@ export class ScanService {
       const startedAt = new Date();
       await this.repository.markScanRunning(scanId, startedAt);
 
-      const context: ScanContext = {
-        scanId,
-        repositoryUrl,
-        repositoryName: prepared.profile.meta.name,
-        localPath: prepared.localPath,
-        severityThreshold: this.severityThreshold,
-      };
-
-      const scanners = this.registry.select(target);
-      const runs = await this.runner.runAll(scanners, context);
-      const findings = this.deduplicator.deduplicate(runs.flatMap((run) => run.findings));
-
-      const repository = await this.repository.upsertRepository({
-        url: repositoryUrl,
-        name: prepared.profile.meta.name,
-        branch: 'main',
-      });
-      await this.repository.linkScanRepository(scanId, repository.id);
-      await this.repository.saveFindings(scanId, findings);
-
-      const scannerStatistics: ScannerStatistics[] = runs.map((run) => ({
-        scannerId: run.scannerId,
-        engine: run.engine,
-        status: run.status,
-        durationMs: run.durationMs,
-        findings: run.findings.length,
-      }));
-      const hadFailures = runs.some((run) => run.status === 'failed');
-      const status = hadFailures ? 'FAILED' : 'COMPLETED';
-      const completedAt = new Date();
-      await this.repository.completeScan(scanId, {
-        status,
-        completedAt,
-        scannerStats: scannerStatistics,
-      });
-
-      const result: ScanResult = {
-        scanId,
-        repository: { name: prepared.profile.meta.name, url: repositoryUrl },
-        status,
-        startedAt: startedAt.toISOString(),
-        completedAt: completedAt.toISOString(),
-        summary: summarize(findings),
-        scannerStatistics,
-        findings,
-      };
+      const result = await runScannerFlow(
+        {
+          registry: this.registry,
+          runner: this.runner,
+          deduplicator: this.deduplicator,
+          repository: this.repository,
+          severityThreshold: this.severityThreshold,
+        },
+        {
+          scanId,
+          repositoryUrl,
+          repositoryName: prepared.profile.meta.name,
+          localPath: prepared.localPath,
+          target,
+          startedAt,
+        }
+      );
 
       logger.info(
-        { scanId, status, findings: findings.length, scanners: runs.length, repositoryUrl },
+        { scanId, status: result.status, findings: result.findings.length, scanners: result.scannerStatistics.length, repositoryUrl },
         'scan.static:complete'
       );
       return result;
@@ -160,21 +129,4 @@ export class ScanService {
       scannerStatistics: result.scan.scannerStats,
     };
   }
-}
-
-function toScanTargetProfile(profile: RepositoryProfile): ScanTargetProfile {
-  const importantFiles = profile.fileSystem.importantFiles;
-  return {
-    languages: profile.technologies.all
-      .filter((tech) => tech.category === 'language')
-      .map((tech) => tech.name),
-    ecosystems: profile.dependencies.map((summary) => summary.ecosystem.toLowerCase()),
-    dependencySources: profile.dependencies.map((summary) => summary.source),
-    lockfiles: importantFiles.filter((file) =>
-      /(package-lock|pnpm-lock|yarn\.lock|Cargo\.lock|Gemfile\.lock|poetry\.lock|composer\.lock)/i.test(
-        file
-      )
-    ),
-    importantFiles,
-  };
 }

@@ -156,21 +156,26 @@ npm run dev
 
 ```bash
 cp .env.example .env
-npm run docker:build
-npm run docker:up
+docker compose up -d --build          # or: npm run docker:up / docker:build
 ```
 
-Services will be available at:
+The backend applies Prisma migrations on startup. Services:
 
 | Service | URL |
 |---------|-----|
-| Frontend | http://localhost:5173 |
-| Backend API | http://localhost:3001 |
-| Agents Service | http://localhost:8000 |
-| Agents API Docs | http://localhost:8000/docs |
-| PostgreSQL | localhost:5432 |
+| Backend API | http://localhost:3001 (health: `/health`) |
+| PostgreSQL | localhost:5432 (`amass`/`amass`/`amass`) |
 | Redis | localhost:6379 |
 | Qdrant | http://localhost:6333 |
+
+Stop / reset the full stack:
+
+```bash
+docker compose down              # keep DB data
+docker compose down -v           # wipe the DB + Qdrant volumes
+```
+
+> Frontend and the Agents service are not wired into this compose stack yet.
 
 ---
 

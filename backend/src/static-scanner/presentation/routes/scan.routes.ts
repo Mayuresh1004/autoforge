@@ -2,39 +2,58 @@ import { Router } from 'express';
 import { staticScannerConfig } from '../../../config';
 import { repositoryProfileService } from '../../../repository-analysis/presentation/routes/repository-profile.routes';
 import { ScanService } from '../../application/services/scan.service';
-import { DefaultScannerRegistry } from '../../infrastructure/scanning/registry/scanner-registry';
+import { SandboxedScanGateway } from '../../application/services/sandboxed-scan-gateway';
+import { createRepositoryTargetAnalyzer } from '../../application/services/repository-target-analyzer';
+import type { StaticScanGateway } from '../../application/ports/static-scan-gateway';
+import { createDefaultScannerRegistry } from '../../infrastructure/scanning/factory/scanner-factory';
 import { ProcessScannerExecutor } from '../../infrastructure/scanning/executor/process-scanner-executor';
 import { ScannerRunnerService } from '../../infrastructure/scanning/runner/scanner-runner';
 import { KeyedFindingDeduplicator } from '../../infrastructure/scanning/deduplicator/deduplicator';
 import { PrismaScanRepository } from '../../infrastructure/persistence/prisma/scan-repository.prisma';
-import { BanditScanner } from '../../infrastructure/scanning/scanners/bandit/bandit-scanner';
-import { PipAuditScanner } from '../../infrastructure/scanning/scanners/pip-audit/pip-audit-scanner';
-import { SemgrepScanner } from '../../infrastructure/scanning/scanners/semgrep/semgrep-scanner';
-import { NpmAuditScanner } from '../../infrastructure/scanning/scanners/npm-audit/npm-audit-scanner';
 import { ScanController } from '../controllers/scan.controller';
+import { createSandboxInfrastructure } from '../../../sandbox/infrastructure/factory/sandbox-factory';
+import { SandboxedScanOrchestrator } from '../../../sandbox/application/services/sandboxed-scan-orchestrator';
 
 /**
- * Composition root for the static scanner. Registers the supported scanners
- * (Open/Closed: adding a scanner = one new file + one registration here).
+ * Composition root for the static scanner. The gateway the controller sees is
+ * one of:
+ *   - classic   (`STATIC_SCAN_RUNTIME=classic`)  → `ScanService` (preparer-cloned)
+ *   - sandboxed (default)                        → `SandboxedScanGateway`, whose
+ *     create runs the whole clone→analyze→scan inside a manager-owned sandbox;
+ *     reads still go to `ScanService` for persisted results.
+ * The sandbox backend is chosen by `SANDBOX_RUNTIME` (process default, docker
+ * on a container host).
  */
-const executor = new ProcessScannerExecutor();
-const registry = new DefaultScannerRegistry([
-  new BanditScanner(executor),
-  new PipAuditScanner(executor),
-  new SemgrepScanner(executor),
-  new NpmAuditScanner(executor),
-]);
+const runner = new ScannerRunnerService();
+const deduplicator = new KeyedFindingDeduplicator();
+const repository = new PrismaScanRepository();
+const severityThreshold = staticScannerConfig.severityThreshold;
 
 const scanService = new ScanService({
   preparer: repositoryProfileService,
-  registry,
-  runner: new ScannerRunnerService(),
-  deduplicator: new KeyedFindingDeduplicator(),
-  repository: new PrismaScanRepository(),
-  severityThreshold: staticScannerConfig.severityThreshold,
+  registry: createDefaultScannerRegistry(new ProcessScannerExecutor()),
+  runner,
+  deduplicator,
+  repository,
+  severityThreshold,
 });
 
-const controller = new ScanController(scanService);
+const gateway: StaticScanGateway =
+  staticScannerConfig.runtime === 'classic'
+    ? scanService
+    : new SandboxedScanGateway(
+        new SandboxedScanOrchestrator({
+          manager: createSandboxInfrastructure().manager,
+          analyzeTarget: createRepositoryTargetAnalyzer(),
+          runner,
+          deduplicator,
+          repository,
+          severityThreshold,
+        }),
+        scanService
+      );
+
+const controller = new ScanController(gateway);
 
 const router = Router();
 
