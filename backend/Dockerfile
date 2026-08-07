@@ -13,6 +13,8 @@ RUN npm run build
 
 FROM base AS runner
 ENV NODE_ENV=production
+# git is required at runtime to clone repositories for analysis
+RUN apk add --no-cache git
 RUN addgroup --system --gid 1001 nodejs && \
     adduser --system --uid 1001 amass
 USER amass

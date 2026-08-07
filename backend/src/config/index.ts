@@ -1,4 +1,6 @@
 import { z } from 'zod';
+import os from 'node:os';
+import path from 'node:path';
 
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
@@ -24,6 +26,11 @@ const envSchema = z.object({
   QDRANT_COLLECTION_NAME: z.string().default('amass_embeddings'),
 
   AGENTS_URL: z.string().default('http://localhost:8000'),
+
+  ANALYZER_WORKSPACE_DIR: z.string().optional(),
+  ANALYZER_CLONE_TIMEOUT_MS: z.coerce.number().default(120_000),
+  ANALYZER_MAX_REPO_BYTES: z.coerce.number().default(2_147_483_648),
+  ANALYZER_KEEP_REPO_DIR: z.enum(['true', 'false']).default('false'),
 
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
   LOG_FORMAT: z.enum(['json', 'pretty']).default('json'),
@@ -69,4 +76,12 @@ export const qdrantConfig = {
 
 export const agentsConfig = {
   url: config.AGENTS_URL,
+};
+
+export const analyzerConfig = {
+  workspaceDir:
+    config.ANALYZER_WORKSPACE_DIR ?? path.join(os.tmpdir(), 'amass', 'repositories'),
+  cloneTimeoutMs: config.ANALYZER_CLONE_TIMEOUT_MS,
+  maxRepoBytes: config.ANALYZER_MAX_REPO_BYTES,
+  keepRepoDir: config.ANALYZER_KEEP_REPO_DIR === 'true',
 };

@@ -17,7 +17,9 @@ export class AppError extends Error {
     this.isOperational = isOperational;
     this.details = details;
 
-    Object.setPrototypeOf(this, AppError.prototype);
+    // Preserve the correct subclass prototype (inheriting from a native
+    // Error) so `instanceof SubclassError` works as expected.
+    Object.setPrototypeOf(this, new.target.prototype);
     Error.captureStackTrace(this, this.constructor);
   }
 }
