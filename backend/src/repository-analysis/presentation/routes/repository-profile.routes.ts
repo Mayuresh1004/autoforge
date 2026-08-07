@@ -40,3 +40,4 @@ const router = Router();
 router.post('/repositories', controller.analyze);
 
 export { router as repositoryProfileRoutes };
+export { profileService as repositoryProfileService };

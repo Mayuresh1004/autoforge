@@ -1,9 +1,9 @@
 # AMASS Backend — Progress Log
 
-> Living development log for the **Repository Analyzer** module and beyond.
-> This file is **maintained on every change**: every completed feature, how it
-> was implemented, and what challenges were solved. Ask the assistant for an
-> update whenever work is done.
+> Living development log for the **Repository Analyzer** and **Static
+> Scanner** modules (plus what comes next). This file is **maintained on
+> every change**: every completed feature, how it was implemented, and what
+> challenges were solved. Ask the assistant for an update whenever work is done.
 
 ---
 
@@ -36,8 +36,10 @@ append new milestones below prior ones.
 | 4 | Dependency Analyzer | +6 | ✅ Complete |
 | 5 | Architecture & API Analyzer | +16 | ✅ Complete |
 | 6 | Profile Generator + API | +5 | ✅ Complete |
+| 7 | Static Scanner (Module 2) | +38 | ✅ Complete |
 
-- **Total tests:** 67 passing across 12 test files (18+17+5+6+16+5).
+- **Total tests:** 105 passing across 24 test files
+  (analyzer 18+17+5+6+16+5=67 + static-scanner 38, incl. the full GitHub → Analyzer → Static Scanner → UVM chain test).
 - `npx tsc --noEmit` → exit 0 · `npm run build` → clean · compiled CJS loads.
 - All implementation files are `< 300` lines (max = 253, file-system-analyzer).
 - New runtime deps (CJS-compatible, all verified): `@iarna/toml`, `yaml`,
@@ -310,12 +312,127 @@ analyzers → deep assertions on meta/tech/deps/arch/api/auth + cleanup),
 
 ---
 
+# Static Scanner — Module Status
+
+**Location:** `backend/src/static-scanner/`
+
+Deterministic, agent-free security scanning. Given a repository URL, it
+clones/analyzes the repo (reusing the analyzer's `RepositoryProfileService` as
+a `RepositoryPreparer`), selects applicable scanners from a registry, runs
+them in isolated processes, normalizes + deduplicates results into a **Unified
+Vulnerability Model**, and persists them (reusing the existing `Scan` /
+`Repository` / `Vulnerability` tables — `Patch`/`Exploit` untouched).
+
+## Milestone 7 — Static Scanner ✅
+
+### Built
+
+- **Domain models** (`domain/models/`): `severity.ts` (ladder + `rank` +
+  `isAtOrAbove`), `finding.ts` (`RawFinding` → `UnifiedFinding`), `scan.ts`
+  (`ScanContext`, `ScannerRunResult`, `ScannerStatistics`, `ScanSummary` +
+  pure `summarize()`, `StoredScan`/`StoredRepository`/`StoredFinding`,
+  `ScanResult`/`ScanOverview`), `scanner-metadata.ts`, `scan-target.ts`
+  (decoupled `ScanTargetProfile` so the scanner never depends on analyzer
+  models), and `errors/static-scanner.errors.ts` (`ScannerExecutionError`,
+  `ScanNotFoundError` extending `AppError`).
+- **Ports** (`domain/ports/`): `scanner-executor`, `scanner` (Scanner /
+  ScannerConfig / ScannerCommand), `scanner-registry`, `scanner-runner`,
+  `deduplicator`, `scan-repository` (with `scannerStats` in
+  `CompleteScanInput`). Plus application port
+  `application/ports/repository-preparer.ts` (`prepareRepository` /
+  `disposeRepository` → `PreparedRepository`) implemented by the analyzer's
+  profile service.
+- **Infrastructure — execution**: `process-scanner-executor.ts`
+  (`child_process.execFile`, argv-only, `timeoutMs` + `maxBuffer`, no shell,
+  no env passthrough beyond a minimal safe set); `scanner-runner.ts`
+  (per-scanner isolation — a failing scanner never stops the others; logs
+  every run).
+- **Infrastructure — normalization**: `severity-mapper.ts` (tool severities →
+  canonical ladder, **unknown → INFO, never guessed**), `normalizer.ts`
+  (`FindingNormalizer`: deterministic `vuln_<sha256>` id from
+  file/line/type/scanner, threshold filter, confidence clamp 0..1,
+  reference dedup), `deduplicator.ts` (`KeyedFindingDeduplicator`: keyed on
+  file|line|type|severity; higher confidence wins; ties by scanner id;
+  **references always merged into the survivor**; deterministic output order).
+- **Concrete scanners** (`infrastructure/scanning/scanners/`), each with
+  metadata / `isApplicable` / `buildCommand` / `parse` on top of
+  `BaseScanner` (`run` = build → execute → parse → normalize; `toRelativePath`
+  relativizes tool paths against the working tree):
+  - `bandit/` — Python `bandit -r -f json` (confidence/severity/CWE mapped);
+  - `pip-audit/` — `pip-audit -r requirements.txt -f json` (CVE + evidence);
+  - `semgrep/` — JS/TS `semgrep scan --json` (rules mapped, CWE + refs);
+  - `npm-audit/` — `npm audit --json` (treats the non-zero exit code as a
+    normal result — vulnerabilities found ≠ crash).
+- **Registry** (`scanner-registry.ts`): `DefaultScannerRegistry` selects by
+  `isApplicable(profile)`; empty selection = no scanners run (no guessing).
+- **Persistence** (`infrastructure/persistence/prisma/scan-repository.prisma.ts`):
+  `PrismaScanRepository` — upsert Repository, create/run/complete Scan,
+  save findings, read scan + results; schema extended: `Vulnerability` gains
+  `scanner`, `vulnType`, `confidence`, `message`, `cve`, `references Json`,
+  `evidence` (+ index on `scanner`); `Scan` gains `scannerStats Json`.
+  `Patch`/`Exploit` untouched. Client regenerated via `npx prisma generate`.
+- **Application**: `scan.service.ts` orchestrates prepare → select → run
+  (isolated) → normalize → dedupe → persist → summarize → `scannerStats`;
+  any scanner failure marks the scan `FAILED` but never discards the
+  findings; preparation errors propagate with nothing persisted; the
+  working tree is always disposed in `finally`.
+- **Presentation**: `dto/scan-static.dto.ts` (zod strict `{ url }`),
+  `controllers/scan.controller.ts` (400 on invalid body, `NotFoundError` 404,
+  `createSuccessResponse` envelope), `routes/scan.routes.ts` (composition
+  root: executor → 4 scanners → registry → runner → dedup → Prisma repo →
+  `ScanService`; reuses the analyzer's profile service as preparer). Mounted
+  in `src/routes/index.ts` under `/api`:
+  `POST /api/scan/static` · `GET /api/scan/:id` ·
+  `GET /api/scan/:id/results` · `GET /api/scan/:id/statistics`.
+- **Config**: `staticScannerConfig` (defaultTimeoutMs, severityThreshold,
+  per-scanner enabled/timeoutMs/extraArgs) + zod env schema
+  (`SCANNER_*`) + `.env.example` entries.
+- **Tests (37)**: severity mapping, normalizer (deterministic ids, threshold,
+  confidence clamp), dedup (merge + order), per-scanner parse/run
+  (fixtures with relative-path relativization), registry selection,
+  runner isolation, full-pipeline `ScanService` integration (in-memory repo,
+  fake preparer: end-to-end persist + statistics, partial-failure → FAILED
+  with findings kept, severity threshold, preparation-error propagation,
+  disposal), controller unit tests. Plus a **full-chain integration test**
+  (`scan.service.pipeline.test.ts`): a real local git repo → real analyzer
+  (`RepositoryProfileService` as preparer) → `ScanService` → persisted UVM,
+  asserting cleanup. 24 test files / 105 tests total.
+
+### Challenges
+
+- **Import-depth whiplash**: the scanner lives deeper under `src/` than the
+  analyzer (`static-scanner/infrastructure/scanning/scanners/<tool>/`), so
+  `../domain/...` depths were wrong (2 levels) — fixed by recomputing up-to-
+  `src` per directory; TSC caught every instance.
+- **Prisma JSON typing**: `references Json` / `scannerStats Json` columns
+  reject `null` in the input union (`JsonValue` ≠ `InputJsonValue`) — cast
+  with `Prisma.InputJsonValue`, and `getScan` now passes the repository into
+  `toStoredScan` instead of assigning to a readonly property.
+- **`readonly` summary mutation**: `summarize()` initially mutated a
+  spread of `EMPTY_SUMMARY` (TS2540) — rewritten as pure per-severity
+  counters; signature widened to `{ severity: Severity }[]` so stored
+  findings summarize too.
+- **Protected base constructor**: `BaseScanner` had a `protected` constructor,
+  making `new BanditScanner(...)` illegal outside the class (TS2674) —
+  made public.
+- **Semgrep scope**: kept to JS/TS (Bandit + pip-audit cover Python); tests
+  assert the exclusion instead of assuming universal applicability.
+- **Dedup reference-loss bug**: an equal-confidence duplicate was dropped
+  without merging its references — the survivor now always accumulates the
+  duplicate's references.
+- **npm audit exit code**: exits non-zero when vulnerabilities exist; the
+  scanner treats that as a normal completed run (parsed successfully).
+- **Scanner identity**: `finding.scanner` = stable scanner id (registry key),
+  not the display engine name.
+
+---
+
 ## How to run / verify
 
 ```
 cd backend
 npx tsc --noEmit                 # must exit 0
-npx vitest run                    # 67 tests green
+npx vitest run                    # 105 tests green
 npm run build                     # clean CJS emit
 ```
 Tests are headless (they set their own `DATABASE_URL` via vitest config); the
@@ -324,13 +441,24 @@ API server itself needs a real `.env` (`DATABASE_URL` required).
 ---
 
 ## Open / deferred items (optional follow-ups)
-- **git init** in the analyzer folder (git history for the module).
+- **Harden**/*isolation* of the scanner tool processes at deploy time: the
+  executor already uses `execFile` (argv, no shell) and a minimal env — a
+  future container could mount scanner binaries read-only / sandbox them.
+- **DB wiring / containers**: a Postgres container so the running API can
+  actually use `PrismaScanRepository` + `PrismaRepositoryProfile`
+  (`DATABASE_URL`). Then an end-to-end **HTTP integration test** for both
+  `/api/repositories` and `/api/scan/*`. Current DB-dependent code is compile-
+  and unit-verified only (no DB in CI).
+- **git init** in the `repository-analysis/` folder (git history for the module).
 - **ESLint config** — `backend/.eslintrc` missing, so `npm run lint` is
   currently a no-op (observed as pre-existing).
-- **Module barrel exports** (`index.ts`) for `repository-analysis`.
-- **DB persistence** of profiles (currently returned as JSON only; an optional
-  Prisma schema for scanned repositories).
-- End-to-end HTTP integration test once a container/DB wiring strategy exists
-  (no supertest dependency added in M6).
-- Mounting next agents (Scout / Sniper / Engineer / Critic) — `RepositoryProfile`
-  is the typed handoff structure for them.
+- **Module barrel exports** (`index.ts`) for `repository-analysis` and
+  `static-scanner`.
+- **Profiles still not persisted** (analyzer returns them as JSON only; only
+  the scanner persists `Scan`/`Repository`/`Vulnerability`). Optional: persist
+  profiles too.
+- **Mounting next agents** (Scout / Sniper / Engineer / Critic) —
+  `RepositoryProfile` is the typed handoff for them; `ScanResult`/UVM is the
+  typed handoff for Sniper.
+- Next **Scout agent** (Python/FastAPI/LangGraph) requires LLM keys + Qdrant
+  — deferred to a later phase, awaiting explicit direction.

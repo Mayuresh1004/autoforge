@@ -85,6 +85,8 @@ model Scan {
   status      ScanStatus @default(PENDING)
   startedAt   DateTime?
   completedAt DateTime?
+  /// Per-scanner run statistics (static scanner phase).
+  scannerStats Json?
   createdAt   DateTime   @default(now())
   updatedAt   DateTime   @updatedAt
 
@@ -142,6 +144,19 @@ model Vulnerability {
   lineNumber  Int?
   cweId       String?
   cveRecordId String?
+  /// Scanner that produced this finding (Static Scanner phase).
+  scanner     String?
+  /// Vulnerability type/code as reported by the scanner.
+  vulnType    String?
+  /// Scanner confidence (0..1); never a security decision.
+  confidence  Float?
+  message     String?
+  /// Raw CVE identifier when reported by the scanner.
+  cve         String?
+  /// Advisory references (URLs / aliases).
+  references  Json?
+  /// Evidence snippet.
+  evidence    String?
   createdAt   DateTime              @default(now())
   updatedAt   DateTime              @updatedAt
 
@@ -153,6 +168,7 @@ model Vulnerability {
   @@index([scanId])
   @@index([severity])
   @@index([status])
+  @@index([scanner])
   @@index([cveRecordId])
   @@map("vulnerabilities")
 }

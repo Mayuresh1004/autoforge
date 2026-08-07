@@ -59,6 +59,22 @@ export class RepositoryProfileService {
   }
 
   async analyzeRepository(repositoryUrl: string): Promise<RepositoryProfile> {
+    const prepared = await this.prepareRepository(repositoryUrl);
+    try {
+      return prepared.profile;
+    } finally {
+      await this.disposeRepository(prepared.localPath);
+    }
+  }
+
+  /**
+   * Materializes the full pipeline but keeps the working tree in place so a
+   * caller (e.g. the static scanner) can inspect it afterwards. The caller is
+   * responsible for calling {@link disposeRepository}.
+   */
+  async prepareRepository(
+    repositoryUrl: string
+  ): Promise<{ profile: RepositoryProfile; localPath: string }> {
     logger.info({ repositoryUrl }, 'repository.profile:started');
     const step = <T>(label: string, fn: () => Promise<T>): Promise<T> => {
       const start = Date.now();
@@ -70,35 +86,42 @@ export class RepositoryProfileService {
 
     const cloned = await step('clone', () => this.cloning.clone(repositoryUrl));
 
-    const cleanups: Promise<void>[] = [];
     try {
       const fileSystem = await step('file-system', () => this.fileSystemAnalyzer.analyze(cloned.localPath));
       const technologies = await step('technology', () => this.technologyDetector.detect(fileSystem, cloned.localPath));
       const dependencies = await step('dependencies', () => this.dependencyAnalyzer.analyze(fileSystem, cloned.localPath));
-      const architecture = await step('architecture', () => this.architectureAnalyzer.analyze(fileSystem, cloned.localPath));
-      const api = await step('api', () => this.apiAnalyzer.analyze(fileSystem, cloned.localPath));
-      const authentication = await step('authentication', () =>
-        this.authenticationAnalyzer.analyze(fileSystem, cloned.localPath)
-      );
 
-      const profile = this.assemble(cloned, {
+      const bundle: AnalysisBundle = {
         fileSystem,
         technologies,
         dependencies,
-        architecture,
-        api,
-        authentication,
-      });
+        architecture: await step('architecture', () =>
+          this.architectureAnalyzer.analyze(fileSystem, cloned.localPath)
+        ),
+        api: await step('api', () => this.apiAnalyzer.analyze(fileSystem, cloned.localPath)),
+        authentication: await step('authentication', () =>
+          this.authenticationAnalyzer.analyze(fileSystem, cloned.localPath)
+        ),
+      };
+
+      const profile = this.assemble(cloned, bundle);
 
       logger.info(
         { owner: cloned.identity.owner, name: cloned.identity.name, commit: cloned.commitSha },
         'repository.profile:complete'
       );
-      return profile;
-    } finally {
-      if (!this.keepRepoDir) {
-        await this.cloning.cleanup(cloned.localPath).catch(() => undefined);
-      }
+      return { profile, localPath: cloned.localPath };
+    } catch (error) {
+      // The working tree is discarded if analysis fails part-way.
+      await this.disposeRepository(cloned.localPath);
+      throw error;
+    }
+  }
+
+  /** Releases a working tree produced by {@link prepareRepository}. */
+  async disposeRepository(localPath: string): Promise<void> {
+    if (!this.keepRepoDir) {
+      await this.cloning.cleanup(localPath).catch(() => undefined);
     }
   }
 

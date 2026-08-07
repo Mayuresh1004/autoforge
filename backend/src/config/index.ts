@@ -32,6 +32,23 @@ const envSchema = z.object({
   ANALYZER_MAX_REPO_BYTES: z.coerce.number().default(2_147_483_648),
   ANALYZER_KEEP_REPO_DIR: z.enum(['true', 'false']).default('false'),
 
+  SCANNER_DEFAULT_TIMEOUT_MS: z.coerce.number().default(60_000),
+  SCANNER_SEVERITY_THRESHOLD: z
+    .enum(['INFO', 'LOW', 'MEDIUM', 'HIGH', 'CRITICAL'])
+    .default('INFO'),
+  SCANNER_BANDIT_ENABLED: z.enum(['true', 'false']).default('true'),
+  SCANNER_BANDIT_TIMEOUT_MS: z.coerce.number().optional(),
+  SCANNER_BANDIT_ARGS: z.string().optional(),
+  SCANNER_SEMGREP_ENABLED: z.enum(['true', 'false']).default('true'),
+  SCANNER_SEMGREP_TIMEOUT_MS: z.coerce.number().optional(),
+  SCANNER_SEMGREP_ARGS: z.string().optional(),
+  SCANNER_NPM_AUDIT_ENABLED: z.enum(['true', 'false']).default('true'),
+  SCANNER_NPM_AUDIT_TIMEOUT_MS: z.coerce.number().optional(),
+  SCANNER_NPM_AUDIT_ARGS: z.string().optional(),
+  SCANNER_PIP_AUDIT_ENABLED: z.enum(['true', 'false']).default('true'),
+  SCANNER_PIP_AUDIT_TIMEOUT_MS: z.coerce.number().optional(),
+  SCANNER_PIP_AUDIT_ARGS: z.string().optional(),
+
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
   LOG_FORMAT: z.enum(['json', 'pretty']).default('json'),
 
@@ -84,4 +101,51 @@ export const analyzerConfig = {
   cloneTimeoutMs: config.ANALYZER_CLONE_TIMEOUT_MS,
   maxRepoBytes: config.ANALYZER_MAX_REPO_BYTES,
   keepRepoDir: config.ANALYZER_KEEP_REPO_DIR === 'true',
+};
+
+function scannerEnabled(value: 'true' | 'false'): boolean {
+  return value === 'true';
+}
+
+function scannerArgsParser(raw: string | undefined): string[] {
+  return raw ? raw.split(/\s+/).filter((a) => a.length > 0) : [];
+}
+
+export interface ScannerConfigEntry {
+  readonly enabled: boolean;
+  readonly timeoutMs?: number;
+  readonly extraArgs: readonly string[];
+}
+
+export interface StaticScannerConfig {
+  readonly defaultTimeoutMs: number;
+  readonly severityThreshold: 'INFO' | 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
+  readonly scanners: Record<'bandit' | 'semgrep' | 'npmAudit' | 'pipAudit', ScannerConfigEntry>;
+}
+
+export const staticScannerConfig: StaticScannerConfig = {
+  defaultTimeoutMs: config.SCANNER_DEFAULT_TIMEOUT_MS,
+  severityThreshold: config.SCANNER_SEVERITY_THRESHOLD,
+  scanners: {
+    bandit: {
+      enabled: scannerEnabled(config.SCANNER_BANDIT_ENABLED),
+      timeoutMs: config.SCANNER_BANDIT_TIMEOUT_MS,
+      extraArgs: scannerArgsParser(config.SCANNER_BANDIT_ARGS),
+    },
+    semgrep: {
+      enabled: scannerEnabled(config.SCANNER_SEMGREP_ENABLED),
+      timeoutMs: config.SCANNER_SEMGREP_TIMEOUT_MS,
+      extraArgs: scannerArgsParser(config.SCANNER_SEMGREP_ARGS),
+    },
+    npmAudit: {
+      enabled: scannerEnabled(config.SCANNER_NPM_AUDIT_ENABLED),
+      timeoutMs: config.SCANNER_NPM_AUDIT_TIMEOUT_MS,
+      extraArgs: scannerArgsParser(config.SCANNER_NPM_AUDIT_ARGS),
+    },
+    pipAudit: {
+      enabled: scannerEnabled(config.SCANNER_PIP_AUDIT_ENABLED),
+      timeoutMs: config.SCANNER_PIP_AUDIT_TIMEOUT_MS,
+      extraArgs: scannerArgsParser(config.SCANNER_PIP_AUDIT_ARGS),
+    },
+  },
 };
