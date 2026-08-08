@@ -50,7 +50,10 @@ function networkArg(policy: SandboxNetworkPolicy): { kind: NetworkKind; name?: s
 /**
  * Pure builder: a hardened, named, detached container that stays alive so the
  * manager can `exec`, `logs`, `restart` and eventually destroy it. The repo
- * working tree is the only host writable path. Kept pure for unit testing.
+ * working tree is the only host writable path — unless it is a RUNTIME
+ * sandbox (`mountRepository: false`), where the host filesystem never enters
+ * the container and the image payload runs instead (image CMD or explicit
+ * argv). Kept pure for unit testing.
  */
 export function buildCreateCommand(
   spec: SandboxSpec,
@@ -58,24 +61,87 @@ export function buildCreateCommand(
   mountPath = '/workspace'
 ): string[] {
   const network = networkArg(spec.network);
-  const networkValue = network.kind === 'internal' ? `amass-net-${spec.scanId}` : network.kind;
+  const networkValue =
+    network.kind === 'internal' ? `amass-net-${spec.scanId}` : network.kind;
 
-  return [
-    'run', '-d', '--rm', '--name', name,
-    '--label', 'amass.manager=1',
-    '--label', `amass.scan=${spec.scanId}`,
-    '--network', networkValue,
-  ]
-    // Hardened profile (capability + privilege drop, read-only rootfs).
-    .concat(['--read-only', '--tmpfs', '/tmp:rw,exec,nodev,nosuid'])
-    .concat(['--cap-drop', 'ALL', '--security-opt', 'no-new-privileges:true'])
-    // Non-root user + resource limits.
-    .concat(typeof spec.uid === 'number' ? ['--user', String(spec.uid)] : [])
-    .concat(spec.memoryLimit ? ['--memory', spec.memoryLimit] : [])
-    .concat(spec.cpus ? ['--cpus', String(spec.cpus)] : [])
-    // Repo working tree is the only host writable path; workdir inside it.
-    .concat([`--volume`, `${spec.repositoryPath}:${mountPath}`, '--workdir', mountPath])
-    .concat([spec.image, 'tail', '-f', '/dev/null']);
+  const command: string[] = [
+    'run',
+    '-d',
+    '--rm',
+    '--name',
+    name,
+    '--label',
+    'amass.manager=1',
+    '--label',
+    `amass.scan=${spec.scanId}`,
+    '--network',
+    networkValue,
+  ];
+
+  // Hardened profile (capability + privilege drop, read-only rootfs).
+  command.push('--read-only', '--tmpfs', '/tmp:rw,exec,nodev,nosuid');
+  command.push('--cap-drop', 'ALL', '--security-opt', 'no-new-privileges:true');
+  if (typeof spec.uid === 'number') command.push('--user', String(spec.uid));
+  if (spec.memoryLimit) command.push('--memory', spec.memoryLimit);
+  if (spec.cpus) command.push('--cpus', String(spec.cpus));
+  if (spec.pidsLimit) command.push('--pids-limit', String(spec.pidsLimit));
+
+  // Explicit env only (runtime sandboxes get a service-built allowlist).
+  if (spec.env && Object.keys(spec.env).length > 0) {
+    for (const [key, value] of Object.entries(spec.env)) {
+      command.push('--env', `${key}=${value}`);
+    }
+  }
+
+  // Optional localhost-only dynamic port (never 0.0.0.0).
+  if (spec.hostPublishLocalhost) {
+    command.push('-p', `127.0.0.1::${spec.hostPublishLocalhost.containerPort}`);
+  }
+
+  const useImageDefault =
+    spec.appCommand !== undefined && spec.appCommand.length === 0;
+
+  if (spec.mountRepository !== false) {
+    // Repo tree is the only host writable path; workdir inside it.
+    command.push(
+      '--volume',
+      `${spec.repositoryPath}:${mountPath}`,
+      '--workdir',
+      mountPath
+    );
+  } else {
+    // Host filesystem stays out. No --workdir: the image's own WORKDIR
+    // governs so a relative image CMD (e.g. `python app.py`) resolves
+    // inside the app's directory, not an arbitrary host-ish /tmp.
+  }
+
+  command.push(spec.image);
+  if (spec.appCommand === undefined) {
+    // Analysis sandboxes: keepalive tail so the manager can exec into them.
+    command.push('tail', '-f', '/dev/null');
+  } else if (spec.appCommand.length > 0) {
+    command.push(...spec.appCommand);
+  } else {
+    // [] → let the image's own CMD run (runtime sandboxes).
+    void useImageDefault;
+  }
+  return command;
+}
+
+/** Pure builder for `docker build` (single-line output, labeled). */
+export function buildImageCommand(request: {
+  readonly contextPath: string;
+  readonly dockerfilePath?: string;
+  readonly imageName: string;
+  readonly labels?: Readonly<Record<string, string>>;
+}): string[] {
+  const args = ['build', '-q'];
+  for (const [key, value] of Object.entries(request.labels ?? {})) {
+    args.push('--label', `${key}=${value}`);
+  }
+  if (request.dockerfilePath) args.push('-f', request.dockerfilePath);
+  args.push('-t', request.imageName, request.contextPath);
+  return args;
 }
 
 export { networkArg as dockerNetworkArg };

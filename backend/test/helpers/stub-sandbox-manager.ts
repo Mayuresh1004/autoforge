@@ -1,5 +1,5 @@
-import type { Sandbox, SandboxHealth, SandboxStatus } from '../../src/sandbox/domain/models/sandbox';
-import type { SandboxManager, CreateSandboxInput } from '../../src/sandbox/domain/ports/sandbox-manager';
+import type { Sandbox, SandboxContainerInfo, SandboxHealth, SandboxStatus } from '../../src/sandbox/domain/models/sandbox';
+import type { SandboxManager, CreateSandboxInput, BuildImageRequest, BuildImageResult } from '../../src/sandbox/domain/ports/sandbox-manager';
 import type { ExecRequest, ExecResult, SandboxPatch } from '../../src/sandbox/domain/models/sandbox';
 
 /**
@@ -54,5 +54,23 @@ export class StubSandboxManager implements SandboxManager {
   async destroy(_id: string): Promise<void> {}
   async sweepOrphans(): Promise<number> {
     return 0;
+  }
+  /** Scripted image builds consumed FIFO (default: a generated id). */
+  buildResults: BuildImageResult[] = [];
+  buildCalls: Array<{ request: BuildImageRequest; startedAt: number }> = [];
+  removedImages: string[] = [];
+  inspectOverrides = new Map<string, SandboxContainerInfo | null>();
+
+  async buildImage(request: BuildImageRequest): Promise<BuildImageResult> {
+    this.buildCalls.push({ request, startedAt: Date.now() });
+    return this.buildResults.shift() ?? { imageId: `img-${request.imageName}`, imageName: request.imageName };
+  }
+  async removeImage(imageIdOrName: string): Promise<void> {
+    this.removedImages.push(imageIdOrName);
+  }
+  async inspectRuntimeContainer(containerId: string): Promise<SandboxContainerInfo | null> {
+    const overridden = this.inspectOverrides.get(containerId);
+    if (overridden !== undefined) return overridden;
+    return { running: true, status: 'running', ipAddress: '172.18.0.42' };
   }
 }

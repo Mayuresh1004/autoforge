@@ -4,11 +4,14 @@ import type {
   ExecRequest,
   ExecResult,
   Sandbox,
+  SandboxContainerInfo,
   SandboxPatch,
   SandboxSpec,
   SandboxStatus,
 } from '../../domain/models/sandbox';
 import type {
+  BuildImageRequest,
+  BuildImageResult,
   CreateSandboxInput,
   SandboxManager,
   SandboxManagerOptions,
@@ -60,18 +63,30 @@ export class SandboxManagerService implements SandboxManager {
       },
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
+      ...(input.mountRepository === undefined ? {} : { mountRepository: input.mountRepository }),
+      ...(input.env ? { env: input.env } : {}),
+      ...(input.pidsLimit ? { pidsLimit: input.pidsLimit } : {}),
+      ...(input.appCommand !== undefined ? { appCommand: input.appCommand } : {}),
+      ...(input.hostPublishLocalhost ? { hostPublishLocalhost: input.hostPublishLocalhost } : {}),
     };
     await this.store.save(sandbox);
 
     try {
       await this.transition(id, 'creating');
       const spec: SandboxSpec = { ...sandbox };
-      const { containerId, networkId, workspacePath } = await this.withTimeout(
+      const { containerId, networkId, workspacePath, ipAddress, hostPort } = await this.withTimeout(
         this.backend.create(spec),
         this.createTimeoutMs,
         `create sandbox ${id}`
       );
-      const created = { ...(await this.require(id)), containerId, networkId, workspacePath };
+      const created = {
+        ...(await this.require(id)),
+        containerId,
+        networkId,
+        workspacePath,
+        ipAddress,
+        exposedPort: hostPort ?? sandbox.exposedPort,
+      };
       await this.store.save(created);
 
       await this.transition(id, 'starting');
@@ -201,6 +216,35 @@ export class SandboxManagerService implements SandboxManager {
     const swept = await this.backend.sweep();
     if (swept > 0) logger.warn({ swept }, 'sandbox.sweep reclaimed orphans');
     return swept;
+  }
+
+  // --- Runtime-sandbox primitives (Phase 6) ------------------------------
+
+  async buildImage(request: BuildImageRequest): Promise<BuildImageResult> {
+    const started = Date.now();
+    logger.info({ image: request.imageName }, 'sandbox.buildImage start');
+    try {
+      const result = await this.backend.buildImage(request);
+      logger.info(
+        { image: request.imageName, imageId: result.imageId, durationMs: Date.now() - started },
+        'sandbox.buildImage done'
+      );
+      return result;
+    } catch (error) {
+      logger.error({ image: request.imageName, error }, 'sandbox.buildImage failed');
+      throw error;
+    }
+  }
+
+  async removeImage(imageIdOrName: string): Promise<void> {
+    logger.info({ image: imageIdOrName }, 'sandbox.removeImage');
+    await this.backend.removeImage(imageIdOrName).catch((error) => {
+      logger.warn({ image: imageIdOrName, error }, 'sandbox.removeImage failed (continuing)');
+    });
+  }
+
+  async inspectRuntimeContainer(containerId: string): Promise<SandboxContainerInfo | null> {
+    return this.backend.inspect(containerId).catch(() => null);
   }
 
   // -- internals -------------------------------------------------------------

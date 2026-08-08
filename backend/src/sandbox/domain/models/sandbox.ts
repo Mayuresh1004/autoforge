@@ -40,6 +40,38 @@ export interface SandboxSpec {
   readonly cpus?: number;
   /** Non-root uid the sandbox process runs as. */
   readonly uid?: number;
+  // --- Runtime-sandbox extensions (Phase 6) -------------------------------
+  /**
+   * Bind the host repository path into the container. `true` for analysis
+   * sandboxes; RUNTIME sandboxes must keep the host filesystem out of the
+   * container (image carries the payload) — set to `false`.
+   */
+  readonly mountRepository?: boolean;
+  /**
+   * Explicit container environment (values are service-provided constants,
+   * never a host-env passthrough). Only these keys reach the container.
+   */
+  readonly env?: Readonly<Record<string, string>>;
+  /** Hard PID cgroup limit; never left unbounded. */
+  readonly pidsLimit?: number;
+  /**
+   * Container command semantics:
+   *  - undefined → keepalive `tail` (analysis sandboxes; image CMD unused),
+   *  - []        → image default CMD (runtime sandboxes),
+   *  - non-empty → explicit argv override.
+   */
+  readonly appCommand?: readonly string[];
+  /** Publish a dynamic host port bound to 127.0.0.1 only (never 0.0.0.0). */
+  readonly hostPublishLocalhost?: { readonly containerPort: number };
+}
+
+/** Ops-level state of a live sandbox container (Docker backend). */
+export interface SandboxContainerInfo {
+  readonly running: boolean;
+  readonly status: string;
+  readonly ipAddress?: string;
+  /** Allocated host port when published (localhost-bound). */
+  readonly hostPort?: number;
 }
 
 /** Immutable descriptor of one live sandbox. */
@@ -55,6 +87,16 @@ export interface Sandbox {
   readonly networkId?: string;
   /** Host-visible path of the repo tree (process backend) — container backends omit it. */
   readonly workspacePath?: string;
+  /** Container IP on the sandbox network (runtime sandboxes). */
+  readonly ipAddress?: string;
+  /** Allocated localhost host port when the runtime sandbox publishes one. */
+  readonly exposedPort?: number;
+  // Runtime profile (Phase 6): keep the spec's container-level knobs.
+  readonly mountRepository?: boolean;
+  readonly env?: Readonly<Record<string, string>>;
+  readonly pidsLimit?: number;
+  readonly appCommand?: readonly string[];
+  readonly hostPublishLocalhost?: { readonly containerPort: number };
   readonly createdAt: string;
   readonly updatedAt: string;
 }

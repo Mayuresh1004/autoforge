@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { promises as fs } from 'node:fs';
 import type { SandboxSpec } from '../../domain/models/sandbox';
 import { DockerSandboxBackend } from './docker-sandbox-backend';
-import { buildCreateCommand, type DockerRunner, type CliOutput } from './docker-cli';
+import { buildCreateCommand, buildImageCommand, type DockerRunner, type CliOutput } from './docker-cli';
 
 function fakeRunner(record: string[][]): DockerRunner {
   return async (args) => {
@@ -44,6 +44,71 @@ describe('buildCreateCommand (pure)', () => {
     );
     expect(args.join(' ')).toContain('--network amass-net-scan_1');
   });
+
+  // --- Phase 6: runtime-sandbox hardening ---------------------------------
+
+  it('runtime sandboxes: NO host mount, explicit env, pids limit, image CMD', () => {
+    const args = buildCreateCommand(
+      spec({
+        type: 'runtime',
+        network: { egress: 'internal', allowlist: [] },
+        mountRepository: false,
+        env: { PORT: '8000', NODE_ENV: 'production' },
+        pidsLimit: 256,
+        appCommand: [],
+      }),
+      'amass_rt'
+    );
+    const joined = args.join(' ');
+    expect(joined).not.toContain('--volume'); // host filesystem never mounted
+    expect(joined).not.toContain('--workdir'); // image WORKDIR governs image CMD
+    expect(joined).toContain('--env PORT=8000');
+    expect(joined).toContain('--env NODE_ENV=production');
+    expect(joined).toContain('--pids-limit 256');
+    expect(joined).not.toContain('tail -f /dev/null'); // image CMD runs the app
+  });
+
+  it('runtime sandboxes: appCommand override wins over image CMD', () => {
+    const args = buildCreateCommand(
+      spec({
+        type: 'runtime',
+        mountRepository: false,
+        appCommand: ['python', 'server.py'],
+      }),
+      'amass_rt'
+    );
+    const joined = args.join(' ');
+    expect(joined).toContain('python server.py');
+    expect(joined).not.toContain('tail -f /dev/null');
+  });
+
+  it('localhost-only dynamic host port is bound to 127.0.0.1 (never 0.0.0.0)', () => {
+    const args = buildCreateCommand(
+      spec({
+        type: 'runtime',
+        mountRepository: false,
+        hostPublishLocalhost: { containerPort: 8000 },
+      }),
+      'amass_rt'
+    );
+    expect(args.join(' ')).toContain('-p 127.0.0.1::8000');
+    expect(args.join(' ')).not.toContain('0.0.0.0');
+  });
+
+  it('buildImageCommand is argv-only, labeled and points at the context', () => {
+    const args = buildImageCommand({
+      contextPath: '/tmp/ctx',
+      dockerfilePath: 'Dockerfile',
+      imageName: 'amass-rt-x',
+      labels: { 'amass.manager': '1' },
+    });
+    expect(args[0]).toBe('build');
+    expect(args).toContain('-t');
+    expect(args).toContain('--label');
+    expect(args).toContain('amass.manager=1'); // label passed as separate argv entry
+    expect(args).toContain('-f');
+    expect(args[args.length - 1]).toBe('/tmp/ctx');
+  });
 });
 
 describe('DockerSandboxBackend (fake docker runner)', () => {
@@ -61,12 +126,22 @@ describe('DockerSandboxBackend (fake docker runner)', () => {
 
   it('creates an internal network before a runtime container', async () => {
     const calls: string[][] = [];
-    const backend = new DockerSandboxBackend(fakeRunner(calls));
+    const runner: DockerRunner = async (args) => {
+      calls.push([...args]);
+      // network inspect reports not-found → ensureNetwork actually creates.
+      if (args[0] === 'network' && args[1] === 'inspect') {
+        return { stdout: '', stderr: 'No such network', exitCode: 1, timedOut: false };
+      }
+      return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+    };
+    const backend = new DockerSandboxBackend(runner);
     await backend.create(
       spec({ type: 'runtime', network: { egress: 'internal', allowlist: [] } })
     );
-    expect(calls[0][1]).toBe('create');
-    expect(calls[0].join(' ')).toContain('--internal');
+    const create = calls.find((c) => c[0] === 'network' && c[1] === 'create');
+    expect(create).toBeDefined();
+    expect(create!.join(' ')).toContain('--internal');
+    expect(create!.join(' ')).toContain('amass-net-scan_1');
   });
 
   it('isReady parses the inspect result', async () => {

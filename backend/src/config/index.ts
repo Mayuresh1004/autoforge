@@ -1,6 +1,10 @@
 import { z } from 'zod';
 import os from 'node:os';
 import path from 'node:path';
+import type { LLMProviderConfig } from '../llm/domain/ports/llm-config';
+import type { LLMProviderId } from '../llm/domain/ports/llm-provider';
+import { LLM_PROVIDER_IDS } from '../llm/domain/ports/llm-provider';
+import type { EmbeddingConfig } from '../embedding/domain/ports/embedding-provider';
 
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
@@ -76,6 +80,87 @@ const envSchema = z.object({
   LOG_FORMAT: z.enum(['json', 'pretty']).default('json'),
 
   CORS_ORIGIN: z.string().default('http://localhost:5173'),
+
+  // --- Runtime Sandbox Lifecycle (Phase 6) ---
+  // Every limit below is bounded by design — nothing may be unlimited.
+  SANDBOX_CPU_LIMIT: z.coerce.number().min(0.01).max(16).default(0.5),
+  SANDBOX_MEMORY_LIMIT: z.string().regex(/^\d+[kKmMgG]$/, 'SANDBOX_MEMORY_LIMIT must look like 512m').default('512m'),
+  SANDBOX_PIDS_LIMIT: z.coerce.number().int().min(16).max(65536).default(256),
+  /** Overall runtime-sandbox lifetime before it is expired/reclaimed. */
+  SANDBOX_TIMEOUT: z.coerce.number().min(60_000).max(24 * 3600_000).default(1_800_000),
+  SANDBOX_BUILD_TIMEOUT: z.coerce.number().min(30_000).default(300_000),
+  SANDBOX_START_TIMEOUT: z.coerce.number().min(10_000).default(60_000),
+  SANDBOX_HEALTH_TIMEOUT: z.coerce.number().min(1_000).default(30_000),
+  SANDBOX_MAX_CONCURRENT: z.coerce.number().int().min(1).max(64).default(3),
+  /** Localhost-only host port publishing is disabled unless explicitly enabled. */
+  SANDBOX_ALLOW_HOST_EXPOSE: z.enum(['true', 'false']).default('false'),
+
+  // --- LLM provider (free-first) ---
+  // Preferred order: gemini → openrouter → groq → mistral. No paid provider
+  // is required; only the configured provider(s) need keys.
+  LLM_PROVIDER: z
+    .enum(['gemini', 'openrouter', 'groq', 'mistral'])
+    .default('gemini'),
+  // Explicit primary override (takes precedence over LLM_PROVIDER when set).
+  LLM_PRIMARY_PROVIDER: z
+    .enum(['gemini', 'openrouter', 'groq', 'mistral'])
+    .optional(),
+  // Default model. 'openrouter/free' lets OpenRouter route to the currently
+  // available free model; the app never assumes which model that is. For
+  // non-openrouter providers a concrete model must be configured (LLM_MODEL
+  // or the per-provider *_MODEL) — the free alias is invalid elsewhere.
+  LLM_MODEL: z.string().default('openrouter/free'),
+  LLM_TEMPERATURE: z.coerce.number().min(0).max(2).default(0.1),
+  LLM_MAX_TOKENS: z.coerce.number().int().min(1).max(128_000).default(4096),
+  LLM_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(600_000).default(60_000),
+  LLM_MAX_RETRIES: z.coerce.number().int().min(0).max(5).default(1),
+  // Comma-separated escalation order after the primary (e.g. "groq,mistral").
+  LLM_FALLBACK_PROVIDERS: z.string().default(''),
+  GEMINI_API_KEY: z.string().optional(),
+  GEMINI_MODEL: z.string().optional(),
+  OPENROUTER_API_KEY: z.string().optional(),
+  OPENROUTER_MODEL: z.string().optional(),
+  GROQ_API_KEY: z.string().optional(),
+  GROQ_MODEL: z.string().optional(),
+  MISTRAL_API_KEY: z.string().optional(),
+  MISTRAL_MODEL: z.string().optional(),
+
+  // --- Embeddings + knowledge/RAG (free-first; independent of the LLM axis) ---
+  // Embedding provider is a SEPARATE configuration line from LLM providers.
+  EMBEDDING_PROVIDER: z.enum(['gemini']).default('gemini'),
+  EMBEDDING_MODEL: z.string().default('text-embedding-004'),
+  EMBEDDING_DIMENSIONS: z.coerce.number().int().min(64).max(8192).default(768),
+
+  KNOWLEDGE_QDRANT_URL: z.string().optional(),
+  KNOWLEDGE_QDRANT_API_KEY: z.string().optional(),
+  KNOWLEDGE_QDRANT_COLLECTION: z
+    .string()
+    .default('amass_security_knowledge'),
+  KNOWLEDGE_QDRANT_TIMEOUT_MS: z
+    .coerce.number()
+    .int()
+    .min(1_000)
+    .max(120_000)
+    .default(15_000),
+
+  KNOWLEDGE_NVD_BASE_URL: z
+    .string()
+    .url()
+    .default('https://services.nvd.nist.gov/rest/json/cves/2.0'),
+  KNOWLEDGE_NVD_PAGE_SIZE: z.coerce.number().int().min(1).max(2000).default(200),
+  KNOWLEDGE_NVD_MAX_PAGES: z.coerce.number().int().min(1).max(200).default(5),
+  KNOWLEDGE_NVD_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(120_000).default(30_000),
+  KNOWLEDGE_NVD_MAX_RETRIES: z.coerce.number().int().min(0).max(5).default(2),
+  KNOWLEDGE_NVD_RETRY_DELAY_MS: z
+    .coerce.number()
+    .int()
+    .min(0)
+    .max(60_000)
+    .default(1_000),
+
+  RAG_TOP_K_MAX: z.coerce.number().int().min(1).max(100).default(50),
+  RAG_DEFAULT_TOP_K: z.coerce.number().int().min(1).max(100).default(5),
+  PROMPTS_ROOT: z.string().optional(),
 });
 
 export type EnvConfig = z.infer<typeof envSchema>;
@@ -188,6 +273,112 @@ export const scoutConfig: ScoutConfig = {
   probeTimeoutMs: config.SCOUT_PROBE_TIMEOUT_MS,
   portScanEnabled: config.SCOUT_PORT_SCAN_ENABLED === 'true',
   probeCommonPaths: config.SCOUT_PROBE_COMMON_PATHS === 'true',
+};
+
+export interface RuntimeSandboxConfig {
+  /** Hard ceiling on concurrently live runtime sandboxes (never unlimited). */
+  readonly maxConcurrent: number;
+  /** Lifetime before a sandbox is expired and reclaimed. */
+  readonly lifetimeMs: number;
+  readonly buildTimeoutMs: number;
+  readonly startTimeoutMs: number;
+  readonly healthTimeoutMs: number;
+  /** Host-exposure (localhost-only publish) requires explicit opt-in. */
+  readonly allowHostExpose: boolean;
+  /** CPU/memory/PID envelope applied to every runtime container. */
+  readonly limits: import('../sandbox/domain/value-objects/runtime-config').ResourceLimits;
+}
+
+export const runtimeSandboxConfig: RuntimeSandboxConfig = {
+  maxConcurrent: config.SANDBOX_MAX_CONCURRENT,
+  lifetimeMs: config.SANDBOX_TIMEOUT,
+  buildTimeoutMs: config.SANDBOX_BUILD_TIMEOUT,
+  startTimeoutMs: config.SANDBOX_START_TIMEOUT,
+  healthTimeoutMs: config.SANDBOX_HEALTH_TIMEOUT,
+  allowHostExpose: config.SANDBOX_ALLOW_HOST_EXPOSE === 'true',
+  limits: {
+    cpus: config.SANDBOX_CPU_LIMIT,
+    memory: config.SANDBOX_MEMORY_LIMIT,
+    pids: config.SANDBOX_PIDS_LIMIT,
+  },
+};
+
+// ---------------------------------------------------------------------------
+// LLM provider (free-first). Parsing happens here; provider construction is
+// lazy (the factory) so the backend boots even when no key is configured.
+// ---------------------------------------------------------------------------
+function parseProviderList(raw: string): LLMProviderId[] {
+  const ids = raw
+    .split(',')
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0);
+  const supported = new Set<string>(LLM_PROVIDER_IDS);
+  for (const id of ids) {
+    if (!supported.has(id)) {
+      throw new Error(`LLM_FALLBACK_PROVIDERS contains unsupported provider: ${id}`);
+    }
+  }
+  return ids as LLMProviderId[];
+}
+
+export const llmConfig: LLMProviderConfig = {
+  provider: config.LLM_PRIMARY_PROVIDER ?? config.LLM_PROVIDER,
+  model: config.LLM_MODEL,
+  temperature: config.LLM_TEMPERATURE,
+  maxTokens: config.LLM_MAX_TOKENS,
+  timeoutMs: config.LLM_TIMEOUT_MS,
+  maxRetries: config.LLM_MAX_RETRIES,
+  fallbackProviders: parseProviderList(config.LLM_FALLBACK_PROVIDERS),
+  apiKeys: {
+    gemini: config.GEMINI_API_KEY,
+    openrouter: config.OPENROUTER_API_KEY,
+    groq: config.GROQ_API_KEY,
+    mistral: config.MISTRAL_API_KEY,
+  },
+  modelOverrides: {
+    gemini: config.GEMINI_MODEL,
+    openrouter: config.OPENROUTER_MODEL,
+    groq: config.GROQ_MODEL,
+    mistral: config.MISTRAL_MODEL,
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Embeddings + knowledge/RAG (free-first; independent of the LLM axis).
+// ---------------------------------------------------------------------------
+export const embeddingConfig: EmbeddingConfig = {
+  provider: config.EMBEDDING_PROVIDER,
+  model: config.EMBEDDING_MODEL,
+  dimensions: config.EMBEDDING_DIMENSIONS,
+  apiKey: config.GEMINI_API_KEY,
+  timeoutMs: 30_000,
+  maxRetries: 2,
+};
+
+export const knowledgeConfig = {
+  qdrant: {
+    baseUrl: config.KNOWLEDGE_QDRANT_URL ?? qdrantConfig.url,
+    apiKey: config.KNOWLEDGE_QDRANT_API_KEY,
+    timeoutMs: config.KNOWLEDGE_QDRANT_TIMEOUT_MS,
+    collection: config.KNOWLEDGE_QDRANT_COLLECTION,
+  },
+  nvd: {
+    baseUrl: config.KNOWLEDGE_NVD_BASE_URL,
+    pageSize: config.KNOWLEDGE_NVD_PAGE_SIZE,
+    maxPages: config.KNOWLEDGE_NVD_MAX_PAGES,
+    timeoutMs: config.KNOWLEDGE_NVD_TIMEOUT_MS,
+    maxRetries: config.KNOWLEDGE_NVD_MAX_RETRIES,
+    retryDelayMs: config.KNOWLEDGE_NVD_RETRY_DELAY_MS,
+  },
+};
+
+export const ragConfig = {
+  topKMax: config.RAG_TOP_K_MAX,
+  defaultTopK: config.RAG_DEFAULT_TOP_K,
+};
+
+export const promptsConfig = {
+  root: config.PROMPTS_ROOT,
 };
 
 export const staticScannerConfig: StaticScannerConfig = {

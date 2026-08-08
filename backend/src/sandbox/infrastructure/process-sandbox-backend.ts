@@ -1,8 +1,18 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import type { ExecRequest, ExecResult, SandboxSpec } from '../domain/models/sandbox';
-import type { SandboxBackend } from '../domain/ports/sandbox-manager';
+import type {
+  ExecRequest,
+  ExecResult,
+  SandboxContainerInfo,
+  SandboxSpec,
+} from '../domain/models/sandbox';
+import { SandboxRuntimeUnsupportedError } from '../domain/errors/sandbox-runtime.errors';
+import type {
+  BuildImageRequest,
+  BuildImageResult,
+  SandboxBackend,
+} from '../domain/ports/sandbox-manager';
 import { ProcessSandboxRuntime } from './process-sandbox';
 
 export interface ProcessSandboxBackendOptions {
@@ -120,6 +130,18 @@ export class ProcessSandboxBackend implements SandboxBackend {
       }
     }
     return swept;
+  }
+
+  async buildImage(_request: BuildImageRequest): Promise<BuildImageResult> {
+    throw new SandboxRuntimeUnsupportedError('buildImage');
+  }
+
+  async removeImage(_imageIdOrName: string): Promise<void> {
+    throw new SandboxRuntimeUnsupportedError('removeImage');
+  }
+
+  async inspect(_containerId: string): Promise<SandboxContainerInfo | null> {
+    throw new SandboxRuntimeUnsupportedError('inspect');
   }
 
   // -- internals -------------------------------------------------------------

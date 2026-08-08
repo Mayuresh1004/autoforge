@@ -125,6 +125,15 @@ class CountingSandboxManager implements SandboxManager {
   async sweepOrphans(): Promise<number> {
     return this.inner.sweepOrphans();
   }
+  async buildImage(request: import('../../domain/ports/sandbox-manager').BuildImageRequest) {
+    return this.inner.buildImage(request);
+  }
+  async removeImage(imageIdOrName: string): Promise<void> {
+    return this.inner.removeImage(imageIdOrName);
+  }
+  async inspectRuntimeContainer(containerId: string) {
+    return this.inner.inspectRuntimeContainer(containerId);
+  }
 }
 
 /**

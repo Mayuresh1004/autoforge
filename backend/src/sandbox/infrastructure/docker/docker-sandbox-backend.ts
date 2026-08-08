@@ -2,10 +2,23 @@ import { promises as fs } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import type { ExecRequest, ExecResult, SandboxSpec } from '../../domain/models/sandbox';
-import type { SandboxBackend } from '../../domain/ports/sandbox-manager';
+import type {
+  ExecRequest,
+  ExecResult,
+  SandboxContainerInfo,
+  SandboxSpec,
+} from '../../domain/models/sandbox';
+import {
+  SandboxImageBuildError,
+} from '../../domain/errors/sandbox-runtime.errors';
+import type {
+  BuildImageRequest,
+  BuildImageResult,
+  SandboxBackend,
+} from '../../domain/ports/sandbox-manager';
 import {
   buildCreateCommand,
+  buildImageCommand,
   defaultDockerRunner,
   type DockerRunner,
 } from './docker-cli';
@@ -17,16 +30,28 @@ const MOUNT = '/workspace';
  * containers (kept alive with `tail`) that the manager exec/logs/restarts,
  * and destroys. Everything here is argv-only and delegated to `docker`, never
  * to a shell. `create` returns the generated container/network names.
+ *
+ * Phase 6 additions: `buildImage` / `removeImage` / `inspect` for runtime
+ * sandboxes, plus container-level hardening knobs (no host mount, explicit
+ * env allowlist, PID limit, image-default CMD, localhost-only dynamic port).
  */
 export class DockerSandboxBackend implements SandboxBackend {
   private readonly runner: DockerRunner;
-  private readonly ctx = new Map<string, { scanId: string; networkId?: string }>();
+  private readonly ctx = new Map<
+    string,
+    { scanId: string; networkId?: string; hostPort?: number }
+  >();
 
   constructor(runner: DockerRunner = defaultDockerRunner) {
     this.runner = runner;
   }
 
-  async create(spec: SandboxSpec): Promise<{ containerId: string; networkId?: string }> {
+  async create(spec: SandboxSpec): Promise<{
+    containerId: string;
+    networkId?: string;
+    ipAddress?: string;
+    hostPort?: number;
+  }> {
     const name = `amass_${spec.scanId}_${randomUUID().slice(0, 8)}`;
     const networkId =
       spec.network.egress === 'internal' ? `amass-net-${spec.scanId}` : undefined;
@@ -41,8 +66,12 @@ export class DockerSandboxBackend implements SandboxBackend {
       throw new Error(`docker create failed: ${out.stderr.trim()}`);
     }
 
-    this.ctx.set(name, { scanId: spec.scanId, networkId });
-    return { containerId: name, networkId };
+    const hostPort = spec.hostPublishLocalhost
+      ? await this.readPublishedPort(name)
+      : undefined;
+
+    this.ctx.set(name, { scanId: spec.scanId, networkId, hostPort });
+    return { containerId: name, networkId, hostPort };
   }
 
   async start(id: string): Promise<void> {
@@ -104,6 +133,46 @@ export class DockerSandboxBackend implements SandboxBackend {
     this.ctx.delete(id);
   }
 
+  async buildImage(request: BuildImageRequest): Promise<BuildImageResult> {
+    const args = buildImageCommand({
+      contextPath: request.contextPath,
+      dockerfilePath: request.dockerfilePath,
+      imageName: request.imageName,
+      labels: request.labels,
+    });
+    const out = await this.runner(args, request.timeoutMs ?? 300_000);
+    if (out.exitCode !== 0) {
+      const tail = out.stderr.trim().split('\n').slice(-30).join('\n');
+      throw new SandboxImageBuildError('docker build failed', tail);
+    }
+    // `-q` prints the image id on stdout; fall back to the name.
+    return { imageId: out.stdout.trim() || request.imageName, imageName: request.imageName };
+  }
+
+  async removeImage(imageIdOrName: string): Promise<void> {
+    const out = await this.runner(['rmi', '-f', imageIdOrName]);
+    if (out.exitCode !== 0 && !isNotFound(out.stderr)) {
+      throw new Error(`docker rmi failed: ${out.stderr.trim()}`);
+    }
+  }
+
+  async inspect(containerId: string): Promise<SandboxContainerInfo | null> {
+    const out = await this.runner([
+      'inspect',
+      '-f',
+      '{{.State.Running}}|{{.State.Status}}|{{range $k, $v := .NetworkSettings.Networks}}{{$v.IPAddress}} {{end}}',
+      containerId,
+    ]);
+    if (out.exitCode !== 0) return null;
+    const [running, status, ips] = out.stdout.trim().split('|');
+    const ipAddress = (ips ?? '').split(/\s+/).find((ip) => ip.length > 0);
+    return {
+      running: running === 'true',
+      status: status || 'unknown',
+      ipAddress: ipAddress ?? undefined,
+    };
+  }
+
   async sweep(): Promise<number> {
     const out = await this.runner(['ps', '-aq', '--filter', 'label=amass.manager=1']);
     const ids = out.stdout.split('\n').filter(Boolean);
@@ -112,16 +181,28 @@ export class DockerSandboxBackend implements SandboxBackend {
     for (const net of nets.stdout.split('\n').filter(Boolean)) {
       await this.runner(['network', 'rm', net]);
     }
+    const imgs = await this.runner(['images', '-q', '--filter', 'label=amass.manager=1']);
+    for (const img of imgs.stdout.split('\n').filter(Boolean)) {
+      await this.runner(['rmi', '-f', img]);
+    }
     return ids.length;
   }
 
   // -- internals -------------------------------------------------------------
 
   private async ensureNetwork(networkId: string, scanId: string): Promise<void> {
+    const existing = await this.runner(['network', 'inspect', networkId]);
+    if (existing.exitCode === 0) return; // idempotent: sibling sandboxes share the scan net
     await this.runner([
       'network', 'create', '--label', 'amass.manager=1', '--label', `amass.scan=${scanId}`,
       '--internal', networkId,
     ]);
+  }
+
+  private async readPublishedPort(name: string): Promise<number | undefined> {
+    const out = await this.runner(['port', name]);
+    const match = out.stdout.match(/127\.0\.0\.1:(\d+)/);
+    return match ? Number(match[1]) : undefined;
   }
 
   private async mustRun(args: string[], label: string): Promise<void> {
@@ -146,4 +227,9 @@ export class DockerSandboxBackend implements SandboxBackend {
     }
     return env;
   }
+}
+
+/** Docker's 'not found' exits are expected during idempotent cleanup. */
+function isNotFound(stderr: string): boolean {
+  return /No such (image|container|network)/.test(stderr);
 }

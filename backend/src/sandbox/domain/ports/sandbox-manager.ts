@@ -2,11 +2,28 @@ import type {
   ExecRequest,
   ExecResult,
   Sandbox,
+  SandboxContainerInfo,
   SandboxPatch,
   SandboxSpec,
   SandboxStatus,
   SandboxType,
 } from '../models/sandbox';
+
+export interface BuildImageRequest {
+  /** Build context (host directory). */
+  readonly contextPath: string;
+  /** Dockerfile path relative to the context (default: Dockerfile). */
+  readonly dockerfilePath?: string;
+  readonly imageName: string;
+  readonly timeoutMs?: number;
+  /** Labels tied to the owning scan so sweeping can reclaim strays. */
+  readonly labels?: Readonly<Record<string, string>>;
+}
+
+export interface BuildImageResult {
+  readonly imageId: string;
+  readonly imageName: string;
+}
 
 export interface CreateSandboxInput {
   readonly scanId: string;
@@ -18,6 +35,20 @@ export interface CreateSandboxInput {
   readonly egressAllowlist?: readonly string[];
   readonly memoryLimit?: string;
   readonly cpus?: number;
+  // --- Runtime-sandbox extensions (Phase 6) -----------------------------
+  /**
+   * Runtime sandboxes must not mount the host repository: the image carries
+   * the payload, so the host filesystem never enters the container.
+   * Unset (default) = mount (analysis sandboxes).
+   */
+  readonly mountRepository?: boolean;
+  /** Explicit container environment (service-provided; never host passthrough). */
+  readonly env?: Readonly<Record<string, string>>;
+  readonly pidsLimit?: number;
+  /** undefined = keepalive; [] = image CMD; non-empty = explicit argv. */
+  readonly appCommand?: readonly string[];
+  /** Bind a dynamic host port on 127.0.0.1 only (never 0.0.0.0). */
+  readonly hostPublishLocalhost?: { readonly containerPort: number };
 }
 
 export interface SandboxManagerOptions {
@@ -70,6 +101,14 @@ export interface SandboxManager {
 
   /** Reaps orphaned resources (crashed processes). Run at startup + intervals. */
   sweepOrphans(): Promise<number>;
+
+  // --- Runtime-sandbox primitives (Phase 6) ------------------------------
+  /** Build a sandbox image from a host context (Docker backend only). */
+  buildImage(request: BuildImageRequest): Promise<BuildImageResult>;
+  /** Remove a sandbox image; safe no-op when already gone. */
+  removeImage(imageIdOrName: string): Promise<void>;
+  /** Ops view of a sandbox container (running state + network IP). */
+  inspectRuntimeContainer(containerId: string): Promise<SandboxContainerInfo | null>;
 }
 
 /**
@@ -77,7 +116,13 @@ export interface SandboxManager {
  * NOT exposed to agents — only the SandboxManager holds this.
  */
 export interface SandboxBackend {
-  create(spec: SandboxSpec): Promise<{ containerId: string; networkId?: string; workspacePath?: string }>;
+  create(spec: SandboxSpec): Promise<{
+    containerId: string;
+    networkId?: string;
+    workspacePath?: string;
+    ipAddress?: string;
+    hostPort?: number;
+  }>;
   start(id: string): Promise<void>;
   isReady(id: string): Promise<boolean>;
   execute(id: string, request: ExecRequest): Promise<ExecResult>;
@@ -87,6 +132,12 @@ export interface SandboxBackend {
   logs(id: string): AsyncIterable<string>;
   destroy(id: string): Promise<void>;
   sweep(): Promise<number>;
+  /** Build a sandbox image. Docker-only; others throw SandboxRuntimeUnsupportedError. */
+  buildImage(request: BuildImageRequest): Promise<BuildImageResult>;
+  /** Remove a sandbox image; safe no-op when already gone. */
+  removeImage(imageIdOrName: string): Promise<void>;
+  /** Inspect a sandbox container (running status + network IP). */
+  inspect(containerId: string): Promise<SandboxContainerInfo | null>;
 }
 
 export interface SandboxStore {

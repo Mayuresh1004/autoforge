@@ -72,6 +72,20 @@ enum AgentExecutionStatus {
   TIMEOUT
 }
 
+/// Runtime Sandbox Lifecycle (Phase 6) — a RUNNING, containerized
+/// application provisioned for a scan, distinct from the analysis sandbox.
+enum RuntimeSandboxStatus {
+  CREATING
+  BUILDING
+  STARTING
+  HEALTH_CHECKING
+  READY
+  FAILED
+  DESTROYING
+  DESTROYED
+  EXPIRED
+}
+
 enum RepositoryProvider {
   GITHUB
   GITLAB
@@ -102,6 +116,7 @@ model Scan {
   scoutScans       ScoutScan[]
   attackPlans      AttackPlan[]
   exploits         Exploit[]
+  runtimeSandboxes RuntimeSandbox[]
 
   @@index([status])
   @@index([createdAt])
@@ -139,6 +154,44 @@ model ScanRepository {
 
   @@unique([scanId, repositoryId])
   @@map("scan_repositories")
+}
+
+/// Runtime application sandboxes provisioned for a scan (Phase 6).
+/// Never raw Docker handles in the API — the manager-owned ids here are the
+/// lifecycle's connection to its infrastructure; agents receive contexts.
+model RuntimeSandbox {
+  id             String                @id @default(cuid())
+  scanId         String
+  status         RuntimeSandboxStatus  @default(CREATING)
+  name           String?
+  /// Repository reference that was provisioned (URL xor path).
+  repositoryUrl  String?
+  repositoryPath String?
+  /// Manager-side sandbox id of the running app container (agents consume this).
+  sandboxId      String?
+  imageId        String?
+  imageName      String?
+  /// Scan-scoped internal network id.
+  networkId      String?
+  targetUrl      String?
+  internalHost   String?
+  internalPort   Int?
+  exposedPort    Int?
+  /// Ephemeral build workspace (removed with the sandbox).
+  workspacePath  String?
+  failureStage   String?
+  failureReason  String?
+  createdAt      DateTime              @default(now())
+  updatedAt      DateTime              @updatedAt
+  expiresAt      DateTime?
+  destroyedAt    DateTime?
+
+  scan Scan @relation(fields: [scanId], references: [id], onDelete: Cascade)
+
+  @@index([scanId])
+  @@index([status])
+  @@index([expiresAt])
+  @@map("runtime_sandboxes")
 }
 
 /// Detected security vulnerability

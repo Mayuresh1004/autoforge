@@ -50,7 +50,85 @@ Repository Analyzer → Static Scanner → Scout (Detect) → Planner (Prioritiz
 - **Planner** — ranks the discovered surface into an explained attack plan (what to test first); heuristics only, never executes anything.
 - **Sniper** — **controlled exploit verification inside an isolated runtime sandbox**: validates Planner-supplied candidate vulnerabilities (SQL Injection today) by running bounded, sandbox-gated tools (sqlmap) against the sandboxed app instance. It is **not a general-purpose penetration-testing engine** — it never generates new attacks, bypasses authentication, or touches anything outside the sandbox. Engineer / Critic / patch generation remain future work.
 
+### Runtime Sandbox Lifecycle (Phase 6)
+
+A first-class runtime-sandbox capability that turns a repository into a running,
+isolated app instance for the pipeline, extending the **Sandbox Manager** (the only
+Docker owner — agents never touch Docker directly):
+
+```text
+Repository → ephemeral workspace → deterministic image build (Mode 1 repo Dockerfile /
+Mode 2 python+node templates) → hardened container on an internal-only network →
+TCP+HTTP health-gated READY → agents consume a read-only RuntimeSandbox context →
+destroy/expire with full resource reclamation
+```
+
+- `POST /api/runtime-sandboxes` — provision (201 READY, 429 capacity, 422 structured failure)
+- `GET  /api/runtime-sandboxes/:id?scanId=` — read (optional ownership scope → 403)
+- `POST /api/runtime-sandboxes/:id/health` — re-verify liveness
+- `DELETE /api/runtime-sandboxes/:id` — idempotent destroy
+- Security: internal-only egress by default, host exposure only on `127.0.0.1` + dynamic
+  port, **no host mounts**, **no host env passthrough** (explicit allowlist), bounded
+  CPU/memory/PIDs/timeouts/concurrency (structured 429 capacity errors, never silent
+  queues, always bounded), failure → FAILED + logs + full cleanup.
+
+### Knowledge Ingestion + RAG (Phase 7A)
+
+Free-first security-knowledge foundation: an **EmbeddingProvider** independent from the
+LLM axis (EMBEDDING_PROVIDER=gemini, EMBEDDING_MODEL=text-embedding-004, 768 dims, no
+SDK — one fetch-based OpenAI-compatible substrate), a single Qdrant knowledge store
+(collection `amass_security_knowledge`; the only TS Qdrant client in the backend is a
+fetch-based `QdrantClient` — the Python service stays untouched), official **NVD v2.0 CVE
+ingestion** persisted into the existing `CVERecord` model, and **RAG retrieval** with
+whitelisted metadata filters.
+
+```text
+NVD API -> validate -> normalize -> upsert CVERecord -> KnowledgeDocument -> embed -> Qdrant
+-> RAG search (query -> embed -> ranked, deduplicated hits, content resolved from CVERecord)
+```
+
+- Idempotent + incremental: CVERecord upsert by unique cveId; stable point ids
+  (sha256-derived uuid) make re-ingestion a no-op; startTime window for incremental
+  fetches; NVD paging/retries bounded (KNOWLEDGE_NVD_MAX_PAGES, KNOWLEDGE_NVD_MAX_RETRIES).
+- API: `POST /api/knowledge/cve/ingest`, `GET /api/knowledge/cve/:cveId`,
+  `POST /api/rag/search` (filters are the whitelisted fields severity/cveId/
+  vulnerabilityType/sourceType/language/framework).
+- PromptRegistry: versioned, file-backed prompts under `backend/agents/prompts/v1/`
+  (engineer/system, patch-generation, rag-context, security-review) — reads files,
+  never invokes an LLM.
+- AgentScanContext (all-optional fields, no Docker internals) + sanitized AgentExecution
+  records reusing the existing Prisma model (secrets redacted before persistence; no
+  huge blobs; no secrets stored).
+- Security: retrieved knowledge is untrusted context — never executed, never able to
+  override system prompts; logs redacted; no new tables/migrations.
+- Live smoke tests opt-in: RAG_NVD_E2E=1, RAG_QDRANT_E2E=1, RAG_EMBEDDING_E2E=1.
+
+### LLM Provider Abstraction (free-first)
+
+A provider-agnostic `LLMProvider` seam (generate / healthCheck / getModelInfo) with **no
+paid provider required**: OpenRouter is the default — its `openrouter/free` alias routes
+to whichever free model is currently available, and the app never assumes which concrete
+model that is. Groq and Mistral are optional providers/fallbacks. Everything is selected
+by configuration (`LLM_PROVIDER` / `LLM_MODEL` / …) — the factory fails loudly on
+unsupported providers or missing keys instead of silently skipping.
+
+- Providers (preferred order): **Gemini → OpenRouter → Groq → Mistral** — Gemini is the
+  default. Thin adapters over ONE shared OpenAI-compatible substrate (plain `fetch`, no
+  SDKs; no provider types leak out). Gemini rides Google's official OpenAI-compatible
+  endpoint, so no Gemini SDK exists in the repo.
+- Fallback (`LLM_PRIMARY_PROVIDER=gemini`, `LLM_FALLBACK_PROVIDERS=openrouter,groq,mistral`): escalates ONLY on rate-limit / outage /
+  model-unavailable / timeout; auth, policy, malformed-request and unparseable-response
+  errors rethrow immediately. Bounded: max 5 retries with backoff, single pass over the
+  provider list — never an infinite loop.
+- Cost: `estimatedCost` is 0 unless the provider explicitly reports one — AMASS never
+  invents pricing. Every call records usage metadata (provider, model, tokens, cost,
+  duration, status) for later latency/token/success/quality comparisons.
+- Security: API keys are never logged; provider error bodies are redacted (providers can
+  echo request content back); log views of prompts are bounded, redacted summaries —
+  repository source code is never shipped wholesale to logs or providers.
+
 ---
+
 
 ## Tech Stack
 
@@ -284,6 +362,13 @@ Error responses:
 | GET | `/` | Service info |
 | GET | `/health` | Health check with dependency status |
 | GET | `/version` | Version and environment |
+| POST | `/api/runtime-sandboxes` | Provision a runtime sandbox (see Runtime Sandbox Lifecycle) |
+| GET | `/api/runtime-sandboxes/:id` | Read a runtime sandbox (optional `?scanId=` scope) |
+| POST | `/api/runtime-sandboxes/:id/health` | Re-verify sandbox liveness (TCP+HTTP) |
+| DELETE | `/api/runtime-sandboxes/:id` | Destroy idempotently (container + network + image + workspace) |
+| POST | `/api/knowledge/cve/ingest` | Ingest NVD CVE knowledge (normalize → CVERecord → embed → Qdrant) |
+| GET | `/api/knowledge/cve/:cveId` | Read a normalized CVE record |
+| POST | `/api/rag/search` | Ranked knowledge retrieval (whitelisted metadata filters) |
 
 ### Agents Service (FastAPI) — Port 8000
 
@@ -341,6 +426,8 @@ Copy `.env.example` to `.env` and configure:
 | `AGENTS_PORT` | 8000 | Agents service port |
 | `FRONTEND_PORT` | 5173 | Frontend dev server port |
 | `LOG_LEVEL` | info | Logging verbosity |
+| `SANDBOX_MAX_*` | see `.env.example` | Bounded runtime-sandbox limits (CPU/memory/PIDs/concurrency/timeouts/build/health) |
+| `LLM_PROVIDER` (+`LLM_PRIMARY_PROVIDER`) / `LLM_MODEL` | `gemini` / `openrouter/free` | Free-first LLM provider + model (no paid provider required; preferred order Gemini → OpenRouter → Groq → Mistral); `LLM_FALLBACK_PROVIDERS`, `LLM_TEMPERATURE`, `LLM_MAX_TOKENS`, `LLM_TIMEOUT_MS`, `LLM_MAX_RETRIES`, per-provider `GEMINI/OPENROUTER/GROQ/MISTRAL_API_KEY` + `…_MODEL` |
 | `OPENAI_API_KEY` | — | LLM API key (future) |
 | `JWT_SECRET` | — | Auth secret (future) |
 

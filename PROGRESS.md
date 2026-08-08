@@ -45,16 +45,24 @@ append new milestones below prior ones.
 | 13 | Scout Agent — recon (M13) | +40 (183 / 39) | ✅ Complete |
 | 14 | Attack Planner — reasoning (M14) | +21 (204 / 43) | ✅ Complete |
 | 15 | Sniper Agent — SQLi verification (M15) | +45 (251 / 50) | ✅ Complete |
+| 16 | Runtime Sandbox Lifecycle (Phase 6) | +39 (293 / 55) | ✅ Complete |
+| 17 | LLM Provider Abstraction (free-first) | +57 (354 / 62) | ✅ Complete |
+| 17a | Provider adjustment: Gemini primary (7A) | — (354 / 62) | ✅ Complete |
 
-- **Total tests:** 250 passing across 49 test files (1 skipped: the
-  Docker-gated E2E, run with `SNIPER_E2E=1`).
-  (analyzer 67 + static-scanner 38 + sandbox 38 + scout 40 + planner 21 + sniper 46).
+- **Total tests:** 346 passing across 59 test files in the default run (8
+  skipped: 4 Docker-gated E2E tests + 4 opt-in LLM live tests) — 354
+  collected. Gated on-demand: `SNIPER_E2E=1` (1), `RUNTIME_SANDBOX_E2E=1` (3),
+  and `LLM_GEMINI_E2E=1` / `LLM_OPENROUTER_E2E=1` / `LLM_GROQ_E2E=1` /
+  `LLM_MISTRAL_E2E=1` (1 each, need the matching API key). Docker-gated E2Es
+  re-verified green on a real Docker host; LLM live tests use mocked HTTP in
+  the default suite and never run without an explicit opt-in flag + key.
+  (analyzer 67 + static-scanner 38 + sandbox 76 + scout 40 + planner 21 + sniper 46 + llm 57).
 - `npx tsc --noEmit` → exit 0 · `npm run build` → clean · compiled CJS loads
   (with `DATABASE_URL`/env set — the app's env validation runs at import).
-- All implementation files are `< 300` lines (max = 295, sniper-run.ts) — the Sniper
-  module is split by responsibility: `sniper.service.ts` (facade) + `sniper-run.ts`
-  (per-target pipeline) + `attempt-loop.ts` (bounded retry loop) + `sniper-mappers.ts`
-  (persistence row mappers).
+- All implementation files are `< 300` lines (max = 295, sniper-run.ts) — the runtime
+  lifecycle is split by responsibility: `runtime-sandbox.service.ts` (orchestrator) +
+  `runtime-sandbox-provisioning.ts` (container build/probe) + `runtime-sandbox-state.ts`
+  (seed/patch/ownership) + `runtime-sandbox-utils.ts` (stage mapping/helpers).
 - New runtime deps (CJS-compatible, all verified): `@iarna/toml`, `yaml`,
   `fast-xml-parser`.
 
@@ -911,12 +919,101 @@ no new exploitation capabilities.
 
 ---
 
+## Milestone 16 ✅ — Runtime Sandbox Lifecycle (Phase 6)
+
+**Scope:** a first-class runtime-sandbox provisioning/lifecycle capability —
+the missing link that turns a repository scan into a running, isolated app
+instance the agent pipeline (Scout → Planner → Sniper) can consume. Built as
+an **extension of the existing Sandbox Manager** (still the ONLY Docker
+owner): Repository → ephemeral workspace → deterministic image build (Mode 1
+repo Dockerfile / Mode 2 python+node templates) → hardened container on an
+internal-only network → TCP+HTTP health-gated READY → agents consume a
+**read-only `RuntimeSandbox` context** → destroy/expire with full resource
+reclamation and structured errors.
+
+### HTTP API (`/api/runtime-sandboxes`)
+- `POST /` — provision (scanId + repository url|path + optional name, portOverride,
+  hostExpose). 201 → READY record; **429** capacity; **422** structured creation
+  failure (FAILED record carried in `details`), **422** unsupported runtime;
+  400 validation.
+- `GET /:id?scanId=` — read (optional ownership scope → 403).
+- `POST /:id/health` — re-verify TCP+HTTP liveness. Registered BEFORE `/:id`
+  so it can never be shadowed.
+- `DELETE /:id` — destroy (idempotent), reclaims container + network + image + workspace.
+
+### Module (`backend/src/sandbox/…`)
+- **domain** — `entities/runtime-sandbox.ts` (status machine, live/terminal sets),
+  `errors/runtime-sandbox.errors.ts` (`RuntimeSandboxCapacityError`,
+  `RuntimeSandboxCreationError` w/ stage, `UnsupportedRuntimeError`,
+  NotFound/Forbidden, `InvalidRuntimeRepositoryError`), ports: `runtime-sandbox-service`,
+  `-store`, `-registry`, `-scan-gateway`, `-workspace-provider`, `runtime-health-prober`,
+  value-objects `runtime-config.ts` (bounded `ResourceLimits`, defaults;
+  `HealthProbeResult`).
+- **application** — `runtime-sandbox.service.ts` (lifecycle orchestrator),
+  `runtime-sandbox-provisioning.ts` (hardened container request + bounded probe
+  retries), `runtime-sandbox-state.ts` (seed/patch/log/ownership), `runtime-sandbox-utils.ts`
+  (stage classification map), `runtime-config-resolver.ts` (Mode 1 / Mode 2 / UNSUPPORTED),
+  `runtime-env-builder.ts` (allowlist-only env), `runtime-cleanup.ts` (coordinator:
+  container → image → workspace, never throws).
+- **infrastructure** — prisma repository + scan gateway, in-memory registry
+  (slot at CREATING, released on terminal — no silent queues),
+  `FsRuntimeWorkspaceProvider` (transport not execution; skips `node_modules/.git/.venv`),
+  `TcpHttpHealthProber` + wired factory.
+- **presentation** — Zod DTO + controller (error mapping incl. CapacityError→429)
+  + routes.
+- **manager/backend extensions** — `buildImage`/`removeImage`/`inspectRuntimeContainer`
+  + `buildCreateCommand` hardening:`mountRepository:false` ⇒ **no host mount**,
+  explicit `--env` only, `--pids-limit`, `appCommand: []` ⇒ image CMD, `-p 127.0.0.1::port`
+  dynamic localhost publish (never `0.0.0.0`); idempotent `ensureNetwork` for
+  sibling sandboxes on the per-scan internal network.
+- **prisma** — `RuntimeSandbox` model + status enum + migration
+  `20260808143328_runtime_sandbox` (indexes scanId/status/expiresAt);
+  config gains `SANDBOX_*` vars (env + zod bounds, `runtimeSandboxConfig`).
+
+### Safety properties (tested)
+- Runtime app containers: internal-only egress by default; host exposure only via
+  `127.0.0.1` + dynamic port; no host mounts; no host env passthrough (explicit
+  allowlist only — documented decision); bounded CPU/memory/PIDs/timeouts/concurrency
+  (capacity errors are 429s, never silent queues); image build through the manager;
+  workspaces are ephemeral copies, repository payload is never executed on the host.
+- Any failure → FAILED record + failureStage + collected logs + full cleanup
+  (container rm + image rm + workspace rm); cleanup never throws; destroy/expire
+  idempotent.
+- Agents never create/destroy sandboxes; they receive read-only contexts (Sniper
+  already executes only through the manager).
+
+### Verified
+- **293 tests collected** (289 default-pass + 4 gated), the headless suite
+  stays green, tsc/build clean, all impl files < 300 lines.
+- **Docker + Postgres E2E** (`RUNTIME_SANDBOX_E2E=1`, host port 15432 so the
+  dev compose DB is never touched): vulnerable app repo → Mode 2 build →
+  READY with TCP+HTTP health → host-reachable `/search?q=1` → live Scout
+  discovers `/search` → Planner synthesizes the target → Sniper (sqlmap in a
+  sibling toolbox sandbox on the same internal net) → **CONFIRMED**, `Exploit`
++ `ExploitEvidence` in PG → destroy → zero containers/networks/images/workspaces
+left + record DESTROYED. Also: Mode 1 (repo Dockerfile) works; unsupported
+runtime → FAILED with no leftovers; `cleanupExpired` reclaims backdated
+sandboxes and frees capacity.
+
+### Fixed along the way
+- `docker run --rm --workdir /tmp` broke image-CMD apps (`python app.py` resolved
+  against /tmp and crashed → "marked for removal" on start): runtime containers now
+  omit `--workdir` so the image's own WORKDIR governs.
+- Mode-1 `-f Dockerfile` resolved against the process CWD (the backend dir!), not
+  the build context — the service now joins the dockerfile to the copied workspace.
+- Health probe 200ms race with app bind (container reports running before the port
+  listens): bounded re-probing (max 4 attempts × 750ms) added before READY.
+- E2E suite hygiene: pre-suite sweep + `try/finally` teardown + afterAll hard
+  sweep; ephemeral PG moved to host port 15432 so suites don't fight the dev DB.
+
+---
+
 ## Open / deferred items (optional follow-ups)
-- **NEXT INFRASTRUCTURE MILESTONE — runtime-sandbox provisioning**: a public
-  API to create a runtime sandbox (image-based, internal network, app + test
-  data + DB/Redis) for a scan, so the pipeline can reach `POST /api/sniper/run`
-  end-to-end from HTTP. Until then, Sniper keeps accepting an existing
-  `sandboxId` provisioned via the SandboxManager (as the E2E does).
+- **Runtime sandboxes through the HTTP API end-to-end**: M16 wires the
+  lifecycle + the Sniper consumption (E2E proves it); next is the UI/scan-flow
+  wiring that reaches `POST /api/sniper/run` with the provisioned sandboxId.
+- **Planner/Scout consumption of `targetUrl`** from the runtime-sandbox record
+  (today the E2E passes the URL explicitly).
 - **Live-container end-to-end verification** (Docker host): run `/api/scan/static`
   with `SANDBOX_RUNTIME=docker` and watch per-scan containers appear/destroy.
 - **Runtime sandboxes for post-static phases** (run the app, dynamic checks,
@@ -946,8 +1043,10 @@ no new exploitation capabilities.
 - **Mounting next agents** (Scout / Sniper / Engineer / Critic) —
   `RepositoryProfile` is the typed handoff for them; `ScanResult`/UVM is the
   typed handoff for Sniper.
-- Next **Scout agent** (Python/FastAPI/LangGraph) requires LLM keys + Qdrant
-  — deferred to a later phase, awaiting explicit direction.
+- **Scout/Critic/Engineer wiring to the LLM provider** — the free-first
+  provider module (M17) exists headless; agent prompts/consumption (incl.
+  prompt versioning and Qdrant RAG retrieval behind the same seam) awaits
+  explicit direction on the next agent milestone.
 
 ---
 
@@ -955,3 +1054,178 @@ no new exploitation capabilities.
 implemented: typed ops (no raw agent exec), no Docker socket in the API
 (backend seam holds it), layered on the existing SandboxRuntime port,
 reaper-based cleanup, per-type network policy, applyPatch→restart→validate.)**
+
+---
+
+## Milestone 17 ✅ — LLM Provider Abstraction (free-first)
+
+**Scope:** the provider-agnostic LLM seam the agents (Scout/Planner/Sniper and
+future Engineer/Critic) will use — free-first, meaning **zero paid providers
+are required**. Preferred provider order: **Gemini → OpenRouter → Groq →
+Mistral**; Gemini is the default primary (its model is configuration-only —
+nothing is baked in). OpenRouter's `openrouter/free` alias routes to whatever
+free model is available right now; the app never stores assumptions about
+which concrete model that is. At least one configured provider must have a
+key; nothing else is mandatory. OpenAI/Anthropic are never required.
+
+### Module (`backend/src/llm/`, clean architecture)
+- **domain** — `ports/llm-provider.ts` (`LLMProvider` interface:
+  generate / healthCheck / getModelInfo; `LLMRequest/Response/Usage`, `ModelInfo`
+  with `freeAlias`), `ports/llm-config.ts` (`LLMProviderConfig`), `errors/llm.errors.ts`
+  (stable-code taxonomy: CONFIG/AUTH/MALFORMED_REQUEST/POLICY/RATE_LIMIT/
+  MODEL_UNAVAILABLE/UNAVAILABLE/TIMEOUT/RESPONSE + `isFallbackEligible`).
+- **application** — `fallback-llm-provider.ts` (bounded coordinator) +
+  `llm-usage-recorder.ts` (in-memory ledger: provider/model/tokens/cost/duration/
+  status per call — the data for later latency/token/success comparisons).
+- **infrastructure** — `http/openai-compatible-client.ts` (shared
+  HTTP/retry/recording substrate, 235 lines) + `openai-compatible-parse.ts`
+  (pure wire parsing + error classification, 166 lines); thin adapters
+  `providers/gemini|openrouter|groq|mistral-provider.ts` (Gemini rides Google's
+  official OpenAI-compatible endpoint — no Gemini SDK); `factory/llm-provider-factory.ts`;
+  `redact/redactor.ts` (sk-/xr-/AIza-key, Bearer, base64, assignment redaction
+  + bounded prompt summaries — never log keys or full prompts).
+- **config** — `LLM_PROVIDER` (default `gemini`), optional
+  `LLM_PRIMARY_PROVIDER` (overrides `LLM_PROVIDER` when set), `LLM_MODEL`
+  (`openrouter/free` default), `LLM_TEMPERATURE`, `LLM_MAX_TOKENS`,
+  `LLM_TIMEOUT_MS`, `LLM_MAX_RETRIES` (0-5, bounded), `LLM_FALLBACK_PROVIDERS`
+  (comma list), per-provider `GEMINI|OPENROUTER|GROQ|MISTRAL_API_KEY` and
+  `…_MODEL` overrides — all zod-bounded, nothing hardcoded in app logic.
+  The `openrouter/free` alias is rejected (clear config error) on any
+  non-OpenRouter provider — a concrete model is required there.
+
+### Free-first & fallback policy (tested)
+- Factory fails with a **clear config error** on unsupported providers or a
+  missing key for any configured (primary or fallback) provider — no silent
+  skips, no paid-API assumption.
+- Fallback escalates ONLY on RATE_LIMIT / UNAVAILABLE / MODEL_UNAVAILABLE /
+  TIMEOUT. AUTH, CONFIG, MALFORMED_REQUEST (incl. context-too-long), POLICY
+  and RESPONSE (unparseable) errors rethrow immediately — they would repeat
+  elsewhere or mask application bugs.
+- Bounded at every level: max 5 internal retries (exponential backoff ≤ 4s);
+  fallback walks the configured list exactly once; no loops, no unbounded wait.
+- Cost: `estimatedCost` is 0 unless the provider reports a figure (OpenRouter
+  does for paid models); AMASS never invents pricing. Token counts fall back
+  to a char/4 estimate when omitted, cost stays 0.
+
+### Security (tested)
+- No provider SDKs — plain `fetch`; `Authorization: Bearer` never logged;
+  error details are redacted (providers can echo request content in errors);
+  `redactSensitive()` masks sk-/xr-keys, Bearer tokens, `key=value`/`key: value`
+  assignments and long base64; prompt logs are bounded role+head summaries
+  (repository source code never ships wholesale to logs — and callers are
+  responsible for sending only the necessary source to providers).
+
+### Verified
+- **57 LLM tests** (all HTTP mocked — the default suite requires no provider,
+  no keys, no network): success+usage/cost, JSON mode body shape,
+  auth/policy/malformed (no-fallback), rate-limit/model-unavailable/5xx/
+  network/timeout (retry+fallback), retry budgets, key hygiene, healthCheck,
+  factory selection (Gemini default + every provider) + config errors
+  (missing key, unsupported id, `openrouter/free` sentinel on other
+  providers), bounded fallback (stubs), ledger, redactor, zod env defaults
+  (`LLM_PROVIDER=gemini`, `LLM_PRIMARY_PROVIDER` precedence).
+- **Phase 7A provider adjustment (Gemini primary)**: provider id union +
+  preferred order `gemini → openrouter → groq → mistral`; `GeminiLLMProvider`
+  over the shared substrate (official OpenAI-compatible endpoint); new env
+  `LLM_PRIMARY_PROVIDER`, `GEMINI_API_KEY`, `GEMINI_MODEL`; Gemini key prefix
+  (AIza…) added to the redactor; e2e gate `LLM_GEMINI_E2E=1`. RAG / Qdrant /
+  CVE ingestion / embedding / prompt / AgentExecution / Engineer / patch /
+  LangGraph were NOT touched (per the 7A scope).
+- Opt-in live smoke tests `test/llm-provider-e2e.test.ts` gated on
+  `LLM_GEMINI_E2E=1`/`LLM_OPENROUTER_E2E=1`/`LLM_GROQ_E2E=1`/`LLM_MISTRAL_E2E=1`
+  (+ matching key; skipped by default).
+- `tsc`/`build` clean; defaults green: **346 passing / 8 skipped (354
+  collected)**; all implementation files < 300 lines.
+
+## Milestone 18 ✅ — Knowledge ingestion + RAG foundation (Phase 7A)
+
+**Scope:** the AI/RAG foundation — an independent embedding line, a single
+Qdrant-backed knowledge store, NVD CVE ingestion, RAG retrieval, a file-backed
+prompt registry, the agent-facing context model, and a sanitizing
+AgentExecution record service. Engineer/Critic/patch-generation/LangGraph
+remain **NOT built** (still unsanctioned); the LLM provider layer was **not
+touched** (it is already complete).
+
+### Module layout (clean architecture)
+- **`src/embedding/`** — `EmbeddingProvider` port (embedText/embedBatch/
+  dimensions), error taxonomy (CONFIG/AUTH/UNAVAILABLE/TIMEOUT/RESPONSE/
+  DIMENSION_MISMATCH), `OpenAICompatibleEmbeddingClient` fetch substrate
+  (no SDKs; bounded retries, dimension validation, redacted errors),
+  `GeminiEmbeddingProvider` (official OpenAI-compatible endpoint, configurable
+  model default `text-embedding-004`), `EmbeddingProviderFactory` (clear
+  `EmbeddingConfigError` on missing key/unsupported provider). This is a
+  SEPARATE config axis from the LLM providers.
+- **`src/knowledge/`** — domain: `KnowledgeDocument` (normalized model,
+  bounded content), `KnowledgeSource` port, `KnowledgeVectorStore` port
+  (no Qdrant/HTTP types leak), `CveRepository` port, stable-code errors.
+  Application: `cve-normalizer` (NVD v2.0 → CVERecord + KnowledgeDocument,
+  pure), `DefaultCveIngestionService` (exact flow: NVD → validate → normalize
+  → upsert CVERecord → embed → upsert Qdrant; idempotent by cveId + stable
+  point id; skips malformed with a counter; embedding failure fails loudly),
+  `RagService` (query validation, topK bounds, metadata filters, ranked
+  results, full content resolved from CVERecord, no provider types leak).
+  Infrastructure: `QdrantClient` (THE single TS Qdrant client — fetch-based,
+  collection CRUD + points; the Python `QdrantService` is untouched and is
+  the only other Qdrant contact in the repo), `QdrantKnowledgeStore`,
+  `NvdKnowledgeSource` (official NVD REST v2.0; bounded paging/maxItems/
+  retries on 429/5xx; lastMod window for incremental), `PrismaCveRepository`
+  (upserts the EXISTING `CVERecord` model — no new tables/migrations),
+  `knowledge-factory` (lazy wiring), plus DTO/controller/routes.
+  Centralized collection config: single collection `amass_security_knowledge`;
+  payload carries only small metadata (sourceType/cveId/vulnerabilityType/
+  severity/language/framework/sourceUrl).
+- **`src/prompts/`** — `PromptRegistry` port + `FileSystemPromptRegistry`
+  ({root}/{version}/{scope}/{name}.md, cached, typed errors). Templates live
+  in `backend/agents/prompts/v1/engineer/`:
+  `system.md`, `patch-generation.md`, `rag-context.md`, `security-review.md`.
+  The registry NEVER invokes an LLM.
+- **`src/agent/`** — `AgentScanContext` (agent-facing, all-optional except
+  scanId; reuses `RuntimeSandboxContext` + `RepositoryProfile` + `AttackPlan`
+  types; no Docker internals) and `DefaultAgentExecutionService` + Prisma repo
+  reusing the EXISTING `AgentExecution` model (no schema change; sanitizes
+  metadata BEFORE persistence: sensitive keys → `[REDACTED]`, values
+  truncated, no huge blobs, no raw source shipping).
+
+### HTTP API
+- `POST /api/knowledge/cve/ingest` → 201 summary {fetched, inserted, updated,
+  malformed, embedded, hasMore} (validation 400, source error 502/503).
+- `GET /api/knowledge/cve/:cveId` → CVERecord or 404.
+- `POST /api/rag/search` → ranked documents (filters: severity / cveId /
+  vulnerabilityType / sourceType / language / framework — whitelisted only).
+
+### Config (zod-bounded, clear errors)
+`EMBEDDING_PROVIDER`/`_MODEL`/`_DIMENSIONS` (64–8192, default 768),
+`KNOWLEDGE_QDRANT_URL/API_KEY/COLLECTION/TIMEOUT_MS`,
+`KNOWLEDGE_NVD_BASE_URL/PAGE_SIZE/MAX_PAGES/TIMEOUT_MS/MAX_RETRIES/
+RETRY_DELAY_MS`, `RAG_TOP_K_MAX`/`RAG_DEFAULT_TOP_K`, `PROMPTS_ROOT`.
+
+### Security
+- Knowledge/repo/LLM outputs are UNTRUSTED DATA: never executed; retrieved
+  docs carry content+metadata only and can never override system instructions
+  (the rag-context template makes this explicit); logs redacted; keys never
+  logged; no secrets stored in AgentExecution.
+
+### Verified
+- **~70 new tests** (mocked HTTP / in-memory fakes; default suite needs no
+  keys, no Docker, no network): embedding factory+substrate (auth/timeout/
+  network/dims/redaction), qdrant client (create-idempotent/upsert/search/
+  filter/delete/errors), normalizer (severity ladder, CWE dedup, non-http
+  refs, malformed → typed error), NVD source (paging/maxItems/malformed
+  count/429 retry/5xx exhaustion/4xx fast-fail), ingestion service
+  (pipeline, idempotent re-run, malformed skip, loud embed failure),
+  RAG (validation, deterministic retrieval-quality fixture — “SQL injection
+  in Python Flask” ranks CVE-2024-1280 first among lookalike/unrelated docs;
+  score ordering, filters, dedup, no type leak), prompt registry (versioned
+  lookup, NotFound/Version errors, caching, fs-only), AgentScanContext
+  (minimal/optional fields, scanId guard), AgentExecution (redaction,
+  truncation), controller (400/201/200/404 + response shape), acceptance
+  test (fixture pipeline + real prompts + context) — and opt-in live gates
+  `RAG_NVD_E2E=1`, `RAG_QDRANT_E2E=1`, `RAG_EMBEDDING_E2E=1`.
+- `tsc`/`build` clean; default suite: **429 passing / 8 skipped (437
+  collected)**, 72 passed files; all implementation files < 300 lines (max
+  204).
+
+### Not built (per scope)
+Engineer / Critic / patch generation / LangGraph orchestration /
+autonomous command execution / new vulnerability classes / Kubernetes /
+Redis. LLM module unchanged.
