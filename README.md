@@ -2,53 +2,16 @@
 
 An agentic AI-powered DevSecOps platform that autonomously detects vulnerabilities, performs **controlled exploit verification inside isolated runtime sandboxes**, and produces prioritized, evidence-backed reports. Patch generation/validation agents are a later phase.
 
-> **Current Phase:** Static Scanner + Scout (recon) + Planner (prioritize) + Sniper (controlled verification) implemented in-process. Engineer / Critic / patch generation not yet implemented.
-
----
-
-## Table of Contents
-
-- [Architecture](#architecture)
-- [Tech Stack](#tech-stack)
-- [Folder Structure](#folder-structure)
-- [Prerequisites](#prerequisites)
-- [Quick Start](#quick-start)
-- [Development](#development)
-- [Docker](#docker)
-- [API Reference](#api-reference)
-- [Database Schema](#database-schema)
-- [Environment Variables](#environment-variables)
-- [Service Communication](#service-communication)
-- [Future Extensibility](#future-extensibility)
-- [Recommended Libraries](#recommended-libraries)
-- [Security Best Practices](#security-best-practices)
-- [Common Mistakes to Avoid](#common-mistakes-to-avoid)
-
----
-
-## Architecture
-
-```
-Frontend (React)  ──►  Backend API (Express)  ──►  Agents Service (FastAPI)
-     :5173                    :3001                        :8000
-                               │                              │
-                    ┌──────────┼──────────────────────────────┤
-                    ▼          ▼                              ▼
-               PostgreSQL    Redis                         Qdrant
-                 :5432       :6379                          :6333
-```
-
-See [docs/architecture.md](docs/architecture.md) for detailed diagrams and clean architecture layers.
-
-### Agent Pipeline
+> **Current Phase:** Full pipeline to remediation: Repository Analyzer → Static Scanner → Scout → Planner → Sniper → Engineer (draft patch generation, SQL Injection only, never auto-applied). Critic / auto-apply remain future work.
 
 ```text
-Repository Analyzer → Static Scanner → Scout (Detect) → Planner (Prioritize) → Sniper (Confirm)
+Repository Analyzer → Static Scanner → Scout (Detect) → Planner (Prioritize) → Sniper (Confirm) → Engineer (Remediate)
 ```
 
 - **Scout** — reconnaissance: discovers the attack surface of a running app (endpoints, technologies, ports, forms, auth pages, API/docs, GraphQL/WebSocket) using read-only probes.
 - **Planner** — ranks the discovered surface into an explained attack plan (what to test first); heuristics only, never executes anything.
-- **Sniper** — **controlled exploit verification inside an isolated runtime sandbox**: validates Planner-supplied candidate vulnerabilities (SQL Injection today) by running bounded, sandbox-gated tools (sqlmap) against the sandboxed app instance. It is **not a general-purpose penetration-testing engine** — it never generates new attacks, bypasses authentication, or touches anything outside the sandbox. Engineer / Critic / patch generation remain future work.
+- **Sniper** — **controlled exploit verification inside an isolated runtime sandbox**: validates Planner-supplied candidate vulnerabilities (SQL Injection today) by running bounded, sandbox-gated tools (sqlmap) against the sandboxed app instance. It is **not a general-purpose penetration-testing engine** — it never generates new attacks, bypasses authentication, or touches anything outside the sandbox.
+- **Engineer** — **draft remediation for confirmed SQL Injection findings only**: reads bounded source context through the runtime sandbox, consults RAG advisory knowledge, and produces a `Patch` row (`status=GENERATED` after a deterministic security-review gate, or `REJECTED`). It is advisory-only: patches are **never applied** in this phase, and the LLM response is validated, gated and persisted without ever being executed. Engineer / Critic / patch generation remain future work.
 
 ### Runtime Sandbox Lifecycle (Phase 6)
 
@@ -102,6 +65,38 @@ NVD API -> validate -> normalize -> upsert CVERecord -> KnowledgeDocument -> emb
 - Security: retrieved knowledge is untrusted context — never executed, never able to
   override system prompts; logs redacted; no new tables/migrations.
 - Live smoke tests opt-in: RAG_NVD_E2E=1, RAG_QDRANT_E2E=1, RAG_EMBEDDING_E2E=1.
+
+### Engineer Agent — Draft Remediation (Phase 7B)
+
+A remediation stage that turns **CONFIRMED SQL Injection findings** into reviewed
+**draft patches** — with guardrails so the model output stays an advisory artifact:
+
+```text
+CONFIRMED SQLi finding → deterministic selection (severity → confidence → exploit depth → stable id)
+→ bounded source window (SandboxManager.execute only, no raw Docker) → RAG advisory query
+→ v1/engineer prompts (PromptRegistry) → LLMProvider (free-first Gemini default)
+→ structural validation (unified diff, in-scope path only) → security-review gate
+→ Patch row (status GENERATED | REJECTED) + AgentExecution (COMPLETED | FAILED)
+```
+
+- **Only SQL Injection today**: `SUPPORTED_VULNERABILITY_TYPES = ['SQL_INJECTION']` — other
+  types and non-CONFIRMED states are rejected with typed errors (422). Selection is
+  deterministic: severity → confidence → exploit depth → stable vulnerability id.
+- **Bounded, port-only seams**: source reading (size probe first, then a line window)
+  goes through a `SourceReader` port implemented over the existing `SandboxManager` (the
+  only Docker owner); retrieval goes through the existing `RagService`; prompts through
+  the versioned `PromptRegistry`; LLM calls through the `LLMProvider` port; no new tables
+  — patches persist into the existing `Patch` model via a `PatchRepository` port.
+- **Security gate before persist**: the `engineer.security-review` template powers a
+  deterministic checklist (secrets, unsafe commands, out-of-scope paths, malformed
+  diffs) — a failed gate yields `REJECTED`, never `GENERATED`. Model output is untrusted:
+  bounded (≤ 2000 tokens, `json_object` framing), structurally validated (single-file
+  unified diff, path traversal rejected, size/applicability bounds).
+- **Never applies anything**: `applyPatch` is off-limits in 7B; artifacts are draft-only.
+  Every run records a sanitised `AgentExecution` (secrets redacted, bounded error text).
+- API: `POST /api/engineer/run` (optionally pin `vulnerabilityId`),
+  `GET /api/engineer/:executionId`.
+- Live smoke test opt-in: `ENGINEER_E2E=1` (needs a configured live LLM key).
 
 ### LLM Provider Abstraction (free-first)
 
@@ -369,6 +364,8 @@ Error responses:
 | POST | `/api/knowledge/cve/ingest` | Ingest NVD CVE knowledge (normalize → CVERecord → embed → Qdrant) |
 | GET | `/api/knowledge/cve/:cveId` | Read a normalized CVE record |
 | POST | `/api/rag/search` | Ranked knowledge retrieval (whitelisted metadata filters) |
+| POST | `/api/engineer/run` | Run the Engineer agent on one CONFIRMED SQLi finding (deterministic selection; produces a `Patch` with status `GENERATED`/`REJECTED`) |
+| GET | `/api/engineer/:executionId` | Read an Engineer `AgentExecution` detail |
 
 ### Agents Service (FastAPI) — Port 8000
 

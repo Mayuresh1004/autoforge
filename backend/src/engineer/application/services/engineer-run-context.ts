@@ -1,0 +1,137 @@
+/**
+ * Engineer run preparation — deterministic context assembly (application
+ * layer). Moves selection / sandbox resolution / bounded source reading /
+ * advisory RAG out of the orchestrator so each concern stays small and
+ * individually testable. Everything flows through existing ports; no
+ * Docker, no Qdrant, no provider SDKs here.
+ */
+
+import type { RuntimeSandboxContext } from '../../../sandbox/domain/entities/runtime-sandbox';
+import { toRuntimeContext } from '../../../sandbox/domain/entities/runtime-sandbox';
+import type { RagResultDocument, RagService } from '../../../knowledge/application/services/rag.service';
+import type { ConfirmedVulnerabilityFinding } from '../../domain/ports/confirmed-finding-repository';
+import type { SourceReadResult } from '../../domain/ports/source-reader';
+import {
+  ConfirmedFindingNotFoundError,
+  EngineerSourceError,
+  UnsupportedVulnerabilityError,
+} from '../../domain/errors/engineer.errors';
+import { isSupportedConfirmedFinding, selectConfirmedSqlInjection } from './engineer-selection';
+import { resolveWindow } from './source-window';
+import { buildRagQuery, ragDocumentsToAdvisory } from './rag-query-builder';
+import type { EngineerRunInput, EngineerDependencies } from './engineer.service';
+
+export interface PreparedEngineerRun {
+  readonly finding: ConfirmedVulnerabilityFinding;
+  readonly context: RuntimeSandboxContext;
+  readonly source: SourceReadResult;
+  readonly rag: {
+    readonly docs: readonly RagResultDocument[];
+    readonly advisory: string;
+  };
+}
+
+/** Resolve the single finding this run remediates (deterministic). */
+export async function resolveFinding(
+  deps: Pick<EngineerDependencies, 'findings'>,
+  input: EngineerRunInput,
+): Promise<ConfirmedVulnerabilityFinding> {
+  if (input.vulnerabilityId) {
+    const found = await deps.findings.findByVulnerabilityId(input.scanId, input.vulnerabilityId);
+    if (!found) {
+      throw new ConfirmedFindingNotFoundError(`scan ${input.scanId} vulnerability ${input.vulnerabilityId}`);
+    }
+    if (!isSupportedConfirmedFinding(found)) {
+      throw new UnsupportedVulnerabilityError(`(status=${found.status} type=${found.type})`);
+    }
+    return found;
+  }
+  const all = await deps.findings.listConfirmed(input.scanId);
+  const selected = selectConfirmedSqlInjection(all);
+  if (!selected) {
+    throw new ConfirmedFindingNotFoundError(`scan ${input.scanId} has no CONFIRMED SQL_INJECTION finding`);
+  }
+  return selected;
+}
+
+/** Resolve the READY runtime sandbox context for the scan (else null). */
+export async function resolveSandboxContext(
+  deps: Pick<EngineerDependencies, 'runtimeStore'>,
+  scanId: string,
+): Promise<RuntimeSandboxContext | null> {
+  const sandboxes = await deps.runtimeStore.listByScan(scanId);
+  const ready = sandboxes
+    .filter((s) => s.status === 'READY' && s.sandboxId !== null)
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  const top = ready[0];
+  if (!top) return null;
+  try {
+    return toRuntimeContext(top);
+  } catch {
+    return null;
+  }
+}
+
+/** Read the bounded source window for the finding via the source-reader port. */
+export async function readSource(
+  deps: Pick<EngineerDependencies, 'sourceReader' | 'maxSourceBytes' | 'maxContextLines' | 'defaultContextWindow'>,
+  context: RuntimeSandboxContext,
+  finding: ConfirmedVulnerabilityFinding,
+): Promise<SourceReadResult> {
+  if (!finding.filePath) {
+    throw new EngineerSourceError('SOURCE_UNAVAILABLE', 'finding has no source path — cannot gather context');
+  }
+  const window = resolveWindow(finding.lineNumber, {
+    window: deps.defaultContextWindow,
+    maxLines: deps.maxContextLines,
+  });
+  return deps.sourceReader.read(context, {
+    path: finding.filePath,
+    startLine: window.startLine,
+    endLine: window.endLine,
+    maxBytes: deps.maxSourceBytes,
+  });
+}
+
+/** Retrieve RAG advisory knowledge; an outage is never fatal. */
+export async function retrieveRag(
+  deps: Pick<EngineerDependencies, 'rag' | 'ragTopK'>,
+  finding: ConfirmedVulnerabilityFinding,
+): Promise<{ docs: readonly RagResultDocument[]; advisory: string }> {
+  try {
+    const query = buildRagQuery(finding, { topK: deps.ragTopK ?? 4 });
+    const result = await deps.rag.search(query);
+    return { docs: result.documents, advisory: ragDocumentsToAdvisory(result.documents) };
+  } catch {
+    // RAG is advisory-only: a retrieval outage must never block remediation.
+    return { docs: [], advisory: '' };
+  }
+}
+
+/** Assemble every input a single run needs, or throw the typed error. */
+export async function prepareEngineerRun(
+  deps: EngineerDependencies,
+  input: EngineerRunInput,
+): Promise<PreparedEngineerRun> {
+  const finding = await resolveFinding(deps, input);
+  const context = await resolveSandboxContext(deps, finding.scanId);
+  if (!context) {
+    throw new EngineerSourceError('SOURCE_UNAVAILABLE', 'no READY runtime sandbox for this scan');
+  }
+  const source = await readSource(deps, context, finding);
+  const rag = await retrieveRag(deps, finding);
+  return { finding, context, source, rag };
+}
+
+/** Parse a JSON object from model text (tolerating code fences). */
+export function tryParseJsonObject(text: string): unknown {
+  const trimmed = text.trim();
+  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/);
+  const candidate = fenced ? fenced[1] : trimmed;
+  if (candidate.startsWith('{') === false && candidate.startsWith('[') === false) return null;
+  try {
+    return JSON.parse(candidate);
+  } catch {
+    return null;
+  }
+}

@@ -4,13 +4,14 @@
  */
 
 import type {
+  AgentExecutionDetail,
   AgentExecutionInput,
   AgentExecutionRecord,
   AgentExecutionRepository,
 } from '../../src/agent/application/services/agent-execution.service';
 
 export class MemoryAgentExecutionRepository implements AgentExecutionRepository {
-  private readonly records: AgentExecutionRecord[] = [];
+  private readonly records: Array<AgentExecutionRecord & { persisted?: AgentExecutionDetail }> = [];
 
   async save(input: AgentExecutionInput): Promise<AgentExecutionRecord> {
     const record: AgentExecutionRecord = {
@@ -20,14 +21,23 @@ export class MemoryAgentExecutionRepository implements AgentExecutionRepository 
       status: input.status,
       createdAt: new Date().toISOString(),
     };
-    // Keep the sanitized payload alongside for assertions.
-    (record as unknown as Record<string, unknown>)['__persisted'] = {
+    const detail: AgentExecutionDetail = {
+      ...record,
       inputMetadata: input.inputMetadata,
       outputMetadata: input.outputMetadata,
-      errorMessage: input.errorMessage,
+      errorMessage: input.errorMessage ?? null,
+      startedAt: input.startedAt ?? null,
+      completedAt: input.completedAt ?? null,
     };
-    this.records.push(record);
+    (record as unknown as Record<string, unknown>)['__persisted'] = detail;
+    this.records.push(record as AgentExecutionRecord & { __persisted: AgentExecutionDetail });
     return record;
+  }
+
+  async find(executionId: string): Promise<AgentExecutionDetail | null> {
+    const found = this.records.find((r) => r.id === executionId);
+    if (!found) return null;
+    return (found as unknown as { __persisted?: AgentExecutionDetail }).__persisted ?? null;
   }
 
   all(): Array<AgentExecutionRecord & { __persisted?: unknown }> {

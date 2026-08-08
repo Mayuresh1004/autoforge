@@ -1,7 +1,8 @@
 /**
  * LLMProviderFactory — builds the configured provider from configuration.
  *
- * - Provider selected via `LLM_PROVIDER` (default openrouter).
+ * - Provider selected via `LLM_PROVIDER` (default gemini; overridden by
+ *   `LLM_PRIMARY_PROVIDER` when set).
  * - Unsupported configured provider → clear LLMConfigError.
  * - Missing API key for ANY configured (primary or fallback) provider →
  *   clear LLMConfigError at construction time: misconfiguration surfaces
@@ -102,6 +103,3 @@ function buildProvider(
   }
 }
 
-function ENV_KEY_BY_PROVIDER_FOR(id: LLMProviderId): string {
-  return ENV_KEY_BY_PROVIDER[id];
-}

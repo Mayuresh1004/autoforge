@@ -29,6 +29,14 @@ const envSchema = z.object({
   QDRANT_API_KEY: z.string().optional(),
   QDRANT_COLLECTION_NAME: z.string().default('amass_embeddings'),
 
+  // Engineer agent (Phase 7B) bounds
+  ENGINEER_MAX_SOURCE_BYTES: z.coerce.number().int().positive().default(64_000),
+  ENGINEER_MAX_CONTEXT_LINES: z.coerce.number().int().positive().default(150),
+  ENGINEER_DEFAULT_CONTEXT_WINDOW: z.coerce.number().int().positive().default(12),
+  ENGINEER_MAX_DIFF_CHARS: z.coerce.number().int().positive().default(16_000),
+  ENGINEER_MAX_PATCH_FILES: z.coerce.number().int().min(1).max(10).default(3),
+  ENGINEER_RAG_TOP_K: z.coerce.number().int().min(1).max(50).default(4),
+
   AGENTS_URL: z.string().default('http://localhost:8000'),
 
   ANALYZER_WORKSPACE_DIR: z.string().optional(),
@@ -379,6 +387,19 @@ export const ragConfig = {
 
 export const promptsConfig = {
   root: config.PROMPTS_ROOT,
+};
+
+export const engineerConfig = {
+  maxSourceBytes: config.ENGINEER_MAX_SOURCE_BYTES,
+  maxContextLines: config.ENGINEER_MAX_CONTEXT_LINES,
+  defaultContextWindow: config.ENGINEER_DEFAULT_CONTEXT_WINDOW,
+  bounds: {
+    maxDiffChars: config.ENGINEER_MAX_DIFF_CHARS,
+    maxPatchFiles: config.ENGINEER_MAX_PATCH_FILES,
+    maxExplanationChars: 1_200,
+    maxAssumptions: 8,
+  },
+  ragTopK: config.ENGINEER_RAG_TOP_K,
 };
 
 export const staticScannerConfig: StaticScannerConfig = {

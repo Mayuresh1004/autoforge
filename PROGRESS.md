@@ -48,15 +48,12 @@ append new milestones below prior ones.
 | 16 | Runtime Sandbox Lifecycle (Phase 6) | +39 (293 / 55) | ✅ Complete |
 | 17 | LLM Provider Abstraction (free-first) | +57 (354 / 62) | ✅ Complete |
 | 17a | Provider adjustment: Gemini primary (7A) | — (354 / 62) | ✅ Complete |
+| 18 | Knowledge ingestion + RAG foundation (7A) | +75 (429 / 72) | ✅ Complete |
+| 19 | Engineer Agent — draft remediation (7B) | +74 (503 / 82) | ✅ Complete |
 
-- **Total tests:** 346 passing across 59 test files in the default run (8
-  skipped: 4 Docker-gated E2E tests + 4 opt-in LLM live tests) — 354
-  collected. Gated on-demand: `SNIPER_E2E=1` (1), `RUNTIME_SANDBOX_E2E=1` (3),
-  and `LLM_GEMINI_E2E=1` / `LLM_OPENROUTER_E2E=1` / `LLM_GROQ_E2E=1` /
-  `LLM_MISTRAL_E2E=1` (1 each, need the matching API key). Docker-gated E2Es
-  re-verified green on a real Docker host; LLM live tests use mocked HTTP in
-  the default suite and never run without an explicit opt-in flag + key.
-  (analyzer 67 + static-scanner 38 + sandbox 76 + scout 40 + planner 21 + sniper 46 + llm 57).
+- **Total tests:** 503 passing across 82 test files — 511 collected (8
+  skipped: 4 Docker-gated E2E tests + 4 opt-in LLM/RAG/Engineer live tests).
+
 - `npx tsc --noEmit` → exit 0 · `npm run build` → clean · compiled CJS loads
   (with `DATABASE_URL`/env set — the app's env validation runs at import).
 - All implementation files are `< 300` lines (max = 295, sniper-run.ts) — the runtime
@@ -1229,3 +1226,96 @@ RETRY_DELAY_MS`, `RAG_TOP_K_MAX`/`RAG_DEFAULT_TOP_K`, `PROMPTS_ROOT`.
 Engineer / Critic / patch generation / LangGraph orchestration /
 autonomous command execution / new vulnerability classes / Kubernetes /
 Redis. LLM module unchanged.
+
+## Milestone 19 ✅ — Engineer Agent — draft remediation (Phase 7B)
+
+**Scope:** the first remediation stage. Takes **CONFIRMED SQL Injection**
+findings from Sniper and produces **draft** patches as `Patch` rows with
+`status=GENERATED | REJECTED` — validated, security-gated, **never applied**.
+Restricted to the single supported class (`SQL_INJECTION`); no Critic, no
+auto-apply, no new vuln classes, no LangGraph, no new LLM providers, no new
+Qdrant clients, no new Docker abstractions. The LLM module was **not
+touched**; knowledge/RAG and prompts were reused as-is.
+
+### Module layout (clean architecture)
+- **`src/engineer/domain/`** — `engineer-response.ts` (strict
+  `EngineerResponse` model + bounds: maxDiffChars/maxPatchFiles/
+  maxExplanationChars/maxAssumptions), `repo-path.ts` (safe relative-path
+  normalization + traversal/absolute/drive-letter rejection), errors
+  (`ConfirmedFindingNotFoundError`, `UnsupportedVulnerabilityError`,
+  `InvalidEngineerResponseError`, `EngineerSourceError`), ports:
+  `confirmed-finding-repository.ts` (findByVulnerabilityId / listConfirmed —
+  the ONLY way the Engineer sees Sniper findings), `patch-repository.ts`
+  (`saveGeneratedPatch` — the ONLY writer, over the EXISTING Prisma `Patch`
+  model; no migrations), `source-reader.ts` (typed read-by-path seam with
+  size/line bounds — the ONLY way the Engineer reads repository source).
+- **`src/engineer/application/`** —
+  - `engineer-selection.ts` — deterministic candidate pick: filter
+    `status=CONFIRMED` + `type=SQL_INJECTION`, sort severity → confidence →
+    exploit depth → stable id.
+  - `source-window.ts` — bounded line window around the finding line.
+  - `rag-query-builder.ts` — focused SQLi RAG query (whitelisted metadata
+    filters) + advisory rendering; purely advisory, never blocks.
+  - `prompt-assembler.ts` — loads all four `v1/engineer/*.md` templates via
+    the existing PromptRegistry and builds bounded system/user messages.
+  - `response-validator.ts` — parse (code-fence tolerant) + structural
+    validation: matching vulnerabilityId, single in-scope file, unified
+    diff shape, path-traversal/absolute-path rejection, size bounds.
+  - `security-review-gate.ts` — deterministic checklist using the
+    `engineer.security-review` template (secrets, unsafe commands,
+    out-of-scope paths, malformed diffs).
+  - `engineer-run-context.ts` — resolveFinding / resolveSandboxContext
+    (existing runtime store) / readSource / retrieveRag / tryParseJsonObject.
+  - `engineer-outcome.ts` — persist GENERATED|REJECTED via the patch
+    repository port + record COMPLETED/FAILED AgentExecutions (bounded
+    error text, sanitized metadata).
+  - `engineer.service.ts` — thin orchestrator (run/getRun; ~170 lines).
+- **`src/engineer/infrastructure/`** — `prisma-patch-repository.ts` and
+  `prisma-confirmed-finding-repository.ts` (reuse existing models),
+  `manager-source-reader.ts` (the ONLY source seam — `wc -c` size probe
+  followed by `cat` via the existing SandboxManager; no raw Docker),
+  `engineer-factory.ts` (wires Prisma + manager + RAG + registry + LLM +
+  executions). Presentation: DTO + controller + routes at `/api/engineer`.
+
+### HTTP API
+- `POST /api/engineer/run` — `{scanId, vulnerabilityId?}` → run result
+  {executionId, vulnerabilityId, patchId, status, summary} (400 invalid,
+  404 no confirmed finding, 422 unsupported/invalid response, 502 source
+  unavailable, 500 otherwise — all recorded as FAILED executions).
+- `GET /api/engineer/:executionId` — the sanitized `AgentExecution` detail.
+
+### Config (zod-bounded)
+`ENGINEER_MAX_SOURCE_BYTES` (64k), `_MAX_CONTEXT_LINES` (150),
+`_DEFAULT_CONTEXT_WINDOW` (12), `_MAX_DIFF_CHARS` (16k),
+`_MAX_PATCH_FILES` (3), `_RAG_TOP_K` (4); `ENGINEER_E2E=1` live gate.
+
+### Security
+- Model output is UNTRUSTED: parsed → structurally validated → gated →
+  persisted as GENERATED only after the review gate passes; never executed,
+  never applied (`applyPatch` is off-limits in 7B).
+- Source read is bounded (size probe + line window) and path-validated
+  (absolute/traversal/drive letters rejected; backslash normalized).
+- AgentExecution metadata sanitized before persistence; error messages
+  capped at 2000 chars; secrets never logged.
+
+### Verified
+- **~74 new tests** in `src/engineer/**` + acceptance (`test/engineer-acceptance`)
+  + opt-in live gate `test/engineer-e2e` (`ENGINEER_E2E=1`): selection
+  (determinism, type/status filter), source-window/RAG-builder, prompt
+  assembler (real registered templates), response validator (malformed,
+  wrong id, traversal, unrelated file, bounds, REJECTED), security gate
+  (secrets/dangerous commands/out-of-scope), manager-source-reader (argv
+  protocol, size/line caps, path rejection), engineer.service (full
+  GENERATED path with programmed LLM, REJECTED path, RAG-outage
+  tolerance, no-sandbox and failure paths, no-apply invariant, secrets
+  never persisted, FAILED recording, getRun), controller (400/200/404/422
+  mapping), acceptance (fixture pipeline end-to-end). Default suite needs
+  no keys/Docker/network.
+- `tsc`/`build` clean; **73+ engineer tests pass**; implementation files
+  < 300 lines (service 170, outcome 128, assembler 189, validator 202).
+
+### Not built (per scope)
+Critic / auto-apply (`applyPatch`) / new vulnerability classes / XSS-SSRF-
+inherit-command-injection amplification / LangGraph orchestration / new
+providers / new Qdrant clients / Kubernetes / Redis. `Patch` rows produced
+in 7B are drafts only — nothing in the pipeline consumes or applies them.

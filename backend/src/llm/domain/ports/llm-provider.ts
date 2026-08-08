@@ -5,11 +5,13 @@
  * endpoint shapes and error codes never leak past each provider adapter;
  * no `any` types cross this boundary.
  *
- * Free-first policy: OpenRouter is the default provider (its `openrouter/free`
- * alias routes to whatever free model is currently available — the app does
- * NOT track which concrete model is served). Groq and Mistral are optional
- * alternates/fallbacks. At least one provider must be configured; no single
- * provider (and no paid provider at all) is a hard dependency.
+ * Free-first policy: Gemini is the preferred default provider (model is
+ * configuration-only — no concrete model is hardcoded). OpenRouter's
+ * `openrouter/free` alias routes to whatever free model is currently
+ * available — the app does NOT track which concrete model is served. Groq
+ * and Mistral are optional alternates/fallbacks. At least one provider must
+ * be configured; no single provider (and no paid provider at all) is a hard
+ * dependency.
  */
 
 /** Built-in provider ids. Extend here to add a provider — the factory must

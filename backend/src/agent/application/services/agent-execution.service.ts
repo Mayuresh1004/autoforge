@@ -33,13 +33,26 @@ export interface AgentExecutionRecord {
   readonly createdAt: string;
 }
 
+/** Full detail of one execution (used by GET /engineer/:executionId). */
+export interface AgentExecutionDetail extends AgentExecutionRecord {
+  readonly inputMetadata?: unknown;
+  readonly outputMetadata?: unknown;
+  readonly errorMessage?: string | null;
+  readonly startedAt?: string | null;
+  readonly completedAt?: string | null;
+}
+
 export interface AgentExecutionRepository {
   save(input: AgentExecutionInput): Promise<AgentExecutionRecord>;
+  /** Full execution row (metadata included) or null. */
+  find(executionId: string): Promise<AgentExecutionDetail | null>;
 }
 
 export interface AgentExecutionService {
   /** Record a completed (or terminal) execution in one call. */
   record(input: AgentExecutionInput): Promise<AgentExecutionRecord>;
+  /** Look up a recorded execution (metadata included). */
+  find(executionId: string): Promise<AgentExecutionDetail | null>;
   /** Sanitize raw metadata (exported for tests + reuse). */
   sanitizeMetadata(value: unknown): unknown;
 }
@@ -66,6 +79,10 @@ export class DefaultAgentExecutionService implements AgentExecutionService {
       completedAt: input.completedAt ?? null,
     };
     return this.repository.save(sanitized);
+  }
+
+  async find(executionId: string): Promise<AgentExecutionDetail | null> {
+    return this.repository.find(executionId);
   }
 
   sanitizeMetadata(value: unknown): unknown {
