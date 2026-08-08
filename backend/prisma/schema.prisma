@@ -36,11 +36,17 @@ enum VulnerabilityStatus {
   ACCEPTED
 }
 
+/// Sniper Agent verification states. Deliberately NOT a boolean: a tool
+/// that could not run (FAILED) is different from one that ran and found
+/// nothing (NOT_CONFIRMED), and missing prerequisites (NOT_TESTED /
+/// INCONCLUSIVE) are explicit.
 enum ExploitStatus {
-  PENDING
+  NOT_TESTED
+  TESTING
   CONFIRMED
+  NOT_CONFIRMED
+  INCONCLUSIVE
   FAILED
-  NOT_EXPLOITABLE
 }
 
 enum PatchStatus {
@@ -93,6 +99,9 @@ model Scan {
   repositories     ScanRepository[]
   vulnerabilities  Vulnerability[]
   agentExecutions  AgentExecution[]
+  scoutScans       ScoutScan[]
+  attackPlans      AttackPlan[]
+  exploits         Exploit[]
 
   @@index([status])
   @@index([createdAt])
@@ -173,23 +182,105 @@ model Vulnerability {
   @@map("vulnerabilities")
 }
 
-/// Exploitability confirmation for a vulnerability (Sniper Agent output)
+/// Exploitability confirmation for a vulnerability (Sniper Agent output).
+/// One row per verified planned target; `status` is the FINAL verdict while
+/// each attempt is recorded separately in `VerificationAttempt`.
 model Exploit {
-  id              String        @id @default(cuid())
-  vulnerabilityId String
-  status          ExploitStatus @default(PENDING)
-  proofOfConcept  String?
-  attackVector    String?
-  impact          String?
-  confirmedAt     DateTime?
-  createdAt       DateTime      @default(now())
-  updatedAt       DateTime      @updatedAt
+  id            String        @id @default(cuid())
+  /// Planner-synthesized target id (`PlannedAttackTarget.targetId`).
+  targetId      String?
+  scanId        String
+  /// Optional link to the static finding this PoC correlates with.
+  vulnerabilityId String?
+  endpoint      String
+  method        String        @default("GET")
+  /// Canonical vulnerability type (e.g. "SQL_INJECTION").
+  vulnerabilityType String?
+  /// Verified parameter name when the tool pinpoints one.
+  parameter     String?
+  /// Verification tool that produced the final status (e.g. "sqlmap").
+  tool          String?
+  status        ExploitStatus @default(NOT_TESTED)
+  /// Explainable confidence (0..1) — never an LLM guess.
+  confidence    Float?
+  /// Weighted evidence factors that produced `confidence`.
+  confidenceBreakdown Json?
+  /// Short human-readable reason for the status.
+  statusReason  String?
+  /// Redacted tool output summary (no full HTTP responses).
+  toolSummary   String?
+  errorMessage  String?
+  startedAt     DateTime?
+  completedAt   DateTime?
+  durationMs    Int?
+  confirmedAt   DateTime?
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
 
-  vulnerability Vulnerability @relation(fields: [vulnerabilityId], references: [id], onDelete: Cascade)
+  vulnerability Vulnerability?     @relation(fields: [vulnerabilityId], references: [id], onDelete: SetNull)
+  scan          Scan               @relation(fields: [scanId], references: [id], onDelete: Cascade)
+  attempts      VerificationAttempt[]
+  evidence      ExploitEvidence[]
 
+  @@index([targetId])
+  @@index([scanId])
   @@index([vulnerabilityId])
   @@index([status])
   @@map("exploits")
+}
+
+/// One individual verification attempt for an Exploit (a vulnerability may
+/// have many). Final status lives on `Exploit`; this is the per-run record.
+model VerificationAttempt {
+  id            String        @id @default(cuid())
+  exploitId     String
+  attemptNumber Int           @default(1)
+  /// Verifier that ran (e.g. "sql-injection") and the tool it drove.
+  verifier      String
+  tool          String?
+  /// Per-attempt state (TESTING/CONFIRMED/NOT_CONFIRMED/INCONCLUSIVE/FAILED).
+  status        ExploitStatus
+  /// Parsed, redacted evidence (injection point, technique, payload, ...).
+  evidence      Json?
+  /// Truncated + redacted stdout (never full responses).
+  stdout        String?
+  stderr        String?
+  errorMessage  String?
+  exitCode      Int?
+  timedOut      Boolean       @default(false)
+  retried       Boolean       @default(false)
+  startedAt     DateTime?
+  completedAt   DateTime?
+  durationMs    Int?
+  createdAt     DateTime      @default(now())
+
+  exploit Exploit @relation(fields: [exploitId], references: [id], onDelete: Cascade)
+
+  @@index([exploitId])
+  @@index([status])
+  @@map("verification_attempts")
+}
+
+/// Structured evidence items backing an Exploit verdict — enough for a
+/// reviewer to re-derive the classification without raw responses.
+model ExploitEvidence {
+  id               String   @id @default(cuid())
+  exploitId        String
+  /// Machine-readable indicator (e.g. "sqlmap:injection_point").
+  indicator        String
+  /// Evidence category (tool_confirmation / reproducibility / ...).
+  category         String
+  httpStatus       Int?
+  /// Redacted snippet or observation.
+  detail           String?
+  /// 0..1 weight this item contributes to confidence.
+  confidenceFactor Float    @default(0)
+  createdAt        DateTime @default(now())
+
+  exploit Exploit @relation(fields: [exploitId], references: [id], onDelete: Cascade)
+
+  @@index([exploitId])
+  @@map("exploit_evidence")
 }
 
 /// AI-generated patch for a vulnerability (Engineer Agent output)
@@ -253,4 +344,156 @@ model CVERecord {
   @@index([cveId])
   @@index([severity])
   @@map("cve_records")
+}
+
+/// Scout Agent: one reconnaissance run against a running application
+/// (attached to the source `Scan` that produced the repository under test).
+model ScoutScan {
+  id          String      @id @default(cuid())
+  scanId      String
+  targetUrl   String
+  status      ScoutStatus @default(PENDING)
+  startedAt   DateTime    @default(now())
+  completedAt DateTime?
+  /// Recon summary (AttackSurfaceReport.summary).
+  summary     Json?
+  createdAt   DateTime    @default(now())
+
+  scan         Scan                   @relation(fields: [scanId], references: [id], onDelete: Cascade)
+  surfaces     ScoutAttackSurface[]
+  technologies ScoutTechnology[]
+  services     ScoutService[]
+  ports        ScoutPort[]
+
+  @@index([scanId])
+  @@index([status])
+  @@map("scout_scans")
+}
+
+enum ScoutStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+}
+
+/// One discovered attack-surface target (url + method + params + auth + risk).
+/// This is the persisted Endpoint record enriched with risk/reachability.
+model ScoutAttackSurface {
+  id             String   @id @default(cuid())
+  scoutScanId    String
+  url            String
+  method         String   @default("GET")
+  /// Parsed parameter names (query string + form inputs).
+  parameters     Json?
+  authentication Boolean  @default(false)
+  /// Technology names attributed to this endpoint.
+  technology     Json?
+  risk           String   @default("LOW")
+  source         String   @default("crawler")
+  reachable      Boolean  @default(true)
+  statusCode     Int?
+  createdAt      DateTime @default(now())
+
+  scoutScan ScoutScan @relation(fields: [scoutScanId], references: [id], onDelete: Cascade)
+
+  @@index([scoutScanId])
+  @@map("scout_attack_surfaces")
+}
+
+/// Technology detected during fingerprinting.
+model ScoutTechnology {
+  id          String   @id @default(cuid())
+  scoutScanId String
+  name        String
+  category    String   @default("unknown")
+  version     String?
+  confidence  Float    @default(1)
+  evidence    String?
+  createdAt   DateTime @default(now())
+
+  scoutScan ScoutScan @relation(fields: [scoutScanId], references: [id], onDelete: Cascade)
+
+  @@index([scoutScanId])
+  @@map("scout_technologies")
+}
+
+/// Service discovered during recon (e.g. http, ssh, postgres).
+model ScoutService {
+  id          String   @id @default(cuid())
+  scoutScanId String
+  name        String
+  protocol    String   @default("tcp")
+  port        Int?
+  version     String?
+  evidence    String?
+  createdAt   DateTime @default(now())
+
+  scoutScan ScoutScan @relation(fields: [scoutScanId], references: [id], onDelete: Cascade)
+
+  @@index([scoutScanId])
+  @@map("scout_services")
+}
+
+/// Open port discovered during recon.
+model ScoutPort {
+  id          String   @id @default(cuid())
+  scoutScanId String
+  port        Int
+  protocol    String   @default("tcp")
+  state       String   @default("open")
+  service     String?
+  createdAt   DateTime @default(now())
+
+  scoutScan ScoutScan @relation(fields: [scoutScanId], references: [id], onDelete: Cascade)
+
+  @@index([scoutScanId])
+  @@map("scout_ports")
+}
+
+/// Attack Planner (M14): a prioritized, explained attack plan for a scan.
+/// Reasoning-only — nothing is executed from here.
+model AttackPlan {
+  id              String   @id @default(cuid())
+  scanId          String
+  createdAt       DateTime @default(now())
+  coveredSurfaces Int      @default(0)
+  coveredFindings Int      @default(0)
+  /// Summary counts (targets / critical / high / medium / low).
+  summary         Json?
+  targets         PlannedTarget[]
+
+  scan Scan @relation(fields: [scanId], references: [id], onDelete: Cascade)
+
+  @@index([scanId])
+  @@index([createdAt])
+  @@map("attack_plans")
+}
+
+/// One ranked attack-surface target inside a plan.
+model PlannedTarget {
+  id                        String   @id @default(cuid())
+  planId                    String
+  scanId                    String
+  /// Synthesized planner id, distinct from this row's primary key.
+  targetId                  String
+  endpoint                  String
+  method                    String   @default("GET")
+  /// Candidate vulnerability hypotheses the planner raised.
+  candidateVulnerabilities  Json?
+  /// Preliminary priority 0–100 (higher = test sooner).
+  priority                  Int      @default(0)
+  recommendedTool           String   @default("none")
+  reason                    String
+  requiresAuthentication    Boolean  @default(false)
+  estimatedRisk             String   @default("LOW")
+  /// Transparent score accounting (label + points per factor).
+  breakdown                 Json?
+  createdAt                 DateTime @default(now())
+
+  plan AttackPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
+
+  @@index([planId])
+  @@index([scanId])
+  @@map("planned_attack_targets")
 }

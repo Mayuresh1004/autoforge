@@ -50,6 +50,28 @@ const envSchema = z.object({
   SCANNER_PIP_AUDIT_TIMEOUT_MS: z.coerce.number().optional(),
   SCANNER_PIP_AUDIT_ARGS: z.string().optional(),
 
+  SCOUT_TIMEOUT_MS: z.coerce.number().default(180_000),
+  SCOUT_MAX_PAGES: z.coerce.number().default(100),
+  SCOUT_MAX_DEPTH: z.coerce.number().default(3),
+  SCOUT_PROBE_TIMEOUT_MS: z.coerce.number().default(5_000),
+  SCOUT_PORT_SCAN_ENABLED: z.enum(['true', 'false']).default('true'),
+  SCOUT_PROBE_COMMON_PATHS: z.enum(['true', 'false']).default('true'),
+
+  // --- Sniper Agent (exploit verification) ---
+  // Hard timeout for ONE verification attempt (sqlmap run).
+  SNIPER_ATTEMPT_TIMEOUT_MS: z.coerce.number().default(120_000),
+  // Upper bound of retries for transient failures (tool crash, timeout,
+  // sandbox/network issues). Confirmed / non-vulnerable verdicts never retry.
+  SNIPER_MAX_ATTEMPTS: z.coerce.number().default(2),
+  // Bounded concurrency across planned targets (never unlimited).
+  SNIPER_CONCURRENCY: z.coerce.number().default(2),
+  // Delay between retried attempts (ms).
+  SNIPER_RETRY_DELAY_MS: z.coerce.number().default(1_500),
+  // Max stored stdout/stderr summary bytes per attempt (truncated + redacted).
+  SNIPER_STORE_SUMMARY_BYTES: z.coerce.number().default(4_000),
+  // Max tool output line count kept in memory while parsing.
+  SNIPER_MAX_OUTPUT_LINES: z.coerce.number().default(2_000),
+
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
   LOG_FORMAT: z.enum(['json', 'pretty']).default('json'),
 
@@ -125,6 +147,48 @@ export interface StaticScannerConfig {
   readonly runtime: 'classic' | 'sandboxed';
   readonly scanners: Record<'bandit' | 'semgrep' | 'npmAudit' | 'pipAudit', ScannerConfigEntry>;
 }
+
+export interface ScoutConfig {
+  readonly timeoutMs: number;
+  readonly maxPages: number;
+  readonly maxDepth: number;
+  readonly probeTimeoutMs: number;
+  readonly portScanEnabled: boolean;
+  readonly probeCommonPaths: boolean;
+}
+
+/**
+ * Sniper Agent configuration. Every exploit verification is bounded: attempts
+ * have a hard timeout, transient failures retry at most `maxAttempts` times
+ * and only a bounded number of planned targets run concurrently.
+ */
+export interface SniperConfig {
+  readonly attemptTimeoutMs: number;
+  readonly maxAttempts: number;
+  readonly concurrency: number;
+  readonly retryDelayMs: number;
+  /** Truncation cap for output persisted to the database. */
+  readonly storeSummaryBytes: number;
+  readonly maxOutputLines: number;
+}
+
+export const sniperConfig: SniperConfig = {
+  attemptTimeoutMs: config.SNIPER_ATTEMPT_TIMEOUT_MS,
+  maxAttempts: config.SNIPER_MAX_ATTEMPTS,
+  concurrency: config.SNIPER_CONCURRENCY,
+  retryDelayMs: config.SNIPER_RETRY_DELAY_MS,
+  storeSummaryBytes: config.SNIPER_STORE_SUMMARY_BYTES,
+  maxOutputLines: config.SNIPER_MAX_OUTPUT_LINES,
+};
+
+export const scoutConfig: ScoutConfig = {
+  timeoutMs: config.SCOUT_TIMEOUT_MS,
+  maxPages: config.SCOUT_MAX_PAGES,
+  maxDepth: config.SCOUT_MAX_DEPTH,
+  probeTimeoutMs: config.SCOUT_PROBE_TIMEOUT_MS,
+  portScanEnabled: config.SCOUT_PORT_SCAN_ENABLED === 'true',
+  probeCommonPaths: config.SCOUT_PROBE_COMMON_PATHS === 'true',
+};
 
 export const staticScannerConfig: StaticScannerConfig = {
   defaultTimeoutMs: config.SCANNER_DEFAULT_TIMEOUT_MS,

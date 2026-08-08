@@ -4,6 +4,7 @@ import type {
   Sandbox,
   SandboxPatch,
   SandboxSpec,
+  SandboxStatus,
   SandboxType,
 } from '../models/sandbox';
 
@@ -28,6 +29,13 @@ export interface SandboxManagerOptions {
   readonly createTimeoutMs?: number;
 }
 
+export interface SandboxHealth {
+  readonly ok: boolean;
+  readonly status: SandboxStatus;
+  /** When not ok — why (missing / not started / failed / destroyed …). */
+  readonly reason?: string;
+}
+
 /**
  * The single, typed entry point every phase uses. Agents never touch
  * containers directly — they request operations here, and only the backend
@@ -37,6 +45,11 @@ export interface SandboxManager {
   createSandbox(input: CreateSandboxInput): Promise<Sandbox>;
   /** Polls until the sandbox reports healthy. */
   waitUntilReady(id: string, timeoutMs?: number): Promise<Sandbox>;
+
+  /** Read-only identity lookup: sandbox record or null (never throws). */
+  getSandbox(id: string): Promise<Sandbox | null>;
+  /** One-shot readiness probe (non-throwing, unlike waitUntilReady). */
+  healthCheck(id: string, timeoutMs?: number): Promise<SandboxHealth>;
 
   /** Typed exec: argv-only, allowlisted env, hard timeout. */
   execute(id: string, request: ExecRequest): Promise<ExecResult>;

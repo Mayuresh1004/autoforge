@@ -42,12 +42,19 @@ append new milestones below prior ones.
 | 10 | Pipeline through the Manager (M10) | +5 | ✅ Complete |
 | 11 | Route wired to sandboxed orchestrator (M11) | +1 | ✅ Complete |
 | 12 | Runnable stack / Docker E2E (M12) | +0 (infra) | ✅ Complete |
+| 13 | Scout Agent — recon (M13) | +40 (183 / 39) | ✅ Complete |
+| 14 | Attack Planner — reasoning (M14) | +21 (204 / 43) | ✅ Complete |
+| 15 | Sniper Agent — SQLi verification (M15) | +45 (251 / 50) | ✅ Complete |
 
-- **Total tests:** 143 passing across 31 test files
-  (analyzer 67 + static-scanner 38 + sandbox processes/container/manager/pipeline 37).
+- **Total tests:** 250 passing across 49 test files (1 skipped: the
+  Docker-gated E2E, run with `SNIPER_E2E=1`).
+  (analyzer 67 + static-scanner 38 + sandbox 38 + scout 40 + planner 21 + sniper 46).
 - `npx tsc --noEmit` → exit 0 · `npm run build` → clean · compiled CJS loads
   (with `DATABASE_URL`/env set — the app's env validation runs at import).
-- All implementation files are `< 300` lines (max = 253, file-system-analyzer).
+- All implementation files are `< 300` lines (max = 295, sniper-run.ts) — the Sniper
+  module is split by responsibility: `sniper.service.ts` (facade) + `sniper-run.ts`
+  (per-target pipeline) + `attempt-loop.ts` (bounded retry loop) + `sniper-mappers.ts`
+  (persistence row mappers).
 - New runtime deps (CJS-compatible, all verified): `@iarna/toml`, `yaml`,
   `fast-xml-parser`.
 
@@ -583,7 +590,7 @@ component that knows Docker.
 ```
 cd backend
 npx tsc --noEmit                 # must exit 0
-npx vitest run                    # 143 tests green
+npx vitest run                    # 204 tests green
 npm run build                     # clean CJS emit
 ```
 Tests are headless (they set their own `DATABASE_URL` via vitest config); the
@@ -701,7 +708,215 @@ was verified then torn down (`docker compose down`); data volumes remain so
 
 ---
 
+## Milestone 13 ✅ — Scout Agent (reconnaissance)
+
+Recon-only agent. Inputs: a source static-scan id + the running application URL.
+Output: a persisted **Attack Surface Report** (endpoints, forms, admin panels,
+technologies, ports, services, GraphQL/WebSocket signals, heuristic risk).
+No exploitation, no payloads, no writes to the target.
+
+### Module (`backend/src/scout/`, clean architecture)
+- **domain** — models (`attack-surface`, `scout-scan`, `scout-report`), pure
+  classifiers (`classification.ts`), errors, and 8 ports: `ScoutToolRuntime`
+  (exec/probe seam), `Crawler`, `RobotsParser`, `TechnologyFingerprinter`,
+  `PortScanner`, `EndpointDiscoverer`, `ScoutRepository`, `ScoutService`.
+- **application** — `ScoutRecon` (guarded phases: crawl, robots, fingerprint,
+  port scan, discover) + `DefaultScoutService` (orchestrator: context → health
+  → phases → prioritize → persist → report) + `HeuristicAttackSurfacePrioritizer`
+  (admin=HIGH, auth-upload=CRITICAL, public health/static/docs=LOW, api w/ params=MEDIUM).
+- **infrastructure/tools** — `HttpCrawler` (same-origin BFS), `RobotsTxtParser`,
+  `SignatureTechnologyFingerprinter`, `NmapPortScanner` (degrades when nmap is
+  absent), `ScoutEndpointDiscoverer` (links/forms/robots/common-paths/GraphQL/
+  WebSocket/docs), `DirectToolRuntime` (headless) + `SandboxToolRuntime`
+  (CLI tools executed inside the target app's sandbox via the manager).
+- **infrastructure/persistence** — `PrismaScoutRepository` (+ memory twin for tests).
+- **presentation** — `POST /api/scout/run`, `GET /api/scout/:scoutScanId`,
+  `/endpoints`, `/ports`, `/services`.
+
+### Persistence (migration `scout_agent`)
+`scout_scans`, `scout_attack_surfaces`, `scout_technologies`, `scout_services`,
+`scout_ports` — all cascaded from `ScoutScan` → `Scan`.
+
+### Safety
+Recon is read-only: idle GET/HEAD probes, bounded bodies/timeouts, same-origin
+crawl, no payloads, no brute force, tool failures degrade (never abort), runs
+are isolated + concurrent, configurable timeout (`SCOUT_*` envs).
+
+### Verified
+- **183 tests green** (40 new: prioritizer, classifiers, robots, fingerprinter,
+  crawler + discoverer against a live in-proc app, full-service recon run,
+  tool-failure isolation, concurrency, controller).
+- **Live in Docker**: `POST /api/scout/run` against a stack service → 201
+  COMPLETED, 20 endpoints persisted, read back via `/endpoints` `/ports`
+  `/services`; routes 404/validation paths verified; container healthy.
+
+---
+
+## Milestone 14 ✅ — Attack Planner (reasoning only)
+
+The Planner is AMASS's prioritization stage: given a **Repository Profile** +
+**Static findings** + **Attack Surface Report** for a scan, it decides *what to
+test first*. It never attacks, scans, exploits or patches — it only reasons and
+persists a ranked plan, with a transparent factor-level explanation for every
+target (no black-box decisions).
+
+### Inputs → Output
+- Inputs: `RepositoryProfile` (language/stack) + static `UnifiedFindings` +
+  the latest completed Scout surface report — all read through one repository port.
+- Output: a persisted **Attack Plan** of sorted `PlannedTarget`s, each with the
+  required shape: `targetId`, `endpoint`, `candidateVulnerabilities`, `priority`,
+  `recommendedTool`, `reason`, `requiresAuthentication`, `estimatedRisk` — plus
+  `breakdown` (every weighted factor) so scores are always explainable.
+
+### Module (`backend/src/planner/`, clean architecture)
+- **domain/models** — `plan.ts` (`PlannedTarget`, `AttackPlan`, summary,
+  `ScoreFactor`), `plan-input.ts` (normalized static-vuln / surface / profile),
+  `errors/planner.errors.ts` (`ScanNotFoundError`, `PlanNotFoundError`).
+- **domain/ports** — `planner.ts` (`PlannerService`), `plan-repository.ts`.
+- **application/scoring** — `feature-extractor.ts` (Surface→deterministic
+  `TargetFeatures` + static-finding summarizer/classifier) and `target-scorer.ts`
+  (deterministic weights: scout risk, endpoint type, auth, admin/upload/login,
+  query params, DB-interaction, static severity, category overlap, framework;
+  candidate-vuln hypotheses; `recommendedTool`; **explainable** `reason` +
+  `breakdown`; risk rule: upload+auth always CRITICAL).
+- **application/ranking** — `plan-engine.ts` (assign targets ids, sort highest
+  priority first, compute summary buckets).
+- **application/services** — `attack-plan.service.ts` (`generate(scanId)` loadsanner
+  → reasons → persists; `plan(request)` pure; `getPlan` / `getPlanForScan`).
+- **infrastructure** — `persistence/prisma-plan-repository.ts` (reads
+  scan/vulnerability/scout tables, persists plan + targets via nested create),
+  `factory/plan-factory.ts` (composition root), memory twin for tests.
+- **presentation** — `dto/planner.dto.ts`, `controller/planner.controller.ts`,
+  `routes/planner.routes.ts`. Endpoints: `POST /api/planner/run {scanId}`,
+  `GET /api/planner/plans/:planId`, `GET /api/planner/plans/:planId/targets`,
+  `GET /api/planner/scans/:scanId`.
+
+### Persistence (migration `attack_planner`)
+`attack_plans` (scan-scoped, cascaded, summary json) + `planned_attack_targets`
+(per-target fields + `breakdown`/`candidateVulnerabilities` json).
+
+### Safety
+Planner is a pure/read-mostly reasoner: loads existing DB rows, ranks in memory,
+persists the plan. No probing, no code exec, no attack execution, no patch
+generation. Missing recon yields an empty plan (never throws); unknown scan → 404.
+
+### Verified
+- **204 tests green** (21 new: scorer explainability + priority + upload-auth
+  CRITICAL rule, engine sorting/summary/spec `/api/search`, service generate/
+pure/missing-scan/empty-recon, controller routes + 404/validation).
+- **Live in Docker**: `POST /api/scan/static` → `POST /api/scout/run` (20
+  surfaces) → `POST /api/planner/run` → 201 plan, 20 ranked targets (upload
+  endpoints MEDIUM with `Insecure File Upload` hypothesis, admin MEDIUM,
+  public assets LOW), read back via `/planner/plans/:id` + `/planner/scans/:id`;
+  rows confirmed in Postgres (`attack_plans` 1 / `planned_attack_targets` 20);
+  stack torn down.
+
+---
+
+## Milestone 15 ✅ — Sniper Agent (controlled exploit verification)
+
+**Scope:** Sniper performs **controlled exploit verification inside an isolated
+runtime sandbox**. It takes the Planner's ranked `PlannedTarget`s for a scan and
+proves or disproves them (SQL Injection today; XSS/SSRF/etc. are future
+verifier implementations behind the same `VulnerabilityVerifier` port). It is
+**not a general-purpose penetration-testing engine**: it never generates new
+attacks, never bypasses authentication, never guesses credentials, and can only
+touch the sandboxed app instance it is given. Deterministic end-to-end (no
+LLM in the decision path).
+
+### Input → Output
+- Inputs: `scanId`, `sandboxId`, `baseUrl` (in-sandbox app URL),
+  `targetIds` (planner-synthesized) + optional explicit credentials.
+- Output: `ProofOfConcept` per target — `NOT_TESTED / TESTING / CONFIRMED /
+  NOT_CONFIRMED / INCONCLUSIVE / FAILED` + weighted confidence with a
+  per-factor breakdown (tool confirmation, reproducibility, response behavior,
+  static correlation, reachability) + reviewer evidence items.
+
+### Module (`backend/src/sniper/`, clean architecture)
+- **domain/models** — `verification.ts` (states/categories/factors/target,
+  context, outcome, PoC, attempt), `vulnerability-type.ts`; ports
+  (`vulnerability-verifier`, `tool-runtime`, `sniper-repository`,
+  `sniper-service`); `errors/sniper.errors.ts`.
+- **application/services** —
+  - `sniper.service.ts` — facade: sandbox pre-flight (`getSandbox` +
+    scan-match), bounded concurrency (`BoundedExecutor`), per-target outcome
+    isolation, run report + read-back queries (refactored from the original
+    518-line file down to <300).
+  - `sniper-run.ts` — per-target pipeline: target/scan validation →
+    same-origin enforcement (`target-origin`, cross-origin ⇒ NOT_TESTED) →
+    pick supported type → auth gating (explicit credentials only) → seed
+    TESTING row → attempt loop → final persist; refusals never crash a run.
+  - `attempt-loop.ts` — bounded retry loop: hard attempt cap, retry only
+    transient outcomes (CONFIRMED/NOT_CONFIRMED/NOT_TESTED are terminal),
+    per-attempt persistence, backoff + logging.
+  - `confidence-scorer.ts` (deterministic weighted factors),
+    `sqlmap-classifier.ts` (parsed → verdict + retryable flags),
+    `target-origin.ts`, `bounded-executor.ts`.
+- **infrastructure** — `tools/sqlmap/` (argv builder with hard bounds — no
+  `--dump`/`--os-shell`/tamper; parser; redactor — redact + truncate before
+  persistence), `tools/sandbox-tool-runtime.ts` (all exploit commands go
+  through the SandboxManager — **no Docker import in the agent**),
+  `verifiers/sql-injection/sql-injection-verifier.ts` + `verifier-registry.ts`
+  (future types register here), `repository/prisma-sniper-repository.ts` +
+  `repository/sniper-mappers.ts` (pure row→domain mappers; repository <300),
+  `factory/sniper-factory.ts`.
+- **presentation** — Zod DTO + controller + routes
+  (`POST /api/sniper/run`, `GET /api/sniper/:id`,
+  `GET /api/sniper/:id/results`, `GET /api/sniper/targets/:targetId`,
+  targets route registered BEFORE `/:id`).
+
+### Persistence (migrations `sniper_agent` + `sniper_finalize`)
+`exploits` extended (scan/target identity + verification fields,
+`vulnerabilityId` nullable SetNull) + `verification_attempts` (per-attempt
+record; final status lives on `Exploit`) + `exploit_evidence`; FKs cascade.
+`sniper_finalize` drops the unused legacy columns (`proofOfConcept`,
+`attackVector`, `impact` — no code referenced them) and aligns the `endpoint`
+default with the schema.
+
+### Safety
+Sandbox-gated (no Docker imports in the agent; SandboxManager is the only
+Docker owner), same-origin enforcement, auth-gating (explicit credentials
+only, never bypass/brute), bounded timeouts/retries (transient only)/
+concurrency, redacted + truncated evidence, deterministic explainable
+confidence. Scope is strictly **validation of Planner-supplied candidates** —
+no new exploitation capabilities.
+
+### Verified (after the file-size refactor)
+- **251 tests** (46 sniper: parser, argv, redaction, classifier, confidence
+  scorer, verifier, service orchestration incl. concurrency cap + retry
+  persistence + cross-origin/auth refusals, controller validation; existing
+  suites stay green).
+- **Docker + Postgres E2E re-run** (`SNIPER_E2E=1`): ephemeral Postgres +
+  `prisma migrate deploy` → real `AttackPlanService` → real hardened Docker
+  sandbox (sqlmap + intentionally-vulnerable SQLite app, internal network) →
+  real `DefaultSniperService` → **CONFIRMED** (`boolean-based blind,
+  time-based blind, UNION query`), `Exploit` CONFIRMED with
+  `VerificationAttempt` + `ExploitEvidence` rows in Postgres; sandbox/PG
+  torn down (prisma now disconnects before the ephemeral PG is removed —
+  the spurious `prisma:error Closed` at teardown is gone).
+
+### Fixed along the way
+- `SandboxManagerService.createSandbox` started the backend with the sandbox
+  id instead of the container id (latent bug — the Docker backend exercised it
+  for the first time). `getSandbox` / `healthCheck` added to the manager port.
+- `prisma migrate deploy` failed because the sniper migration re-created
+  `exploits_status_idx` (already created by init) — removed the duplicate.
+- `Exploit.attacks` was hardcoded/DB-missing; the Prisma repository now counts
+  real `VerificationAttempt` rows via `_count`.
+- File-size house rule (all impl files `< 300`): `sniper.service.ts`
+  518 → 156 (extracted `sniper-run.ts` 295 + `attempt-loop.ts` 156),
+  `prisma-sniper-repository.ts` 307 → 204 (extracted `sniper-mappers.ts`).
+- E2E teardown now disconnects the prisma engine before removing the
+  ephemeral Postgres — no more `prisma:error Error { kind: Closed }` noise.
+
+---
+
 ## Open / deferred items (optional follow-ups)
+- **NEXT INFRASTRUCTURE MILESTONE — runtime-sandbox provisioning**: a public
+  API to create a runtime sandbox (image-based, internal network, app + test
+  data + DB/Redis) for a scan, so the pipeline can reach `POST /api/sniper/run`
+  end-to-end from HTTP. Until then, Sniper keeps accepting an existing
+  `sandboxId` provisioned via the SandboxManager (as the E2E does).
 - **Live-container end-to-end verification** (Docker host): run `/api/scan/static`
   with `SANDBOX_RUNTIME=docker` and watch per-scan containers appear/destroy.
 - **Runtime sandboxes for post-static phases** (run the app, dynamic checks,

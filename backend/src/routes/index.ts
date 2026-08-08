@@ -2,6 +2,9 @@ import { Router } from 'express';
 import { healthRoutes } from './health.routes';
 import { repositoryProfileRoutes } from '../repository-analysis/presentation/routes/repository-profile.routes';
 import { scanRoutes } from '../static-scanner/presentation/routes/scan.routes';
+import { scoutRoutes } from '../scout/presentation/routes/scout.routes';
+import { plannerRoutes } from '../planner/presentation/routes/planner.routes';
+import { createSniperRouter } from '../sniper/presentation/routes/sniper.routes';
 
 export function createRouter(): Router {
   const router = Router();
@@ -9,10 +12,9 @@ export function createRouter(): Router {
   router.use('/', healthRoutes);
   router.use('/api', repositoryProfileRoutes);
   router.use('/api', scanRoutes);
-
-  // Future route modules will be mounted here:
-  // router.use('/api/scans', scanRoutes);
-  // router.use('/api/vulnerabilities', vulnerabilityRoutes);
+  router.use('/api', scoutRoutes);
+  router.use('/api', plannerRoutes);
+  router.use('/api', createSniperRouter());
 
   return router;
 }

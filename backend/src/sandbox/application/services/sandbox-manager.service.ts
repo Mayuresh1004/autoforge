@@ -12,6 +12,7 @@ import type {
   CreateSandboxInput,
   SandboxManager,
   SandboxManagerOptions,
+  SandboxHealth,
 } from '../../domain/ports/sandbox-manager';
 
 /**
@@ -74,7 +75,7 @@ export class SandboxManagerService implements SandboxManager {
       await this.store.save(created);
 
       await this.transition(id, 'starting');
-      await this.withTimeout(this.backend.start(id), this.createTimeoutMs, `start sandbox ${id}`);
+      await this.withTimeout(this.backend.start(this.containerId(created, id)), this.createTimeoutMs, `start sandbox ${id}`);
 
       return await this.require(id);
     } catch (error) {
@@ -95,6 +96,26 @@ export class SandboxManagerService implements SandboxManager {
       await sleep(250);
     }
     throw new Error(`sandbox ${id} did not become ready within ${timeoutMs}ms`);
+  }
+
+  async getSandbox(id: string): Promise<Sandbox | null> {
+    return this.store.get(id).catch(() => null);
+  }
+
+  async healthCheck(id: string, timeoutMs = this.createTimeoutMs): Promise<SandboxHealth> {
+    const sandbox = await this.store.get(id).catch(() => null);
+    if (!sandbox) return { ok: false, status: 'pending', reason: 'sandbox not found' };
+    if (sandbox.status === 'destroyed' || sandbox.status === 'failed') {
+      return { ok: false, status: sandbox.status, reason: `sandbox in terminal state '${sandbox.status}'` };
+    }
+    try {
+      const backendId = this.containerId(sandbox, id);
+      const ready = await this.withTimeout(this.backend.isReady(backendId), timeoutMs, `health-check ${id}`);
+      return { ok: ready, status: ready ? 'ready' : sandbox.status, reason: ready ? undefined : 'not ready' };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return { ok: false, status: sandbox.status, reason: message };
+    }
   }
 
   async execute(id: string, request: ExecRequest): Promise<ExecResult> {

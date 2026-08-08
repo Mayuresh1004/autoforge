@@ -1,9 +1,8 @@
 # AMASS — Autonomous Multi-Agent Security System
 
-An agentic AI-powered DevSecOps platform that autonomously detects vulnerabilities, confirms exploitability, generates patches using RAG, validates patches, and produces security reports.
+An agentic AI-powered DevSecOps platform that autonomously detects vulnerabilities, performs **controlled exploit verification inside isolated runtime sandboxes**, and produces prioritized, evidence-backed reports. Patch generation/validation agents are a later phase.
 
-> **Current Phase:** Infrastructure Foundation (Phase 0)
-> Agents (Scout, Sniper, Engineer, Critic) are not yet implemented.
+> **Current Phase:** Static Scanner + Scout (recon) + Planner (prioritize) + Sniper (controlled verification) implemented in-process. Engineer / Critic / patch generation not yet implemented.
 
 ---
 
@@ -41,12 +40,15 @@ Frontend (React)  ──►  Backend API (Express)  ──►  Agents Service (F
 
 See [docs/architecture.md](docs/architecture.md) for detailed diagrams and clean architecture layers.
 
-### Agent Pipeline (Future)
+### Agent Pipeline
 
+```text
+Repository Analyzer → Static Scanner → Scout (Detect) → Planner (Prioritize) → Sniper (Confirm)
 ```
-Scout (Detect) → Sniper (Confirm) → Engineer (Patch) → Critic (Validate) → Report
-                     orchestrated by LangGraph
-```
+
+- **Scout** — reconnaissance: discovers the attack surface of a running app (endpoints, technologies, ports, forms, auth pages, API/docs, GraphQL/WebSocket) using read-only probes.
+- **Planner** — ranks the discovered surface into an explained attack plan (what to test first); heuristics only, never executes anything.
+- **Sniper** — **controlled exploit verification inside an isolated runtime sandbox**: validates Planner-supplied candidate vulnerabilities (SQL Injection today) by running bounded, sandbox-gated tools (sqlmap) against the sandboxed app instance. It is **not a general-purpose penetration-testing engine** — it never generates new attacks, bypasses authentication, or touches anything outside the sandbox. Engineer / Critic / patch generation remain future work.
 
 ---
 

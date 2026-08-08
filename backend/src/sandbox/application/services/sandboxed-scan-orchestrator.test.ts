@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import os from 'node:os';
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
-import type { CreateSandboxInput, SandboxManager } from '../../domain/ports/sandbox-manager';
+import type { CreateSandboxInput, SandboxManager, SandboxHealth } from '../../domain/ports/sandbox-manager';
 import type { ExecRequest, ExecResult, Sandbox, SandboxPatch } from '../../domain/models/sandbox';
 import type { Severity } from '../../../static-scanner/domain/models/severity';
 import type { ScannerExecutor } from '../../../static-scanner/domain/ports/scanner-executor';
@@ -95,6 +95,12 @@ class CountingSandboxManager implements SandboxManager {
   }
   async waitUntilReady(id: string, timeoutMs?: number): Promise<Sandbox> {
     return this.inner.waitUntilReady(id, timeoutMs);
+  }
+  async getSandbox(id: string): Promise<Sandbox | null> {
+    return this.inner.getSandbox(id);
+  }
+  async healthCheck(id: string, timeoutMs?: number): Promise<SandboxHealth> {
+    return this.inner.healthCheck(id, timeoutMs);
   }
   async execute(id: string, request: ExecRequest): Promise<ExecResult> {
     this.executes += 1;
