@@ -2,16 +2,32 @@
 
 An agentic AI-powered DevSecOps platform that autonomously detects vulnerabilities, performs **controlled exploit verification inside isolated runtime sandboxes**, and produces prioritized, evidence-backed reports. Patch generation/validation agents are a later phase.
 
-> **Current Phase:** Full pipeline to remediation: Repository Analyzer → Static Scanner → Scout → Planner → Sniper → Engineer (draft patch generation, SQL Injection only, never auto-applied). Critic / auto-apply remain future work.
+> **Current Phase:** Full pipeline to remediation: Repository Analyzer → Static Scanner → Scout → Planner → Sniper → Engineer (draft patch generation, SQL Injection only) → Critic (patch validation in a fresh disposable sandbox, SQL Injection only). Auto-apply remains future work.
+>
+> **Hardening:** the remediation stack runs over ONE shared `SandboxManager` built by the
+> application composition root (`src/application/application-root.ts`); HTTP errors are mapped
+> centrally (5xx bodies masked), Engineer and Critic resolve the same canonical CONFIRMED
+> finding, Critic baseline/retest runs are non-persistent, LLM defaults are provider-aware
+> (no paid default, lazy boot), and asked-for host port publishing fails fast (422) while
+> `SANDBOX_ALLOW_HOST_EXPOSE` stays `false`. See `PROGRESS.md` Milestone 21.
+>
+> **Observability (Phase 9):** one canonical `AmassEvent` model + an in-memory, bounded,
+> transport-agnostic `EventBus` streams the whole pipeline (Analyzer → Scanner → Sandbox →
+> Scout → Planner → Sniper → Engineer → Critic) over `GET /api/scans/:scanId/events` (SSE) —
+> per-scan monotonic sequence ordering, heartbeat + `Last-Event-ID` reconnect, secret
+> redaction, bounded per-connection buffers, scan-scoped subscriptions. Events are
+> ephemeral by design (durable rows stay `Scan`/`AgentExecution`/critic runs); configurable
+> via `EVENTS_*`. See `PROGRESS.md` Milestone 22.
 
 ```text
-Repository Analyzer → Static Scanner → Scout (Detect) → Planner (Prioritize) → Sniper (Confirm) → Engineer (Remediate)
+Repository Analyzer → Static Scanner → Scout (Detect) → Planner (Prioritize) → Sniper (Confirm) → Engineer (Remediate) → Critic (Validate)
 ```
 
 - **Scout** — reconnaissance: discovers the attack surface of a running app (endpoints, technologies, ports, forms, auth pages, API/docs, GraphQL/WebSocket) using read-only probes.
 - **Planner** — ranks the discovered surface into an explained attack plan (what to test first); heuristics only, never executes anything.
 - **Sniper** — **controlled exploit verification inside an isolated runtime sandbox**: validates Planner-supplied candidate vulnerabilities (SQL Injection today) by running bounded, sandbox-gated tools (sqlmap) against the sandboxed app instance. It is **not a general-purpose penetration-testing engine** — it never generates new attacks, bypasses authentication, or touches anything outside the sandbox.
-- **Engineer** — **draft remediation for confirmed SQL Injection findings only**: reads bounded source context through the runtime sandbox, consults RAG advisory knowledge, and produces a `Patch` row (`status=GENERATED` after a deterministic security-review gate, or `REJECTED`). It is advisory-only: patches are **never applied** in this phase, and the LLM response is validated, gated and persisted without ever being executed. Engineer / Critic / patch generation remain future work.
+- **Engineer** — **draft remediation for confirmed SQL Injection findings only**: reads bounded source context through the runtime sandbox, consults RAG advisory knowledge, and produces a `Patch` row (`status=GENERATED` after a deterministic security-review gate, or `REJECTED`). It is advisory-only: patches are **never applied** in this phase, and the LLM response is validated, gated and persisted without ever being executed.
+- **Critic** — **validates Engineer patches (SQL Injection only) inside a fresh disposable sandbox**: the original repository is never modified; a patched app must start, build, pass its regression tests and neutralize the confirmed exploit (re-verification `NOT_CONFIRMED` ⇒ FIXED) before the patch is `APPROVED` (deterministic security gate first; the optional advisory LLM never overrides). Rejections produce structured feedback for a bounded Engineer retry loop (`CRITIC_MAX_ENGINEER_RETRIES=2`).
 
 ### Runtime Sandbox Lifecycle (Phase 6)
 
@@ -97,6 +113,37 @@ CONFIRMED SQLi finding → deterministic selection (severity → confidence → 
 - API: `POST /api/engineer/run` (optionally pin `vulnerabilityId`),
   `GET /api/engineer/:executionId`.
 - Live smoke test opt-in: `ENGINEER_E2E=1` (needs a configured live LLM key).
+
+### Critic Agent — Patch Validation (Phase 8)
+
+The **Critic** turns an Engineer `GENERATED` patch into a validated verdict by running it
+in a **fresh disposable runtime sandbox** — the original repository is never touched:
+
+```text
+GENERATED patch (CONFIRMED SQLi only) → fresh disposable sandbox
+→ baseline: vulnerability reachable + exploit reproduces (Sniper CONFIRMED)
+→ unified-diff apply inside the sandbox → startup health → build → regression tests
+→ exploit re-verification (NOT_CONFIRMED ⇒ FIXED) → deterministic security gate
+→ optional advisory LLM (never overrides) → APPROVED / REJECTED
+→ bounded Engineer retry loop (CRITIC_MAX_ENGINEER_RETRIES=2)
+```
+
+- **Only** `GENERATED` patches on **CONFIRMED `SQL_INJECTION`** findings are reviewable;
+  `APPLIED`/`VALIDATED`/`APPROVED`/`REJECTED` patches and unverified findings fail fast
+  with deterministic 404/422 errors. The Critic records a `CriticRun` (`id =
+  patchId#attempt`, attempts never overwritten) + an `AgentExecution` (`agentType=CRITIC`).
+- **Verdicts are machine-made**: APPROVED / REJECTED are installed only by the pipeline —
+  the advisory LLM can annotate but never overrides. Infrastructure failures are `FAILED`
+  (never a fake "bad patch"); only `APPROVED`/`REJECTED` seal the patch row.
+- **Deterministic security gate** (secrets, dangerous constructs, dependency manifests,
+  multi-file diffs, parameterization signal) precedes any LLM reasoning.
+- **Safety**: one disposable sandbox per run, destroyed in a `finally`; the applier is a
+  pure unified-diff engine (no fuzz, no shell); all commands are argv-only through the
+  existing SandboxManager (still the only Docker owner).
+- The Critic HTTP surface is a **side-channel**: routes exist (POST `/api/critic/run`,
+  GET `/api/critic/:executionId`) but are **not mounted** in `routes/index.ts` — only
+  orchestration code may reach them.
+- Live smoke test opt-in: `CRITIC_E2E=1` (real Docker: fixture app, zero-residue assert).
 
 ### LLM Provider Abstraction (free-first)
 
@@ -366,6 +413,8 @@ Error responses:
 | POST | `/api/rag/search` | Ranked knowledge retrieval (whitelisted metadata filters) |
 | POST | `/api/engineer/run` | Run the Engineer agent on one CONFIRMED SQLi finding (deterministic selection; produces a `Patch` with status `GENERATED`/`REJECTED`) |
 | GET | `/api/engineer/:executionId` | Read an Engineer `AgentExecution` detail |
+| POST | `/api/critic/run` (hidden) | Validate one GENERATED patch in a fresh disposable sandbox → `APPROVED`/`REJECTED` (side-channel: not mounted in `routes/index.ts`) |
+| GET | `/api/critic/:executionId` (hidden) | Read a Critic `CriticRun` detail (side-channel) |
 
 ### Agents Service (FastAPI) — Port 8000
 

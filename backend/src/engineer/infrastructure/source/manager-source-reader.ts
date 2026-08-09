@@ -16,7 +16,7 @@ import type { RuntimeSandboxContext } from '../../../sandbox/domain/entities/run
 import type { SandboxManager } from '../../../sandbox/domain/ports/sandbox-manager';
 import { EngineerSourceError } from '../../domain/errors/engineer.errors';
 import { isSupportedCodeFile, normalizeRepoPath } from '../../domain/models/repo-path';
-import type { EngineerSourceReader, SourceReadRequest, SourceReadResult } from '../../domain/ports/source-reader';
+import type { EngineerSourceReader, ReadWholeFileResult, SourceReadRequest, SourceReadResult } from '../../domain/ports/source-reader';
 
 export interface SourceReadBounds {
   readonly maxSourceBytes: number;
@@ -28,6 +28,23 @@ export class ManagerSourceReader implements EngineerSourceReader {
     private readonly sandboxes: SandboxManager,
     private readonly bounds: SourceReadBounds,
   ) {}
+
+  async readWholeFile(
+    context: RuntimeSandboxContext,
+    request: SourceReadRequest,
+  ): Promise<ReadWholeFileResult> {
+    const path = normalizeRepoPath(request.path);
+    if (path === '' || path === null) {
+      throw new EngineerSourceError('SOURCE_INVALID_PATH', `invalid repository path: ${JSON.stringify(request.path)}`);
+    }
+    const maxBytes = request.maxBytes ?? this.bounds.maxSourceBytes;
+    const size = await this.probeSize(context.sandboxId, path);
+    if (size > maxBytes) {
+      throw new EngineerSourceError('SOURCE_TOO_LARGE', `source file ${path} is ${size} bytes (max ${maxBytes})`);
+    }
+    const content = await this.readFile(context.sandboxId, path);
+    return { filePath: path, content, byteLength: size };
+  }
 
   async read(context: RuntimeSandboxContext, request: SourceReadRequest): Promise<SourceReadResult> {
     const path = normalizeRepoPath(request.path);

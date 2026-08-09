@@ -9,6 +9,7 @@ import {
   RuntimeSandboxCreationError,
   RuntimeSandboxError,
   RuntimeSandboxForbiddenError,
+  RuntimeSandboxHostExposureDeniedError,
   RuntimeSandboxNotFoundError,
 } from '../../domain/errors/runtime-sandbox.errors';
 import type {
@@ -26,6 +27,8 @@ import {
   provisionContainer,
   type RuntimeProvisionDeps,
 } from './runtime-sandbox-provisioning';
+import type { AmassEventPublisher } from '../../../observability/domain/ports/event-bus';
+import type { AmassEventInput } from '../../../observability/domain/ports/event-bus';
 import { buildTargetUrl, clamp, classifyStage, sanitizeKey } from './runtime-sandbox-utils';
 import {
   IMAGE_NAME_PREFIX,
@@ -67,6 +70,12 @@ export class DefaultRuntimeSandboxService implements RuntimeSandboxService {
 
   async create(input: CreateRuntimeSandboxRequest): Promise<RuntimeSandbox> {
     const started = Date.now();
+    // Fail fast on an explicit hostExpose request when host publishing is
+    // disabled — never silently drop it (MEDIUM-6). Checked before ANY
+    // side effect so no FAILED record / image is ever produced.
+    if (input.hostExpose === true && !this.deps.config.allowHostExpose) {
+      throw new RuntimeSandboxHostExposureDeniedError();
+    }
     const maxAgeMs = clamp(
       input.maxAgeMs ?? this.deps.config.lifetimeMs,
       MIN_LIFETIME_MS,
@@ -83,6 +92,16 @@ export class DefaultRuntimeSandboxService implements RuntimeSandboxService {
     }
 
     await validateOwnership(this.deps.gateway, input);
+
+    this.publish({
+      scanId: input.scanId,
+      eventType: 'SANDBOX_PROVISIONING',
+      agentType: 'SANDBOX',
+      phase: 'sandbox',
+      status: 'STARTED',
+      message: 'provisioning runtime sandbox',
+      metadata: { runtime: this.deps.config.runtime },
+    });
 
     let sandbox = seedRuntimeSandbox(input, maxAgeMs);
     try {
@@ -146,6 +165,20 @@ export class DefaultRuntimeSandboxService implements RuntimeSandboxService {
       }
 
       sandbox = await patchSandbox(this.deps.store, sandbox, { status: 'READY' });
+      this.publish({
+        scanId: input.scanId,
+        eventType: 'SANDBOX_READY',
+        agentType: 'SANDBOX',
+        phase: 'sandbox',
+        status: 'READY',
+        message: `sandbox ${sandbox.sandboxId ?? 'unknown'} ready`,
+        metadata: {
+          sandboxId: sandbox.sandboxId ?? undefined,
+          targetUrl: sandbox.targetUrl ?? undefined,
+          runtime: this.deps.config.runtime,
+          readiness: 'READY',
+        },
+      });
       logSandbox('create:ready', sandbox, { durationMs: Date.now() - started });
       return sandbox;
     } catch (error) {
@@ -193,10 +226,28 @@ export class DefaultRuntimeSandboxService implements RuntimeSandboxService {
     const sandbox = await this.get(id, options);
     if (sandbox.status === 'DESTROYED' || sandbox.status === 'EXPIRED') return sandbox; // idempotent
     const destroying = await patchSandbox(this.deps.store, sandbox, { status: 'DESTROYING' });
+    this.publish({
+      scanId: sandbox.scanId,
+      eventType: 'SANDBOX_DESTROYING',
+      agentType: 'SANDBOX',
+      phase: 'sandbox',
+      status: 'DESTROYING',
+      message: `destroying sandbox ${id}`,
+      metadata: { sandboxId: sandbox.sandboxId ?? undefined },
+    });
     await this.cleanup.cleanup(destroying);
     const destroyed = await patchSandbox(this.deps.store, destroying, {
       status: 'DESTROYED',
       destroyedAt: new Date().toISOString(),
+    });
+    this.publish({
+      scanId: sandbox.scanId,
+      eventType: 'SANDBOX_DESTROYED',
+      agentType: 'SANDBOX',
+      phase: 'sandbox',
+      status: 'DESTROYED',
+      message: `sandbox ${id} destroyed`,
+      metadata: { sandboxId: sandbox.sandboxId ?? undefined },
     });
     await this.deps.registry.remove(id);
     logSandbox('destroy:done', destroyed, {});
@@ -208,6 +259,15 @@ export class DefaultRuntimeSandboxService implements RuntimeSandboxService {
     if (!sandbox) throw new RuntimeSandboxNotFoundError(id);
     if (sandbox.status === 'DESTROYED' || sandbox.status === 'EXPIRED') return sandbox;
     const expiring = await patchSandbox(this.deps.store, sandbox, { status: 'EXPIRED' });
+    this.publish({
+      scanId: sandbox.scanId,
+      eventType: 'SANDBOX_DESTROYED',
+      agentType: 'SANDBOX',
+      phase: 'sandbox',
+      status: 'DESTROYED',
+      message: `sandbox ${id} expired and reclaimed`,
+      metadata: { sandboxId: sandbox.sandboxId ?? undefined },
+    });
     await this.cleanup.cleanup(expiring);
     await this.deps.registry.remove(id);
     logSandbox('expire:done', expiring, {});
@@ -245,6 +305,15 @@ export class DefaultRuntimeSandboxService implements RuntimeSandboxService {
 
   // -- internals ---------------------------------------------------------
 
+  private publish(input: AmassEventInput): void {
+    if (!this.deps.events) return;
+    try {
+      this.deps.events.publish(input);
+    } catch (err) {
+      logger.warn({ err, scanId: input.scanId }, 'runtime-sandbox.events: publish ignored');
+    }
+  }
+
   private async fail(sandbox: RuntimeSandbox, error: unknown): Promise<never> {
     const stage = classifyStage(error);
     const reason = error instanceof Error ? error.message.slice(0, REASON_TRUNCATE) : String(error);
@@ -253,6 +322,17 @@ export class DefaultRuntimeSandboxService implements RuntimeSandboxService {
       failureStage: stage,
       failureReason: reason,
     }).catch(() => sandbox);
+
+    this.publish({
+      scanId: failed.scanId,
+      eventType: 'SANDBOX_FAILED',
+      agentType: 'SANDBOX',
+      phase: 'sandbox',
+      level: 'ERROR',
+      status: 'FAILED',
+      message: `sandbox provisioning failed at ${stage}`,
+      metadata: { sandboxId: failed.sandboxId ?? undefined, error: reason, check: stage },
+    });
 
     await this.collectFailureLogs(failed).catch(() => undefined);
     await this.cleanup.cleanup(failed);

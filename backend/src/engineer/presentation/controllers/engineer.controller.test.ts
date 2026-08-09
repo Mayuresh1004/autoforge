@@ -1,13 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { NextFunction, Request, Response } from 'express';
 import { ValidationError } from '../../../utils/errors';
-import { EngineerController, engineerErrorStatus } from './engineer.controller';
+import { EngineerController } from './engineer.controller';
+import { ConfirmedFindingNotFoundError } from '../../domain/errors/engineer.errors';
 import type { EngineerRunResult, EngineerService } from '../../application/services/engineer.service';
-import {
-  ConfirmedFindingNotFoundError,
-  InvalidEngineerResponseError,
-  UnsupportedVulnerabilityError,
-} from '../../domain/errors/engineer.errors';
+
 
 function okRun(): EngineerRunResult {
   return {
@@ -120,10 +117,4 @@ describe('engineer controller', () => {
     expect((res.body as { data: { agentType: string } }).data.agentType).toBe('ENGINEER');
   });
 
-  it('engineerErrorStatus maps typed errors to bounded HTTP statuses', () => {
-    expect(engineerErrorStatus(new ConfirmedFindingNotFoundError('x'))).toBe(404);
-    expect(engineerErrorStatus(new UnsupportedVulnerabilityError('x'))).toBe(422);
-    expect(engineerErrorStatus(new InvalidEngineerResponseError('x'))).toBe(422);
-    expect(engineerErrorStatus(new Error('plain'))).toBe(500);
-  });
 });

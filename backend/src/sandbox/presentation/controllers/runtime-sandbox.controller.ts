@@ -8,6 +8,7 @@ import {
   RuntimeSandboxCapacityError,
   RuntimeSandboxCreationError,
   RuntimeSandboxForbiddenError,
+  RuntimeSandboxHostExposureDeniedError,
   RuntimeSandboxNotFoundError,
   UnsupportedRuntimeError,
 } from '../../domain/errors/runtime-sandbox.errors';
@@ -106,6 +107,7 @@ export class RuntimeSandboxController {
       err instanceof UnsupportedRuntimeError ||
       err instanceof InvalidRuntimeRepositoryError ||
       err instanceof RuntimeSandboxCreationError ||
+      err instanceof RuntimeSandboxHostExposureDeniedError ||
       err instanceof SandboxRuntimeUnsupportedError
     ) {
       const e = new Error(err.message) as Error & { statusCode: number; code: string; details?: unknown };

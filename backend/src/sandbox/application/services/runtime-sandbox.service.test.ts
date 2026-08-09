@@ -13,6 +13,7 @@ import {
   RuntimeSandboxCapacityError,
   RuntimeSandboxCreationError,
   RuntimeSandboxForbiddenError,
+  RuntimeSandboxHostExposureDeniedError,
   RuntimeSandboxNotFoundError,
   UnsupportedRuntimeError,
 } from '../../domain/errors/runtime-sandbox.errors';
@@ -303,5 +304,32 @@ describe('DefaultRuntimeSandboxService (headless, no Docker)', () => {
     const lastProbe = prober.probes[prober.probes.length - 1];
     expect(lastProbe.request.host).toBe('127.0.0.1');
     expect(lastProbe.request.port).toBe(49001);
+  });
+
+  it('fails fast with a typed error when hostExpose is denied by config', async () => {
+    // allowHostExpose defaults to false (secure default) — never silently
+    // dropped, never silently probed from an unreachable internal address.
+    const { manager, store, service } = await makeHarness({ allowHostExpose: false });
+    const repo = await pythonRepo();
+
+    await expect(
+      service.create({ scanId: SCAN, repository: { path: repo }, hostExpose: true })
+    ).rejects.toBeInstanceOf(RuntimeSandboxHostExposureDeniedError);
+    // No provisioning side effects at all: no image, no container, no record.
+    expect(manager.buildCalls).toHaveLength(0);
+    expect(manager.createCalls).toHaveLength(0);
+    expect(store.all().length).toBe(0);
+  });
+
+  it('allows hostExpose when allowHostExpose is enabled', async () => {
+    const { manager, store, service } = await makeHarness({ allowHostExpose: true });
+    manager.createError = { exposedPort: 49001 };
+    const repo = await pythonRepo();
+
+    const sandbox = await service.create({ scanId: SCAN, repository: { path: repo }, hostExpose: true });
+    expect(sandbox.status).toBe('READY');
+    expect(sandbox.exposedPort).toBe(49001);
+    expect(manager.createCalls.length).toBe(1);
+    expect(store.all().length).toBeGreaterThan(0);
   });
 });

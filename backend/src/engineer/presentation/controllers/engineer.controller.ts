@@ -14,11 +14,7 @@ import { asyncHandler } from '../../../middlewares/request.middleware';
 import { ValidationError } from '../../../utils/errors';
 import { createSuccessResponse } from '../../../utils/response';
 import {
-  ConfirmedFindingNotFoundError,
-  EngineerError,
-  EngineerSourceError,
-  InvalidEngineerResponseError,
-  UnsupportedVulnerabilityError,
+  EngineerExecutionNotFoundError,
 } from '../../domain/errors/engineer.errors';
 import type { EngineerService } from '../../application/services/engineer.service';
 import { RunEngineerRequestSchema, toEngineerExecutionResponse, toRunEngineerResponse } from '../dto/engineer.dto';
@@ -44,18 +40,8 @@ export class EngineerController {
     }
     const detail = await this.engineer.getRun(executionId);
     if (!detail) {
-      throw new EngineerError('FINDING_NOT_FOUND', `engineer execution ${executionId} not found`);
+      throw new EngineerExecutionNotFoundError(executionId);
     }
     res.json(createSuccessResponse(toEngineerExecutionResponse(detail)));
   });
-}
-
-/** Map typed Engineer errors to HTTP status codes (exported for tests). */
-export function engineerErrorStatus(error: unknown): number {
-  if (error instanceof ConfirmedFindingNotFoundError) return 404;
-  if (error instanceof UnsupportedVulnerabilityError) return 422;
-  if (error instanceof InvalidEngineerResponseError) return 422;
-  if (error instanceof EngineerSourceError) return 502;
-  if (error instanceof EngineerError) return 422;
-  return 500;
 }

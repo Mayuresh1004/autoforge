@@ -35,6 +35,9 @@ export class MemoryScanRepository implements ScanRepository {
   private readonly repositories = new Map<string, StoredRepository>();
   private nextId = 1;
 
+  /** Optional deterministic scan id (integration tests need a fixed id). */
+  constructor(private readonly fixedScanId?: string) {}
+
   /** Test-only: number of scans stored. */
   getScanCount(): number {
     return this.rows.size;
@@ -66,7 +69,7 @@ export class MemoryScanRepository implements ScanRepository {
     const now = new Date();
     const row: MemoryRow = {
       scan: {
-        id: this.uid('scan'),
+        id: this.fixedScanId ?? this.uid('scan'),
         name: input.name,
         status: 'PENDING',
         startedAt: now,

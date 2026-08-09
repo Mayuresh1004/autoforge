@@ -7,9 +7,12 @@
 import { EmbeddingConfigError } from '../../domain/errors/embedding.errors';
 import type { EmbeddingConfig, EmbeddingProvider } from '../../domain/ports/embedding-provider';
 import { GeminiEmbeddingProvider } from '../providers/gemini-embedding-provider';
+import { NoopEmbeddingProvider } from '../providers/noop-embedding-provider';
 
 export function createEmbeddingProvider(config: EmbeddingConfig): EmbeddingProvider {
   switch (config.provider) {
+    case 'noop':
+      return new NoopEmbeddingProvider(config.dimensions);
     case 'gemini': {
       if (!config.apiKey) {
         throw new EmbeddingConfigError(

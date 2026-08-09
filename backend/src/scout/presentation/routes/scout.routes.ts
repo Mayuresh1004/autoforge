@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { applicationInfrastructure } from '../../../application/application';
 import { createScoutService } from '../../infrastructure/factory/scout-factory';
 import { ScoutController } from '../controllers/scout.controller';
 
@@ -8,7 +9,7 @@ import { ScoutController } from '../controllers/scout.controller';
  * (swap in a sandbox-bound runtime via the factory when a runtime sandbox
  * exists for the target app).
  */
-const service = createScoutService();
+const service = createScoutService({ events: applicationInfrastructure.events.publisher });
 const controller = new ScoutController(service);
 
 const router = Router();

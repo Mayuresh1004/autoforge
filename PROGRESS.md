@@ -50,9 +50,11 @@ append new milestones below prior ones.
 | 17a | Provider adjustment: Gemini primary (7A) | — (354 / 62) | ✅ Complete |
 | 18 | Knowledge ingestion + RAG foundation (7A) | +75 (429 / 72) | ✅ Complete |
 | 19 | Engineer Agent — draft remediation (7B) | +74 (503 / 82) | ✅ Complete |
+| 20 | Critic Agent — patch validation (Phase 8) | +58 (561 / 96) | ✅ Complete |
 
-- **Total tests:** 503 passing across 82 test files — 511 collected (8
-  skipped: 4 Docker-gated E2E tests + 4 opt-in LLM/RAG/Engineer live tests).
+- **Total tests:** 561 passing across 96 test files — 570 collected (9
+  skipped: Docker-gated E2E suites + opt-in live gates (LLM/RAG/Engineer/
+  Critic `CRITIC_E2E=1`)).
 
 - `npx tsc --noEmit` → exit 0 · `npm run build` → clean · compiled CJS loads
   (with `DATABASE_URL`/env set — the app's env validation runs at import).
@@ -1319,3 +1321,181 @@ Critic / auto-apply (`applyPatch`) / new vulnerability classes / XSS-SSRF-
 inherit-command-injection amplification / LangGraph orchestration / new
 providers / new Qdrant clients / Kubernetes / Redis. `Patch` rows produced
 in 7B are drafts only — nothing in the pipeline consumes or applies them.
+
+## Milestone 20 ✅ — Critic Agent — patch validation (Phase 8)
+
+**Scope:** the second remediation stage. The **Critic** validates an Engineer
+`GENERATED` patch for a **CONFIRMED SQL Injection** finding by running it in
+a **fresh disposable runtime sandbox** (the original repository is never
+touched) and installing a machine-made verdict: `APPROVED` / `REJECTED`, or
+`FAILED` when the validation environment broke (never a fake "bad patch").
+No auto-apply, no new vuln classes, no new LLM providers, no new Qdrant
+clients, no new Docker abstractions (the SandboxManager remains the only
+Docker owner; runtime lifecycle runs through the existing
+RuntimeSandboxService).
+
+### Pipeline
+```text
+GENERATED patch + CONFIRMED SQLi (only combinations accepted; else 404/422 fast-fail)
+→ mark UNDER_REVIEW → fresh disposable sandbox (finally: always destroyed)
+→ baseline: app reachable + Sniper exploit reproduces (else FAILED/BASELINE_INVALID)
+→ apply unified diff (pure parser: no fuzz, no shell; conflicts → REJECTED/PATCH_REJECTED)
+→ startup health → build (py_compile / node --check) → regression tests (pytest/npm,
+  absence is NOT_AVAILABLE, never a failure)
+→ exploit re-verification on the SAME target id: NOT_CONFIRMED ⇒ FIXED,
+  CONFIRMED ⇒ REJECTED/EXPLOIT_STILL_SUCCEEDS, no verdict ⇒ FAILED
+→ deterministic security gate (secrets, dangerous constructs, dependency
+  manifests, single-file, parameterization signal) → REJECTED/PATCH_REJECTED
+→ optional advisory LLM (never overrides) → APPROVED (patch sealed) or REJECTED
+→ bounded Engineer retry loop (CRITIC_MAX_ENGINEER_RETRIES=2): rejection feedback
+  is fed into the next Engineer attempt via the `engineer.feedback` template
+```
+
+### Module layout (clean architecture)
+- **`src/critic/domain/`** — `critic-result.ts` (`CriticRunResult`,
+  `CriticCheck`, `CriticFeedback`, `ExploitCriticOutcome`, failure kinds),
+  errors (`PatchNotFoundError`, `InvalidPatchStatusError`,
+  `UnsupportedVulnerabilityError`, `PatchConflictError`,
+  `SandboxProvisionFailure`, `ApplicationStartFailure`,
+  `ExploitStillSucceedsError`, `ExploitInconclusiveError`,
+  `SecurityGateFailureError`, `ValidationInfrastructureFailure`), ports
+  (`critic-repository`, `patch-review-repository`, `critic-finding-resolver`),
+  events (`SANDBOX_PROVISIONING` → … → `SANDBOX_DESTROYED`).
+- **`src/critic/application/`** — `apply-unified-diff.ts` (strict unified
+  diff apply, hunks bottom-up, no fuzz, CRLF-safe), `patch-applier.ts`
+  (size/path gates + write via the manager only), `build-check.ts`,
+  `test-runner.ts` (allowlisted pytest/npm discovery, NOT_AVAILABLE-safe),
+  `security-review-gate.ts` (six deterministic checks, no prompt text),
+  `llm-review.ts` (advisory, disabled by default), `critic-steps.ts` (273
+  lines: the bounded sandbox executables), `critic-outcome.ts`
+  (`classifyFailure` — infra errors NEVER become rejections; REJECTED
+  always carries structured feedback), `critic.service.ts` (233 lines:
+  thin orchestrator, `finally` teardown, attempts never overwritten),
+  `remediation-loop.service.ts` (engineer↔critic retry driver).
+- **`src/critic/infrastructure/`** — `prisma-critic-repository.ts`
+  (`CriticRun`, deterministic `id = patchId#attempt`), `prisma-patch-review-repository.ts`
+  (`GENERATED→UNDER_REVIEW→APPROVED/REJECTED`; NEVER `APPLIED`),
+  `prisma-critic-finding-resolver.ts` (patch → Vulnerability → CONFIRMED
+  exploit with the same targetId used by Sniper), `critic-event-collector.ts`,
+  `critic-factory.ts` (`runtimeService` is the SAME instance as the runtime
+  API; optional manager override for tests).
+- **Presentation** — DTO + controller + routes (`POST /api/critic/run`,
+  `GET /api/critic/:executionId`) — **shipped but NOT mounted** in
+  `routes/index.ts` (side-channel: "mostly hidden unless told otherwise").
+- **Engineer feedback plumb** — `engineer.feedback` template +
+  `EngineerRunInput.feedback` (reason/failedChecks/guidance/attempt).
+
+### Config (zod-bounded)
+`CRITIC_MAX_PATCH_BYTES` (16k), `CRITIC_MAX_SOURCE_BYTES` (64k),
+`CRITIC_CHECK_TIMEOUT_MS` (60s), `CRITIC_TEST_TIMEOUT_MS` (120s),
+`CRITIC_RETEST_TIMEOUT_MS` (180s), `CRITIC_ADVISORY_ENABLED` (true),
+`CRITIC_MAX_ENGINEER_RETRIES` (2); `CRITIC_E2E=1` live gate (real Docker,
+zero-residue assert).
+
+### Security
+- Attempt identity is deterministic and idempotent; decided patches are
+  sealed (APPROVED/REJECTED cannot be re-reviewed); infra failures leave
+  the patch UNDER_REVIEW and are rerunnable.
+- The original repository is never mounted or modified: the diff is applied
+  to the fresh container's copy only; verdicts recorded sanitized (no
+  secrets, bounded error text ≤ 300 chars in feedback).
+
+### Verified
+- **+58 tests (561 total, 96 files)**: critic-steps/service full-pipeline
+  (APPROVED, EXPLOIT_STILL_SUCCEEDS, BASELINE_INVALID, PATCH_REJECTED,
+  SANDBOX_PROVISION_FAILURE, APPLICATION_START_FAILURE,
+  VALIDATION_INFRASTRUCTURE_FAILURE, input gates, attempts-sealed,
+  event sequence, teardown-always), apply-unified-diff (single/multi hunk,
+  CRLF, additions-only, no-fuzz conflicts), patch-applier (path/size gates,
+  never-write-on-reject), build-check/test-runner (PASSED/FAILED/
+  NOT_AVAILABLE/timeouts), security gate (six checks), critic-outcome
+  (classification table, bounded messages), remediation-loop (approve,
+  retry-with-feedback, max attempts, engineer decline, crash), controller
+  (400/422/404/200 mapping), acceptance (`test/critic-acceptance`), live
+  gate `test/critic-e2e` (`CRITIC_E2E=1`). Default suite needs no
+  keys/Docker/network.
+- `npx tsc --noEmit` → 0 · `npm run build` clean · full `vitest run`:
+  **561 passed / 9 skipped**; all critic implementation files < 300 lines.
+
+### Not built (per scope)
+Auto-apply / `applyPatch` on APPROVED patches (patch rows stay drafts),
+multi-vuln-class validation (SQL_INJECTION only), external patch review,
+LangGraph orchestration, Redis/queue-backed retry jobs, K8s.
+
+## Milestone 21 ✅ — Architecture audit fixes (HARDENING-1)
+
+**Scope:** a read-only architecture audit of the remediation agents
+(runtime sandbox / Sniper / Engineer / Critic) produced **6 actionable
+findings**. This milestone implements every one of them with acceptance
+tests, keep-extend-not-replace, all prior gates unchanged. No new prompts,
+no new Prisma migrations, no new route surface; the Critic API remains an
+unmounted side-channel.
+
+### Findings — implemented
+- **HIGH-1 — ONE SandboxManager per application.** No more per-route
+  `createSandboxInfrastructure()`: `src/application/application-root.ts`
+  (`createApplicationInfrastructure`) is the composition root that builds
+  runtime, Sniper, Engineer and Critic over ONE manager (env
+  `SANDBOX_RUNTIME`, default `docker`) and injects it as a REQUIRED
+  constructor arg into every factory
+  (`createRuntimeSandboxInfrastructure`, `createSniperInfrastructure`,
+  `createEngineerInfrastructure`, `createCriticInfrastructure`,
+  `createSandboxBoundScoutService` — their internal manager defaults were
+  removed). Route modules consume the singleton infrastructure; there is NO
+  global singleton, tests inject a programmed manager to prove sharing.
+  Acceptance: `test/application-composition.test.ts` — a real root, a
+  real `DefaultRuntimeSandboxService`, real `ManagerSourceReader`, real
+  `CriticSteps` with the root's runtime/sniper: the Sniper confirms a
+  runtime-created sandbox; the Engineer reads its source through the
+  shared manager; the Critic provisions a FRESH sandbox, applies the
+  patch, builds/tests and re-verifies FIXED (all execs/apply/destroy
+  recorded on the SAME manager).
+- **HIGH(2) — central error mapping.** `src/middlewares/error.middleware.ts`
+  exports `errorStatusForError(err)`: `AppError`→own status; Patch/…
+  NotFound→404; `EngineerSourceError`→502; `SandboxUnavailableError`→503;
+  InvalidPatchStatus/PatchConflict/SecurityGateFailure/Unsupported…/
+  AuthenticationUnavailable→422; `SniperError`→400; else 500. 5xx bodies
+  are always the masked `UNEXPECTED_ERROR_MESSAGE` (never raw messages),
+  internals only via the safe logger. New typed `EngineerExecutionNotFoundError`
+  (`FINDING_NOT_FOUND`). Tested over real HTTP:
+  `test/http-error-mapping.test.ts` (400/404/422/404-route/502/masked-500
+  no-leak).
+- **MEDIUM(3) — shared CONFIRMED-finding resolution.**
+  `src/remediation/` owns the canonical finding model, port
+  (`ConfirmedFindingSource`, `listConfirmed`) and the ONE Prisma
+  query/mapper (`prisma-confirmed-finding-source.ts`, ordering
+  `completedAt desc`). Engineer and Critic adapters are thin facades over
+  it: **Engineer and Critics resolve the SAME canonical finding** with a
+  single redaction point.
+- **MEDIUM(4) — non-persistent Sniper runs for the Critic.**
+  `RunSniperInput.options.persist?: boolean` (default true): with
+  `persist:false` the REAL verifier runs with identical outcomes but ZERO
+  repository writes (in-memory PoC ids `in-memory:…`). The Critic's
+  baseline/retest use it (`critic-steps.ts`), so Critic checks no longer
+  write Exploit/Attempt rows.
+- **MEDIUM(5) — provider-aware LLM defaults.** `LLM_MODEL` defaults to
+  `''`; `resolveDefaultLLMModel(provider, explicit)` — only `openrouter`
+  falls back to the free alias; other providers demand an explicit model
+  and surface `LLMConfigError` naming the missing `*_MODEL` key; the
+  provider factory constructs lazily (boot never crashes on missing
+  keys). Gemini → OpenRouter → Groq → Mistral fallback order unchanged;
+  never a paid default.
+- **MEDIUM(6) — fail fast on denied hostExpose.**
+  `SANDBOX_ALLOW_HOST_EXPOSE` stays `false`; an explicit
+  `hostExpose:true` request with the flag off is a typed 422
+  (`HOST_EXPOSURE_DENIED`) thrown at the TOP of `DefaultRuntimeSandboxService.create`
+  BEFORE any store write or image build (plus defense-in-depth in
+  `buildProvisionRequest`). Tested: deny case → zero
+  manager/storage side effects; allow case → provisions normally.
+
+### Verified
+- New tests: `test/application-composition` (1), `test/http-error-mapping`
+  (1), runtime-sandbox host-expose (2), sniper persist:false (2) + the
+  earlier config/factory LLM-default tests — full `vitest run`:
+  **575 passed / 9 skipped (584)**, `npx tsc --noEmit` → 0, `npm run build`
+  clean. Default suite needs no keys/Docker/network; live gates unchanged
+  (`CRITIC_E2E=1`, `ENGINEER_E2E=1`, `RUNTIME_SANDBOX_E2E=1`).
+- Behavior preserved: only SQL_INJECTION / GENERATED-on-CONFIRMED,
+  NEVER `APPLIED`, fresh sandbox destroyed in `finally`, original repo
+  never touched, no secrets, `SANDBOX_ALLOW_HOST_EXPOSE=false` default,
+  non-openrouter providers default to NO model (explicit required).

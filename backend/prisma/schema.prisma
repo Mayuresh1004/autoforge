@@ -51,8 +51,16 @@ enum ExploitStatus {
 
 enum PatchStatus {
   GENERATED
+  UNDER_REVIEW
+  APPROVED
   VALIDATED
   APPLIED
+  REJECTED
+  FAILED
+}
+
+enum CriticStatus {
+  APPROVED
   REJECTED
   FAILED
 }
@@ -349,6 +357,7 @@ model Patch {
   updatedAt       DateTime    @updatedAt
 
   vulnerability Vulnerability @relation(fields: [vulnerabilityId], references: [id], onDelete: Cascade)
+  criticRuns CriticRun[]
 
   @@index([vulnerabilityId])
   @@index([status])
@@ -356,6 +365,34 @@ model Patch {
 }
 
 /// Execution record for an autonomous agent run
+/// Critic Agent (Phase 8) — one validation run over an Engineer patch.
+/// Rows are created per attempt; attempts are never overwritten.
+model CriticRun {
+  id              String       @id @default(cuid())
+  patchId         String
+  vulnerabilityId String
+  scanId          String?
+  executionId     String?
+  attempt         Int          @default(1)
+  status          CriticStatus
+  failureReason   String?
+  checks          Json?
+  exploitResult   Json?
+  feedback        Json?
+  errorMessage    String?
+  startedAt       DateTime?
+  completedAt     DateTime?
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+
+  patch Patch @relation(fields: [patchId], references: [id], onDelete: Cascade)
+
+  @@index([patchId])
+  @@index([vulnerabilityId])
+  @@index([executionId])
+  @@map("critic_runs")
+}
+
 model AgentExecution {
   id           String               @id @default(cuid())
   scanId       String

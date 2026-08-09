@@ -1,14 +1,16 @@
 import { Router } from 'express';
-import { createRuntimeSandboxInfrastructure } from '../../infrastructure/factory/runtime-sandbox-factory';
+import { applicationInfrastructure } from '../../../application/application';
 import { RuntimeSandboxController } from '../controllers/runtime-sandbox.controller';
 
 /**
- * Composition root for the runtime-sandbox HTTP surface. Agents never touch
- * this router's lifecycle: they consume the READY context via their own
- * services. Route order: literal `/runtime/:id/health` is registered before
- * generic `/:id` handlers to avoid shadowing.
+ * Composition root for the runtime-sandbox HTTP surface — the app-wide
+ * (module-singleton) infrastructure from `application/application`. Agents
+ * never touch this router's lifecycle: they consume the READY context via
+ * their own services using the SAME SandboxManager. Route order: literal
+ * `/runtime/:id/health` is registered before generic `/:id` handlers to
+ * avoid shadowing.
  */
-const infrastructure = createRuntimeSandboxInfrastructure();
+const infrastructure = applicationInfrastructure.runtime;
 const controller = new RuntimeSandboxController(infrastructure.service);
 
 const router = Router();

@@ -63,6 +63,7 @@ services:
       STATIC_SCAN_RUNTIME: sandboxed
       SANDBOX_RUNTIME: process
       LOG_LEVEL: info
+      EMBEDDING_PROVIDER: noop
       # Analyzer workspace is rooted inside the container; the sandbox process
       # backend uses this and the container tmp dir for throwaway workspaces.
       ANALYZER_WORKSPACE_DIR: /app/workspace

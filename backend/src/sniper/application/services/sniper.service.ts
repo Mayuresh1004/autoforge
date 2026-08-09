@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { logger } from '../../../config/logger';
 import type { SandboxManager } from '../../../sandbox/domain/ports/sandbox-manager';
 import type { SniperConfig } from '../../../config';
+import type { AmassEventPublisher, AmassEventInput } from '../../../observability/domain/ports/event-bus';
 import type { ExploitResultDetail, ProofOfConcept } from '../../domain/models/verification';
 import type { SniperRepository } from '../../domain/ports/sniper-repository';
 import type { VerifierRegistry } from '../../domain/ports/vulnerability-verifier';
@@ -24,6 +25,8 @@ export interface SniperServiceDeps {
   readonly manager: SandboxManager;
   readonly verifiers: VerifierRegistry;
   readonly config: SniperConfig;
+  /** Phase 9 observability publisher (default: silent). */
+  readonly events?: AmassEventPublisher;
 }
 
 /**
@@ -56,6 +59,15 @@ export class DefaultSniperService implements SniperService {
     // Pre-flight: reject a run whose sandbox is missing or scan-mismatched.
     await this.validateSandbox(input);
 
+    this.emit(input, {
+      eventType: 'SNIPER_STARTED',
+      agentType: 'SNIPER',
+      phase: 'verification',
+      status: 'STARTED',
+      message: `verifying ${input.targetIds.length} planned target(s)`,
+      metadata: { counts: { targets: input.targetIds.length } },
+    });
+
     const findings = await this.deps.repository.loadFindings(input.scanId);
     const concurrency = Math.max(1, input.options?.concurrency ?? this.deps.config.concurrency);
     const executor = new BoundedExecutor(concurrency);
@@ -65,6 +77,7 @@ export class DefaultSniperService implements SniperService {
       repository: this.deps.repository,
       verifiers: this.deps.verifiers,
       config: this.deps.config,
+      events: this.deps.events,
     });
 
     const outcomes = await executor.runAll(
@@ -90,6 +103,21 @@ export class DefaultSniperService implements SniperService {
       'sniper.run: complete'
     );
 
+    this.emit(input, {
+      eventType: 'SNIPER_VERIFICATION_COMPLETED',
+      agentType: 'SNIPER',
+      phase: 'verification',
+      status: 'COMPLETED',
+      message: `verification finished with ${results.length} result(s)`,
+      metadata: {
+        counts: {
+          results: results.length,
+          confirmed: results.filter((r) => r.exploit.status === 'CONFIRMED').length,
+          failed: results.filter((r) => r.exploit.status === 'FAILED').length,
+        },
+      },
+    });
+
     return {
       runId,
       scanId: input.scanId,
@@ -113,6 +141,18 @@ export class DefaultSniperService implements SniperService {
 
   async listExploitsForTarget(targetId: string): Promise<readonly ProofOfConcept[]> {
     return this.deps.repository.listExploitsByTarget(targetId);
+  }
+
+  private emit(
+    input: RunSniperInput,
+    event: Omit<AmassEventInput, 'scanId'>,
+  ): void {
+    if (!this.deps.events) return;
+    try {
+      this.deps.events.publish({ ...event, scanId: input.scanId });
+    } catch (error) {
+      logger.warn({ err: error }, 'sniper.events: publish ignored');
+    }
   }
 
   private async validateSandbox(input: RunSniperInput): Promise<void> {

@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { applicationInfrastructure } from '../../../application/application';
 import { createPlannerService } from '../../infrastructure/factory/plan-factory';
 import { PrismaPlanRepository } from '../../infrastructure/repository/prisma-plan-repository';
 import { PlannerController } from '../controller/planner.controller';
@@ -8,7 +9,9 @@ import { PlannerController } from '../controller/planner.controller';
  * service backed by the Prisma repository (all inputs read-only). The planner
  * never attacks, scans, exploits or patches — it only ranks.
  */
-const service = createPlannerService(new PrismaPlanRepository());
+const service = createPlannerService(new PrismaPlanRepository(), {
+  events: applicationInfrastructure.events.publisher,
+});
 const controller = new PlannerController(service);
 
 const router = Router();

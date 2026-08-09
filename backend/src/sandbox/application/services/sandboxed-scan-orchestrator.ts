@@ -12,6 +12,8 @@ import { runScannerFlow } from '../../../static-scanner/application/services/sca
 import type { SandboxScanTarget } from '../../../static-scanner/application/services/repository-target-analyzer';
 import { SandboxedScannerExecutor } from '../../infrastructure/pipeline/sandboxed-scanner-executor';
 import type { SandboxManager } from '../../domain/ports/sandbox-manager';
+import type { AmassEventPublisher, AmassEventInput } from '../../../observability/domain/ports/event-bus';
+import { DeferredEventPublisher } from '../../../observability/application/deferred-publisher';
 
 export interface SandboxedScanOrchestratorOptions {
   /** The manager — the only component that knows how to build/run sandboxes. */
@@ -27,6 +29,8 @@ export interface SandboxedScanOrchestratorOptions {
   readonly image?: string;
   readonly createTimeoutMs?: number;
   readonly cloneTimeoutMs?: number;
+  /** Phase 9 observability publisher (default: silent). */
+  readonly events?: AmassEventPublisher;
 }
 
 /**
@@ -55,6 +59,7 @@ export class SandboxedScanOrchestrator {
   private readonly image: string;
   private readonly createTimeoutMs: number;
   private readonly cloneTimeoutMs: number;
+  private readonly events: AmassEventPublisher | undefined;
 
   constructor(options: SandboxedScanOrchestratorOptions) {
     this.manager = options.manager;
@@ -67,11 +72,16 @@ export class SandboxedScanOrchestrator {
     this.image = options.image ?? 'amass/analysis:local';
     this.createTimeoutMs = options.createTimeoutMs ?? 120_000;
     this.cloneTimeoutMs = options.cloneTimeoutMs ?? 60_000;
+    this.events = options.events;
   }
 
   async runScan(repositoryUrl: string): Promise<ScanResult> {
     const scanId = `scan_${randomUUID().slice(0, 12)}`;
     logger.info({ scanId, repositoryUrl }, 'sandboxed_scan:started');
+
+    const deferred = new DeferredEventPublisher(this.events);
+    deferred.emit({ eventType: 'ANALYZER_STARTED', agentType: 'ANALYZER', phase: 'analysis', status: 'STARTED', message: 'cloning and analyzing the repository inside an analysis sandbox', metadata: { targetUrl: repositoryUrl } });
+    deferred.emit({ eventType: 'SANDBOX_PROVISIONING', agentType: 'SANDBOX', phase: 'sandbox', status: 'STARTED', message: 'provisioning analysis sandbox', metadata: { runtime: 'manager' } });
 
     const sandbox = await this.manager.createSandbox({
       scanId,
@@ -85,6 +95,7 @@ export class SandboxedScanOrchestrator {
     let storedScanId: string | undefined;
     try {
       await this.manager.waitUntilReady(sandbox.id, this.createTimeoutMs);
+      deferred.emit({ eventType: 'SANDBOX_READY', agentType: 'SANDBOX', phase: 'sandbox', status: 'READY', message: `analysis sandbox ${sandbox.id} ready`, metadata: { sandboxId: sandbox.id } });
 
       const workspace = sandbox.workspacePath;
       if (!workspace) {
@@ -104,10 +115,15 @@ export class SandboxedScanOrchestrator {
       }
 
       const { name, target } = await this.analyzeTarget(workspace, repositoryUrl);
+      deferred.emit({ eventType: 'ANALYZER_COMPLETED', agentType: 'ANALYZER', phase: 'analysis', status: 'COMPLETED', message: 'sandboxed repository analysis finished', metadata: { counts: { languages: target.languages.length } } });
       const store = await this.repository.createScan({ name, repositoryUrl });
       storedScanId = store.id;
+      this.emit(store.id, { eventType: 'SCAN_STARTED', agentType: 'SYSTEM', phase: 'scan', status: 'STARTED', message: `scan ${store.id} started`, metadata: { targetUrl: repositoryUrl } });
+      deferred.flush(store.id);
       const startedAt = new Date();
       await this.repository.markScanRunning(store.id, startedAt);
+
+      this.emit(store.id, { eventType: 'SCANNER_STARTED', agentType: 'SCANNER', phase: 'scanning', status: 'STARTED', message: 'running the selected scanners in the sandbox', metadata: {} });
 
       const executor = new SandboxedScannerExecutor(this.manager, sandbox.id);
       const registry = this.registryFactory(executor);
@@ -129,18 +145,34 @@ export class SandboxedScanOrchestrator {
         }
       );
 
+      this.emit(store.id, { eventType: 'SCANNER_COMPLETED', agentType: 'SCANNER', phase: 'scanning', status: 'COMPLETED', message: `scanners finished with ${result.findings.length} findings`, metadata: { counts: { findings: result.findings.length, scanners: result.scannerStatistics.length } } });
+      this.emit(store.id, { eventType: 'SCAN_COMPLETED', agentType: 'SYSTEM', phase: 'scan', status: 'COMPLETED', message: `scan ${store.id} completed`, metadata: { counts: { findings: result.findings.length } } });
+
       logger.info({ scanId, status: result.status, repositoryUrl }, 'sandboxed_scan:complete');
       return result;
     } catch (error) {
       logger.error({ scanId, error, repositoryUrl }, 'sandboxed_scan:failed');
       if (storedScanId) {
+        this.emit(storedScanId, { eventType: 'SCAN_FAILED', agentType: 'SYSTEM', phase: 'scan', level: 'ERROR', status: 'FAILED', message: 'scan failed', metadata: { error: error instanceof Error ? error.message.slice(0, 160) : undefined } });
         await this.repository
           .completeScan(storedScanId, { status: 'FAILED', completedAt: new Date(), scannerStats: [] })
           .catch(() => undefined);
+      } else {
+        deferred.discard();
       }
       throw error;
     } finally {
+      this.emit(storedScanId ?? '', { eventType: 'SANDBOX_DESTROYED', agentType: 'SANDBOX', phase: 'sandbox', status: 'DESTROYED', message: `analysis sandbox ${sandbox.id} destroyed`, metadata: { sandboxId: sandbox.id } });
       await this.manager.destroy(sandbox.id).catch(() => undefined);
+    }
+  }
+
+  private emit(scanId: string, input: Omit<AmassEventInput, 'scanId'>): void {
+    if (!this.events || !scanId) return;
+    try {
+      this.events.publish({ ...input, scanId });
+    } catch (error) {
+      logger.warn({ err: error }, 'sandboxed_scan.events: publish ignored');
     }
   }
 }

@@ -13,7 +13,10 @@ export type PromptIdentifier =
   | 'engineer.system'
   | 'engineer.patch-generation'
   | 'engineer.rag-context'
-  | 'engineer.security-review';
+  | 'engineer.security-review'
+  | 'engineer.feedback'
+  | 'critic.system'
+  | 'critic.review';
 
 export interface PromptRegistry {
   /** Versioned lookup. Missing id → PromptNotFoundError; missing dir →
@@ -27,4 +30,7 @@ export const PROMPT_CATALOG: Readonly<Record<PromptIdentifier, { file: string }>
   'engineer.patch-generation': { file: 'engineer/patch-generation.md' },
   'engineer.rag-context': { file: 'engineer/rag-context.md' },
   'engineer.security-review': { file: 'engineer/security-review.md' },
+  'engineer.feedback': { file: 'engineer/feedback.md' },
+  'critic.system': { file: 'critic/system.md' },
+  'critic.review': { file: 'critic/review.md' },
 };

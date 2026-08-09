@@ -9,11 +9,11 @@
 import type { PrismaClient } from '@prisma/client';
 import type { AgentExecutionService } from '../../../agent/application/services/agent-execution.service';
 import type { LLMProvider } from '../../../llm/domain/ports/llm-provider';
+import type { AmassEventPublisher } from '../../../observability/domain/ports/event-bus';
 import type { PromptRegistry } from '../../../prompts/domain/prompt-registry';
 import type { RagService } from '../../../knowledge/application/services/rag.service';
 import type { RuntimeSandboxStore } from '../../../sandbox/domain/ports/runtime-sandbox-store';
 import type { SandboxManager } from '../../../sandbox/domain/ports/sandbox-manager';
-import { createSandboxInfrastructure } from '../../../sandbox/infrastructure/factory/sandbox-factory';
 import type { EngineerBounds } from '../../domain/models/engineer-response';
 import { DEFAULT_ENGINEER_BOUNDS } from '../../domain/models/engineer-response';
 import { DefaultEngineerService } from '../../application/services/engineer.service';
@@ -36,8 +36,9 @@ export interface EngineerInfrastructure {
 
 export interface CreateEngineerInfrastructureOptions {
   readonly prisma: PrismaClient;
-  /** SandboxManager — inject for tests; default is the Docker manager. */
-  readonly manager?: SandboxManager;
+  /** The application composition root's SINGLE shared manager — required so
+   *  the Engineer reads source from runtime-created sandboxes. */
+  readonly manager: SandboxManager;
   /** Runtime-sandbox store (existing Prisma-backed store). */
   readonly runtimeStore: RuntimeSandboxStore;
   readonly rag: RagService;
@@ -45,18 +46,19 @@ export interface CreateEngineerInfrastructureOptions {
   readonly llm: LLMProvider;
   readonly executions: AgentExecutionService;
   readonly config: EngineerConfig;
+  /** Phase 9 observability publisher (default: silent). */
+  readonly events?: AmassEventPublisher;
 }
 
 export function createEngineerInfrastructure(
   options: CreateEngineerInfrastructureOptions,
 ): EngineerInfrastructure {
-  const manager = options.manager ?? createSandboxInfrastructure({ runtime: 'docker' }).manager;
   const bounds = options.config.bounds ?? DEFAULT_ENGINEER_BOUNDS;
 
   const engineer: EngineerService = new DefaultEngineerService({
     findings: new PrismaConfirmedFindingRepository(options.prisma),
     patches: new PrismaEngineerPatchRepository(options.prisma),
-    sourceReader: new ManagerSourceReader(manager, {
+    sourceReader: new ManagerSourceReader(options.manager, {
       maxSourceBytes: options.config.maxSourceBytes,
       maxContextLines: options.config.maxContextLines,
     }),
@@ -65,6 +67,7 @@ export function createEngineerInfrastructure(
     llm: options.llm,
     executions: options.executions,
     runtimeStore: options.runtimeStore,
+    events: options.events,
     bounds,
     maxSourceBytes: options.config.maxSourceBytes,
     maxContextLines: options.config.maxContextLines,

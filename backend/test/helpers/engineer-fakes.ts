@@ -9,7 +9,7 @@ import type { RuntimeSandboxContext } from '../../src/sandbox/domain/entities/ru
 import type { ConfirmedFindingRepository } from '../../src/engineer/domain/ports/confirmed-finding-repository';
 import type { ConfirmedVulnerabilityFinding } from '../../src/engineer/domain/ports/confirmed-finding-repository';
 import type { EngineerPatchRecord, EngineerPatchRepository, SaveEngineerPatchInput } from '../../src/engineer/domain/ports/patch-repository';
-import type { EngineerSourceReader, SourceReadRequest, SourceReadResult } from '../../src/engineer/domain/ports/source-reader';
+import type { EngineerSourceReader, SourceReadRequest, SourceReadResult, ReadWholeFileResult } from '../../src/engineer/domain/ports/source-reader';
 import type { RagQuery, RagResult, RagService } from '../../src/knowledge/application/services/rag.service';
 import type { LLMProvider, LLMResponse, LLMRequest, ModelInfo, ProviderHealth } from '../../src/llm/domain/ports/llm-provider';
 
@@ -136,6 +136,18 @@ export class StubEngineerSourceReader implements EngineerSourceReader {
     const result = this.files.get(request.path);
     if (!result) throw new Error(`source not found: ${request.path}`);
     return result;
+  }
+
+  async readWholeFile(context: RuntimeSandboxContext, request: SourceReadRequest): Promise<ReadWholeFileResult> {
+    this.reads.push({ path: request.path, startLine: null, endLine: null, maxBytes: request.maxBytes ?? undefined });
+    if (this.throwOnRead) {
+      const error = this.throwOnRead;
+      this.throwOnRead = null;
+      throw error;
+    }
+    const result = this.files.get(request.path);
+    if (!result) throw new Error(`source not found: ${request.path}`);
+    return { filePath: result.filePath, content: result.lines.join('\n'), byteLength: result.byteLength };
   }
 }
 

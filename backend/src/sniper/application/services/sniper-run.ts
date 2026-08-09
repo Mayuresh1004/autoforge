@@ -12,6 +12,9 @@ import { logger } from '../../../config/logger';
 import type { SniperConfig } from '../../../config';
 import type {
   CorrelatedFinding,
+  ConfidenceBreakdown,
+  EvidenceItem,
+  ProofOfConcept,
   VerificationContext,
   VerificationStatus,
   VerificationTarget,
@@ -31,11 +34,14 @@ import {
 } from '../../domain/errors/sniper.errors';
 import { resolveSameOriginEndpoint } from './target-origin';
 import { AttemptLoop, messageOf } from './attempt-loop';
+import type { AmassEventPublisher, AmassEventInput } from '../../../observability/domain/ports/event-bus';
 
 export interface SniperRunDeps {
   readonly repository: SniperRepository;
   readonly verifiers: VerifierRegistry;
   readonly config: SniperConfig;
+  /** Phase 9 observability publisher (optional). */
+  readonly events?: AmassEventPublisher;
 }
 
 export class SniperTargetRunner {
@@ -45,6 +51,15 @@ export class SniperTargetRunner {
     this.attemptLoop = new AttemptLoop(deps.repository, deps.config);
   }
 
+  private emit(scanId: string, event: Omit<AmassEventInput, 'scanId'>): void {
+    if (!this.deps.events) return;
+    try {
+      this.deps.events.publish({ ...event, scanId });
+    } catch (error) {
+      logger.warn({ err: error }, 'sniper-run.events: publish ignored');
+    }
+  }
+
   async runTarget(
     input: RunSniperInput,
     targetId: string,
@@ -52,6 +67,7 @@ export class SniperTargetRunner {
     runtime: ToolRuntime
   ): Promise<TargetRunOutcome> {
     const startedAt = new Date();
+    const persist = input.options?.persist !== false;
     let planned: PlannedTargetSnapshot | null = null;
     try {
       // 1-2. Planned target exists and is scoped to this scan/sandbox.
@@ -75,6 +91,16 @@ export class SniperTargetRunner {
           `unsupported candidate vulnerability (${label})`);
       }
 
+      // 4b. Observability: target selected with the chosen vulnerability type.
+      this.emit(input.scanId, {
+        eventType: 'SNIPER_TARGET_SELECTED',
+        agentType: 'SNIPER',
+        phase: 'verification',
+        status: 'IN_PROGRESS',
+        message: `selected ${targetId} (${type})`,
+        metadata: { targetId, endpoint: resolvedUrl, vulnerabilityId: planned.candidateVulnerabilities[0] ?? undefined, check: type },
+      });
+
       // 5. Auth: only explicitly-provided credentials; otherwise NOT_TESTED.
       if (planned.requiresAuthentication && !input.credentials) {
         throw new AuthenticationUnavailableError(targetId);
@@ -96,25 +122,48 @@ export class SniperTargetRunner {
       );
 
       // Reserve the final row (status TESTING) so attempts can attach to it.
-      const seed = await this.deps.repository.saveExploit({
-        scanId: input.scanId,
-        targetId,
-        vulnerabilityId: correlateFindingId(findings, type),
-        type,
-        status: 'TESTING',
-        confidence: null,
-        confidenceBreakdown: null,
-        endpoint: resolvedUrl,
-        method: planned.method,
-        parameter: null,
-        tool: verifier.tool,
-        reason: 'verification in progress',
-        evidence: [],
-        attacks: 0,
-        startedAt,
-        completedAt: new Date(),
-        durationMs: null,
-      });
+      // In non-persist mode (dry-run checks) this is an in-memory placeholder.
+      const seed = persist
+        ? await this.deps.repository.saveExploit({
+            scanId: input.scanId,
+            targetId,
+            vulnerabilityId: correlateFindingId(findings, type),
+            type,
+            status: 'TESTING',
+            confidence: null,
+            confidenceBreakdown: null,
+            endpoint: resolvedUrl,
+            method: planned.method,
+            parameter: null,
+            tool: verifier.tool,
+            reason: 'verification in progress',
+            evidence: [],
+            attacks: 0,
+            startedAt,
+            completedAt: new Date(),
+            durationMs: null,
+          })
+        : inMemoryPoc({
+            id: `in-memory:${input.scanId}:${targetId}`,
+            scanId: input.scanId,
+            targetId,
+            vulnerabilityId: correlateFindingId(findings, type),
+            type,
+            status: 'TESTING',
+            confidence: null,
+            confidenceBreakdown: null,
+            endpoint: resolvedUrl,
+            method: planned.method,
+            parameter: null,
+            verifier: verifier.id,
+            tool: verifier.tool,
+            reason: 'verification in progress',
+            evidence: [],
+            attacks: 0,
+            startedAt,
+            completedAt: new Date(),
+            durationMs: null,
+          });
 
       const target: VerificationTarget = {
         targetId,
@@ -135,30 +184,73 @@ export class SniperTargetRunner {
         context,
         exploitId: seed.id,
         maxAttempts,
+        persist,
       });
 
-      // 8. Persist the FINAL exploit record (status + evidence kept separate
-      //    from the individual attempts).
-      const poc = await this.deps.repository.saveExploit({
-        scanId: input.scanId,
-        targetId,
-        vulnerabilityId: correlateFindingId(findings, type),
-        type,
-        status: final.outcome.status,
-        confidence: final.outcome.confidence.score,
-        confidenceBreakdown: final.outcome.confidence,
-        endpoint: resolvedUrl,
-        method: planned.method,
-        parameter: final.outcome.parameter ?? null,
-        tool: final.outcome.tool,
-        reason: final.outcome.reason,
-        evidence: final.outcome.evidence,
-        attacks: final.attempts,
-        startedAt,
-        completedAt: new Date(),
-        durationMs: Date.now() - startedAt.getTime(),
-        errorMessage: final.outcome.status === 'FAILED' ? final.outcome.reason : null,
-      });
+      // 8. Record the FINAL exploit status (status + evidence kept separate
+      //    from the individual attempts). Dry-run mode returns in memory.
+      const poc = persist
+        ? await this.deps.repository.saveExploit({
+            scanId: input.scanId,
+            targetId,
+            vulnerabilityId: correlateFindingId(findings, type),
+            type,
+            status: final.outcome.status,
+            confidence: final.outcome.confidence.score,
+            confidenceBreakdown: final.outcome.confidence,
+            endpoint: resolvedUrl,
+            method: planned.method,
+            parameter: final.outcome.parameter ?? null,
+            tool: final.outcome.tool,
+            reason: final.outcome.reason,
+            evidence: final.outcome.evidence,
+            attacks: final.attempts,
+            startedAt,
+            completedAt: new Date(),
+            durationMs: Date.now() - startedAt.getTime(),
+            errorMessage: final.outcome.status === 'FAILED' ? final.outcome.reason : null,
+          })
+        : inMemoryPoc({
+            id: `in-memory:${input.scanId}:${targetId}`,
+            scanId: input.scanId,
+            targetId,
+            vulnerabilityId: correlateFindingId(findings, type),
+            type,
+            status: final.outcome.status,
+            confidence: final.outcome.confidence.score,
+            confidenceBreakdown: final.outcome.confidence,
+            endpoint: resolvedUrl,
+            method: planned.method,
+            parameter: final.outcome.parameter ?? null,
+            verifier: final.outcome.verifier,
+            tool: final.outcome.tool,
+            reason: final.outcome.reason,
+            evidence: final.outcome.evidence,
+            attacks: final.attempts,
+            startedAt,
+            completedAt: new Date(),
+            durationMs: Date.now() - startedAt.getTime(),
+          });
+
+      if (final.outcome.status === 'CONFIRMED') {
+        this.emit(input.scanId, {
+          eventType: 'SNIPER_CONFIRMED',
+          agentType: 'SNIPER',
+          phase: 'verification',
+          status: 'CONFIRMED',
+          message: `exploit confirmed for target "${targetId}"`,
+          metadata: { targetId, endpoint: resolvedUrl, check: type, result: final.outcome.status, counts: { attempts: final.attempts } },
+        });
+      } else {
+        this.emit(input.scanId, {
+          eventType: 'SNIPER_REJECTED',
+          agentType: 'SNIPER',
+          phase: 'verification',
+          status: 'REJECTED',
+          message: `target "${targetId}" not exploited (${final.outcome.reason ?? 'no confirmed finding'})`,
+          metadata: { targetId, endpoint: resolvedUrl, check: type, result: final.outcome.status, counts: { attempts: final.attempts } },
+        });
+      }
 
       logger.info(
         {
@@ -208,30 +300,100 @@ export class SniperTargetRunner {
     typeLabel: string,
     reason: string
   ): Promise<TargetRunOutcome> {
-    const poc = await this.deps.repository.saveExploit({
-      scanId: input.scanId,
-      targetId,
-      vulnerabilityId: null,
-      type: typeLabel as VulnerabilityType,
-      status,
-      confidence: null,
-      confidenceBreakdown: null,
-      endpoint: targetId,
-      method: 'GET',
-      parameter: null,
-      tool: null,
-      reason,
-      evidence: [],
-      attacks: 0,
-      startedAt,
-      completedAt: new Date(),
-      durationMs: 0,
-    });
+    const persist = input.options?.persist !== false;
+    const poc = persist
+      ? await this.deps.repository.saveExploit({
+          scanId: input.scanId,
+          targetId,
+          vulnerabilityId: null,
+          type: typeLabel as VulnerabilityType,
+          status,
+          confidence: null,
+          confidenceBreakdown: null,
+          endpoint: targetId,
+          method: 'GET',
+          parameter: null,
+          tool: null,
+          reason,
+          evidence: [],
+          attacks: 0,
+          startedAt,
+          completedAt: new Date(),
+          durationMs: 0,
+        })
+      : inMemoryPoc({
+          id: `in-memory:${input.scanId}:${targetId}`,
+          scanId: input.scanId,
+          targetId,
+          vulnerabilityId: null,
+          type: typeLabel as VulnerabilityType,
+          status,
+          confidence: null,
+          confidenceBreakdown: null,
+          endpoint: targetId,
+          method: 'GET',
+          parameter: null,
+          verifier: '-',
+          tool: null,
+          reason,
+          evidence: [],
+          attacks: 0,
+          startedAt,
+          completedAt: new Date(),
+          durationMs: 0,
+        });
     return { targetId, exploit: poc };
   }
 }
 
 // -- helpers ----------------------------------------------------------------
+
+/** In-memory PoC record for dry-run (non-persisting) verification. */
+interface InMemoryPocInput {
+  readonly id: string;
+  readonly scanId: string;
+  readonly targetId: string;
+  readonly vulnerabilityId: string | null;
+  readonly type: VulnerabilityType;
+  readonly status: VerificationStatus;
+  readonly confidence: number | null;
+  readonly confidenceBreakdown: ConfidenceBreakdown | null;
+  readonly endpoint: string;
+  readonly method: string;
+  readonly parameter: string | null;
+  readonly verifier: string;
+  readonly tool: string | null;
+  readonly reason: string;
+  readonly evidence: readonly EvidenceItem[];
+  readonly attacks: number;
+  readonly startedAt: Date;
+  readonly completedAt: Date;
+  readonly durationMs: number | null;
+}
+
+function inMemoryPoc(parts: InMemoryPocInput): ProofOfConcept {
+  return {
+    id: parts.id,
+    targetId: parts.targetId,
+    scanId: parts.scanId,
+    vulnerabilityId: parts.vulnerabilityId,
+    type: parts.type,
+    status: parts.status,
+    confidence: parts.confidence,
+    confidenceBreakdown: parts.confidenceBreakdown,
+    endpoint: parts.endpoint,
+    method: parts.method,
+    parameter: parts.parameter,
+    verifier: parts.verifier,
+    tool: parts.tool,
+    reason: parts.reason,
+    evidence: parts.evidence,
+    attacks: parts.attacks,
+    startedAt: parts.startedAt.toISOString(),
+    completedAt: parts.completedAt.toISOString(),
+    durationMs: parts.durationMs,
+  };
+}
 
 function buildContext(
   input: RunSniperInput,

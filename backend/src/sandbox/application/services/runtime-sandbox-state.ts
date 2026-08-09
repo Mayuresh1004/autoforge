@@ -10,6 +10,7 @@ import type { RuntimeSandboxStore } from '../../domain/ports/runtime-sandbox-sto
 import type { RuntimeScanGateway } from '../../domain/ports/runtime-scan-gateway';
 import type { RuntimeWorkspaceProvider } from '../../domain/ports/runtime-workspace-provider';
 import type { CreateRuntimeSandboxRequest } from '../../domain/ports/runtime-sandbox-service';
+import type { AmassEventPublisher } from '../../../observability/domain/ports/event-bus';
 
 /** Everything the runtime lifecycle needs beyond the container provisioning. */
 export interface DefaultRuntimeSandboxServiceDeps {
@@ -20,6 +21,8 @@ export interface DefaultRuntimeSandboxServiceDeps {
   readonly gateway: RuntimeScanGateway;
   readonly workspace: RuntimeWorkspaceProvider;
   readonly config: RuntimeSandboxConfig;
+  /** Phase 9 observability publisher (default: silent). */
+  readonly events?: AmassEventPublisher;
 }
 
 export const IMAGE_NAME_PREFIX = 'amass-rt';

@@ -13,6 +13,8 @@ import type { FindingDeduplicator } from '../../domain/ports/deduplicator';
 import type { ScanRepository } from '../../domain/ports/scan-repository';
 import type { RepositoryPreparer } from '../ports/repository-preparer';
 import { runScannerFlow, toScanTargetProfile } from './scan-flow';
+import type { AmassEventPublisher, AmassEventInput } from '../../../observability/domain/ports/event-bus';
+import { DeferredEventPublisher } from '../../../observability/application/deferred-publisher';
 
 export interface ScanServiceOptions {
   readonly preparer: RepositoryPreparer;
@@ -21,6 +23,8 @@ export interface ScanServiceOptions {
   readonly deduplicator: FindingDeduplicator;
   readonly repository: ScanRepository;
   readonly severityThreshold: Severity;
+  /** Phase 9 observability publisher (default: silent). */
+  readonly events?: AmassEventPublisher;
 }
 
 /**
@@ -35,6 +39,7 @@ export class ScanService {
   private readonly deduplicator: FindingDeduplicator;
   private readonly repository: ScanRepository;
   private readonly severityThreshold: Severity;
+  private readonly events: AmassEventPublisher | undefined;
 
   constructor(options: ScanServiceOptions) {
     this.preparer = options.preparer;
@@ -43,12 +48,17 @@ export class ScanService {
     this.deduplicator = options.deduplicator;
     this.repository = options.repository;
     this.severityThreshold = options.severityThreshold;
+    this.events = options.events;
   }
 
   async runStaticScan(repositoryUrl: string): Promise<ScanResult> {
     logger.info({ repositoryUrl }, 'scan.static:started');
 
+    const deferred = new DeferredEventPublisher(this.events);
+    deferred.emit({ eventType: 'ANALYZER_STARTED', agentType: 'ANALYZER', phase: 'analysis', status: 'STARTED', message: 'cloning and analyzing the repository', metadata: { targetUrl: repositoryUrl } });
+
     const prepared = await this.preparer.prepareRepository(repositoryUrl);
+    deferred.emit({ eventType: 'ANALYZER_COMPLETED', agentType: 'ANALYZER', phase: 'analysis', status: 'COMPLETED', message: 'repository analysis finished', metadata: { counts: { technologies: prepared.profile.technologies.all.length } } });
     let scanId: string | undefined;
 
     try {
@@ -58,9 +68,12 @@ export class ScanService {
         repositoryUrl,
       });
       scanId = store.id;
+      this.emit(scanId, { eventType: 'SCAN_STARTED', agentType: 'SYSTEM', phase: 'scan', status: 'STARTED', message: `scan ${scanId} started`, metadata: { targetUrl: repositoryUrl } });
+      deferred.flush(scanId);
       const startedAt = new Date();
       await this.repository.markScanRunning(scanId, startedAt);
 
+      this.emit(scanId, { eventType: 'SCANNER_STARTED', agentType: 'SCANNER', phase: 'scanning', status: 'STARTED', message: 'running the selected scanners', metadata: {} });
       const result = await runScannerFlow(
         {
           registry: this.registry,
@@ -79,6 +92,8 @@ export class ScanService {
         }
       );
 
+      this.emit(scanId, { eventType: 'SCANNER_COMPLETED', agentType: 'SCANNER', phase: 'scanning', status: 'COMPLETED', message: `scanners finished with ${result.findings.length} findings`, metadata: { counts: { findings: result.findings.length, scanners: result.scannerStatistics.length } } });
+      this.emit(scanId, { eventType: 'SCAN_COMPLETED', agentType: 'SYSTEM', phase: 'scan', status: 'COMPLETED', message: `scan ${scanId} completed`, metadata: { counts: { findings: result.findings.length } } });
       logger.info(
         { scanId, status: result.status, findings: result.findings.length, scanners: result.scannerStatistics.length, repositoryUrl },
         'scan.static:complete'
@@ -87,13 +102,25 @@ export class ScanService {
     } catch (error) {
       logger.error({ scanId, error, repositoryUrl }, 'scan.static:failed');
       if (scanId) {
+        this.emit(scanId, { eventType: 'SCAN_FAILED', agentType: 'SYSTEM', phase: 'scan', level: 'ERROR', status: 'FAILED', message: 'scan failed', metadata: { error: error instanceof Error ? error.message.slice(0, 160) : undefined } });
         await this.repository
           .completeScan(scanId, { status: 'FAILED', completedAt: new Date(), scannerStats: [] })
           .catch(() => undefined);
+      } else {
+        deferred.discard();
       }
       throw error;
     } finally {
       await this.preparer.disposeRepository(prepared.localPath).catch(() => undefined);
+    }
+  }
+
+  private emit(scanId: string, input: Omit<AmassEventInput, 'scanId'>): void {
+    if (!this.events) return;
+    try {
+      this.events.publish({ ...input, scanId });
+    } catch (error) {
+      logger.warn({ err: error }, 'scan.static: publish ignored');
     }
   }
 

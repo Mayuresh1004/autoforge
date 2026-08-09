@@ -69,3 +69,11 @@ export class InvalidEngineerResponseError extends EngineerError {
     this.name = 'InvalidEngineerResponseError';
   }
 }
+
+/** A recorded AgentExecution id that does not exist (GET detail → 404). */
+export class EngineerExecutionNotFoundError extends EngineerError {
+  constructor(executionId: string) {
+    super('FINDING_NOT_FOUND', `engineer execution ${executionId} not found`);
+    this.name = 'EngineerExecutionNotFoundError';
+  }
+}

@@ -269,6 +269,39 @@ describe('SniperService — orchestration', () => {
     expect(stored).not.toContain('supersecret');
     expect(stored).toContain('[redacted]');
   });
+
+  it('dry-run (persist:false) verifies WITHOUT writing any repository rows (MEDIUM-4)', async () => {
+    const h = createSniperHarness();
+    h.manager.seed(stubSandbox(SANDBOX, SCAN));
+    h.repository.seedTarget(sqlTarget());
+    h.manager.execQueue.push(execResult({ stdout: SQLMAP_VULNERABLE }));
+
+    const countRows = () => h.repository.allExploits.length + h.repository.allAttempts.length;
+    const before = countRows();
+
+    const report = await h.service.run(
+      runInput({ options: { timeoutMs: 5_000, maxAttempts: 2, persist: false } })
+    );
+
+    expect(report.results[0].exploit.status).toBe('CONFIRMED');
+    // Same verdict, identical evidence — but ZERO writes to the repository.
+    expect(report.results[0].exploit.evidence.length).toBeGreaterThan(0);
+    expect(countRows()).toBe(before);
+    expect(report.results[0].exploit.id).toContain('in-memory');
+  });
+
+  it('dry-run refusal (persist:false) also leaves the repository untouched', async () => {
+    const h = createSniperHarness();
+    h.manager.seed(stubSandbox(SANDBOX, SCAN));
+    h.repository.seedTarget(sqlTarget({ requiresAuthentication: true }));
+
+    const countRows = () => h.repository.allExploits.length + h.repository.allAttempts.length;
+    const before = countRows();
+    const report = await h.service.run(runInput({ options: { persist: false } }));
+
+    expect(report.results[0].exploit.status).toBe('NOT_TESTED');
+    expect(countRows()).toBe(before);
+  });
 });
 
 /** Peak simultaneous executions, measured via stub start timestamps. */

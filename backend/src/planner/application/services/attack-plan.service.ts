@@ -4,11 +4,14 @@ import type { PlanRequest } from '../../domain/models/plan-input';
 import type { PlannerService } from '../../domain/ports/planner';
 import type { PlanRepository } from '../../domain/ports/plan-repository';
 import { ScanNotFoundError, PlanNotFoundError } from '../../domain/errors/planner.errors';
+import type { AmassEventPublisher, AmassEventInput } from '../../../observability/domain/ports/event-bus';
 import { PlanEngine, newPlanId } from '../ranking/plan-engine';
 
 export interface PlannerDeps {
   readonly repository: PlanRepository;
   readonly engine: PlanEngine;
+  /** Phase 9 observability publisher (default: silent). */
+  readonly events?: AmassEventPublisher;
 }
 
 /**
@@ -28,13 +31,30 @@ export class AttackPlanService implements PlannerService {
     const surface = await this.deps.repository.loadAttackSurface(scanId);
     const profile = await this.deps.repository.loadProfile(scanId);
 
+    this.emit(scanId, {
+      eventType: 'PLANNER_STARTED',
+      agentType: 'PLANNER',
+      phase: 'planning',
+      status: 'STARTED',
+      message: 'building the attack plan',
+      metadata: { counts: { findings: findings.length, surfaces: surface.length } },
+    });
     const plan = await this.plan({
       scanId,
       staticFindings: findings,
       attackSurface: surface,
       profile,
     });
-    return this.deps.repository.savePlan({ scanId, plan: stripPlanIds(plan) });
+    const saved = await this.deps.repository.savePlan({ scanId, plan: stripPlanIds(plan) });
+    this.emit(scanId, {
+      eventType: 'PLANNER_COMPLETED',
+      agentType: 'PLANNER',
+      phase: 'planning',
+      status: 'COMPLETED',
+      message: `attack plan ${saved.id} ready (${saved.targets.length} targets)`,
+      metadata: { counts: { targets: saved.targets.length, coveredSurfaces: saved.coveredSurfaces } },
+    });
+    return saved;
   }
 
   /** Pure planning (no I/O) — used by generate and unit tests. */
@@ -46,6 +66,15 @@ export class AttackPlanService implements PlannerService {
       'planner.plan: built',
     );
     return plan;
+  }
+
+  private emit(scanId: string, input: Omit<AmassEventInput, 'scanId'>): void {
+    if (!this.deps.events) return;
+    try {
+      this.deps.events.publish({ ...input, scanId });
+    } catch (error) {
+      logger.warn({ err: error }, 'planner.events: publish ignored');
+    }
   }
 
   async getPlan(planId: string): Promise<AttackPlan> {

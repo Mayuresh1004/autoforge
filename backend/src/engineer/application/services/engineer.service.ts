@@ -15,6 +15,7 @@
  * executed and never applied.
  */
 
+import { logger } from '../../../config/logger';
 import type { LLMProvider } from '../../../llm/domain/ports/llm-provider';
 import type { AgentExecutionService } from '../../../agent/application/services/agent-execution.service';
 import type { AgentExecutionDetail } from '../../../agent/application/services/agent-execution.service';
@@ -24,6 +25,7 @@ import type { RuntimeSandboxStore } from '../../../sandbox/domain/ports/runtime-
 import { InvalidEngineerResponseError } from '../../domain/errors/engineer.errors';
 import type { EngineerBounds, EngineerResponse } from '../../domain/models/engineer-response';
 import { DEFAULT_ENGINEER_BOUNDS } from '../../domain/models/engineer-response';
+import type { EngineerFeedback } from '../../domain/models/engineer-feedback';
 import type { ConfirmedFindingRepository } from '../../domain/ports/confirmed-finding-repository';
 import type { EngineerPatchRepository } from '../../domain/ports/patch-repository';
 import type { EngineerSourceReader } from '../../domain/ports/source-reader';
@@ -43,6 +45,8 @@ export interface EngineerRunInput {
   readonly scanId: string;
   /** Optional explicit target; omitted → deterministic highest-priority pick. */
   readonly vulnerabilityId?: string;
+  /** Optionally pass Critic feedback from a rejected previous attempt. */
+  readonly feedback?: EngineerFeedback | null;
 }
 
 export interface EngineerRunResult {
@@ -74,6 +78,8 @@ export interface EngineerDependencies {
   readonly maxContextLines?: number;
   readonly defaultContextWindow?: number;
   readonly ragTopK?: number;
+  /** Phase 9 observability publisher (default: silent). */
+  readonly events?: import('../../../observability/domain/ports/event-bus').AmassEventPublisher;
 }
 
 export interface EngineerService {
@@ -96,8 +102,24 @@ export class DefaultEngineerService implements EngineerService {
     let targetVulnerabilityId: string | null = input.vulnerabilityId ?? null;
 
     try {
+      this.emit(scanId, {
+        eventType: 'ENGINEER_STARTED',
+        agentType: 'ENGINEER',
+        phase: 'remediation',
+        status: 'STARTED',
+        message: `engineer drafting patch for ${targetVulnerabilityId ?? 'finding'}`,
+        metadata: { vulnerabilityId: targetVulnerabilityId ?? undefined },
+      });
       const prepared = await prepareEngineerRun(this.deps, input);
       targetVulnerabilityId = prepared.finding.vulnerabilityId;
+      this.emit(scanId, {
+        eventType: 'ENGINEER_SOURCE_READ',
+        agentType: 'ENGINEER',
+        phase: 'remediation',
+        status: 'SUCCEEDED',
+        message: `read source ${prepared.finding.filePath} (${prepared.source.lines.length} lines)`,
+        metadata: { filePath: prepared.finding.filePath ?? undefined, lineStart: prepared.source.offset, lineEnd: prepared.source.offset + prepared.source.lines.length - 1, counts: { sourceLines: prepared.source.lines.length } },
+      });
 
       const assembly = await assembleEngineerRequest(this.deps.registry, {
         finding: prepared.finding,
@@ -105,13 +127,29 @@ export class DefaultEngineerService implements EngineerService {
         source: prepared.source,
         ragAdvisory: prepared.rag.advisory,
         ragDocsUsed: prepared.rag.docs.length,
+        feedback: input.feedback ?? null,
       });
 
+      this.emit(scanId, {
+        eventType: 'ENGINEER_LLM_STARTED',
+        agentType: 'ENGINEER',
+        phase: 'remediation',
+        status: 'STARTED',
+        message: 'requesting patch from the LLM',
+      });
       const llmResponse = await this.deps.llm.generate({
         messages: assembly.messages,
         temperature: 0.2,
         maxTokens: 2_000,
         responseFormat: 'json_object',
+      });
+      this.emit(scanId, {
+        eventType: 'ENGINEER_LLM_COMPLETED',
+        agentType: 'ENGINEER',
+        phase: 'remediation',
+        status: 'COMPLETED',
+        message: `LLM responded (${llmResponse.model})`,
+        metadata: { source: llmResponse.model },
       });
 
       const raw = tryParseJsonObject(llmResponse.text);
@@ -145,6 +183,15 @@ export class DefaultEngineerService implements EngineerService {
         startedAt: startedAt.toISOString(),
       });
 
+      this.emit(scanId, {
+        eventType: outcome.patch ? 'ENGINEER_PATCH_GENERATED' : 'ENGINEER_REJECTED',
+        agentType: 'ENGINEER',
+        phase: 'remediation',
+        status: outcome.patch ? 'SUCCEEDED' : 'REJECTED',
+        message: outcome.patch ? `patch generated: ${outcome.patch.id}` : 'no patch generated',
+        metadata: { vulnerabilityId: prepared.finding.vulnerabilityId, patchId: outcome.patch?.id ?? undefined, result: outcome.status, counts: { ragDocs: prepared.rag.docs.length } },
+      });
+
       return {
         executionId: execution.id,
         vulnerabilityId: prepared.finding.vulnerabilityId,
@@ -160,8 +207,26 @@ export class DefaultEngineerService implements EngineerService {
         },
       };
     } catch (error) {
+      this.emit(scanId, {
+        eventType: 'ENGINEER_FAILED',
+        agentType: 'ENGINEER',
+        phase: 'remediation',
+        level: 'ERROR',
+        status: 'FAILED',
+        message: 'engineer run failed',
+        metadata: { vulnerabilityId: targetVulnerabilityId ?? undefined, error: error instanceof Error ? error.message.slice(0, 160) : undefined },
+      });
       await recordEngineerFailure(this.deps, scanId, targetVulnerabilityId, startedAt, error);
       throw error;
+    }
+  }
+
+  private emit(scanId: string, input: Omit<import('../../../observability/domain/ports/event-bus').AmassEventInput, 'scanId'>): void {
+    if (!this.deps.events) return;
+    try {
+      this.deps.events.publish({ ...input, scanId });
+    } catch (err) {
+      logger.warn({ err }, 'engineer.events: publish ignored');
     }
   }
 

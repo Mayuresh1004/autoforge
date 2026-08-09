@@ -37,6 +37,15 @@ const envSchema = z.object({
   ENGINEER_MAX_PATCH_FILES: z.coerce.number().int().min(1).max(10).default(3),
   ENGINEER_RAG_TOP_K: z.coerce.number().int().min(1).max(50).default(4),
 
+  // Critic agent (Phase 8) bounds + retry loop
+  CRITIC_MAX_PATCH_BYTES: z.coerce.number().int().positive().default(16_000),
+  CRITIC_MAX_SOURCE_BYTES: z.coerce.number().int().positive().default(64_000),
+  CRITIC_CHECK_TIMEOUT_MS: z.coerce.number().int().positive().default(60_000),
+  CRITIC_TEST_TIMEOUT_MS: z.coerce.number().int().positive().default(120_000),
+  CRITIC_RETEST_TIMEOUT_MS: z.coerce.number().int().positive().default(180_000),
+  CRITIC_ADVISORY_ENABLED: z.enum(['true', 'false']).default('true'),
+  CRITIC_MAX_ENGINEER_RETRIES: z.coerce.number().int().min(0).max(5).default(2),
+
   AGENTS_URL: z.string().default('http://localhost:8000'),
 
   ANALYZER_WORKSPACE_DIR: z.string().optional(),
@@ -103,6 +112,15 @@ const envSchema = z.object({
   /** Localhost-only host port publishing is disabled unless explicitly enabled. */
   SANDBOX_ALLOW_HOST_EXPOSE: z.enum(['true', 'false']).default('false'),
 
+  // --- Observability / event stream (Phase 9) ---
+  EVENTS_HEARTBEAT_MS: z.coerce.number().int().min(1_000).default(15_000),
+  EVENTS_SSE_BUFFER_LINES: z.coerce.number().int().min(10).max(10_000).default(200),
+  EVENTS_RING_PER_SCAN: z.coerce.number().int().min(10).max(10_000).default(200),
+  EVENTS_MAX_SCANS: z.coerce.number().int().min(1).max(10_000).default(100),
+  EVENTS_METADATA_MAX_BYTES: z.coerce.number().int().min(256).max(64_000).default(2_048),
+  EVENTS_MESSAGE_MAX_CHARS: z.coerce.number().int().min(80).max(4_000).default(300),
+  EVENTS_ENDPOINT_CAP: z.coerce.number().int().min(1).max(1_000).default(50),
+
   // --- LLM provider (free-first) ---
   // Preferred order: gemini → openrouter → groq → mistral. No paid provider
   // is required; only the configured provider(s) need keys.
@@ -113,11 +131,12 @@ const envSchema = z.object({
   LLM_PRIMARY_PROVIDER: z
     .enum(['gemini', 'openrouter', 'groq', 'mistral'])
     .optional(),
-  // Default model. 'openrouter/free' lets OpenRouter route to the currently
-  // available free model; the app never assumes which model that is. For
-  // non-openrouter providers a concrete model must be configured (LLM_MODEL
-  // or the per-provider *_MODEL) — the free alias is invalid elsewhere.
-  LLM_MODEL: z.string().default('openrouter/free'),
+  // Default model: EMPTY by default — resolved provider-aware at build time
+  // (MEDIUM-5). Only OpenRouter gets the 'openrouter/free' routing alias for
+  // free; non-openrouter providers require an explicit LLM_MODEL or
+  // *_MODEL, so the old default (provider=gemini + model=openrouter/free)
+  // can never silently misconfigure a paid/default provider.
+  LLM_MODEL: z.string().default(''),
   LLM_TEMPERATURE: z.coerce.number().min(0).max(2).default(0.1),
   LLM_MAX_TOKENS: z.coerce.number().int().min(1).max(128_000).default(4096),
   LLM_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(600_000).default(60_000),
@@ -135,7 +154,7 @@ const envSchema = z.object({
 
   // --- Embeddings + knowledge/RAG (free-first; independent of the LLM axis) ---
   // Embedding provider is a SEPARATE configuration line from LLM providers.
-  EMBEDDING_PROVIDER: z.enum(['gemini']).default('gemini'),
+  EMBEDDING_PROVIDER: z.enum(['gemini', 'noop']).default('noop'),
   EMBEDDING_MODEL: z.string().default('text-embedding-004'),
   EMBEDDING_DIMENSIONS: z.coerce.number().int().min(64).max(8192).default(768),
 
@@ -187,6 +206,33 @@ function loadConfig(): EnvConfig {
 }
 
 export const config = loadConfig();
+
+export interface EventsConfig {
+  /** SSE heartbeat interval (comment frames keep proxies alive). */
+  readonly heartbeatMs: number;
+  /** Bounded per-connection SSE buffer; overflow drops the connection. */
+  readonly sseBufferLines: number;
+  /** Bounded in-memory event ring retained per scan (replay window). */
+  readonly ringPerScan: number;
+  /** Max tracked scans before the least-recently-published scan is evicted. */
+  readonly maxScans: number;
+  /** Hard cap on the serialized metadata payload (bytes). */
+  readonly metadataMaxBytes: number;
+  /** Truncation cap for the human-readable message. */
+  readonly messageMaxChars: number;
+  /** Per-run cap on SCOUT_ENDPOINT_DISCOVERED events (avoid flooding). */
+  readonly endpointCap: number;
+}
+
+export const eventsConfig: EventsConfig = {
+  heartbeatMs: config.EVENTS_HEARTBEAT_MS,
+  sseBufferLines: config.EVENTS_SSE_BUFFER_LINES,
+  ringPerScan: config.EVENTS_RING_PER_SCAN,
+  maxScans: config.EVENTS_MAX_SCANS,
+  metadataMaxBytes: config.EVENTS_METADATA_MAX_BYTES,
+  messageMaxChars: config.EVENTS_MESSAGE_MAX_CHARS,
+  endpointCap: config.EVENTS_ENDPOINT_CAP,
+};
 
 export const redisConfig = {
   host: config.REDIS_HOST,
@@ -295,6 +341,8 @@ export interface RuntimeSandboxConfig {
   readonly allowHostExpose: boolean;
   /** CPU/memory/PID envelope applied to every runtime container. */
   readonly limits: import('../sandbox/domain/value-objects/runtime-config').ResourceLimits;
+  /** Backend used to provision containers ('docker' | 'process'). */
+  readonly runtime: 'docker' | 'process';
 }
 
 export const runtimeSandboxConfig: RuntimeSandboxConfig = {
@@ -309,6 +357,7 @@ export const runtimeSandboxConfig: RuntimeSandboxConfig = {
     memory: config.SANDBOX_MEMORY_LIMIT,
     pids: config.SANDBOX_PIDS_LIMIT,
   },
+  runtime: (process.env.SANDBOX_RUNTIME as 'docker' | 'process' | undefined) ?? 'docker',
 };
 
 // ---------------------------------------------------------------------------
@@ -329,9 +378,25 @@ function parseProviderList(raw: string): LLMProviderId[] {
   return ids as LLMProviderId[];
 }
 
+/** OpenRouter's free routing alias — configured as a default model only for
+ *  the OpenRouter provider (provider-aware defaults; MEDIUM-5). */
+export const OPENROUTER_FREE_ALIAS = 'openrouter/free';
+
+/**
+ * Provider-aware default model (MEDIUM-5): an explicit LLM_MODEL / *_MODEL
+ * always wins; otherwise only OpenRouter falls back to its free routing
+ * alias. Every other provider resolves to an empty model so the factory can
+ * fail with a clear, lazy configuration error instead of pairing a wrong
+ * default model (the old gemini + 'openrouter/free' mismatch).
+ */
+export function resolveDefaultLLMModel(provider: LLMProviderId, explicit: string): string {
+  if (explicit) return explicit;
+  return provider === 'openrouter' ? OPENROUTER_FREE_ALIAS : '';
+}
+
 export const llmConfig: LLMProviderConfig = {
   provider: config.LLM_PRIMARY_PROVIDER ?? config.LLM_PROVIDER,
-  model: config.LLM_MODEL,
+  model: resolveDefaultLLMModel(config.LLM_PRIMARY_PROVIDER ?? config.LLM_PROVIDER, config.LLM_MODEL),
   temperature: config.LLM_TEMPERATURE,
   maxTokens: config.LLM_MAX_TOKENS,
   timeoutMs: config.LLM_TIMEOUT_MS,
@@ -400,6 +465,16 @@ export const engineerConfig = {
     maxAssumptions: 8,
   },
   ragTopK: config.ENGINEER_RAG_TOP_K,
+};
+
+export const criticConfig = {
+  maxPatchBytes: config.CRITIC_MAX_PATCH_BYTES,
+  maxSourceBytes: config.CRITIC_MAX_SOURCE_BYTES,
+  checkTimeoutMs: config.CRITIC_CHECK_TIMEOUT_MS,
+  testTimeoutMs: config.CRITIC_TEST_TIMEOUT_MS,
+  retestTimeoutMs: config.CRITIC_RETEST_TIMEOUT_MS,
+  advisoryEnabled: config.CRITIC_ADVISORY_ENABLED === 'true',
+  maxEngineerRetries: config.CRITIC_MAX_ENGINEER_RETRIES,
 };
 
 export const staticScannerConfig: StaticScannerConfig = {

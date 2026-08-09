@@ -73,12 +73,21 @@ function buildProvider(
     );
   }
 
-  const model = config.modelOverrides[id] ?? config.model;
+  // Provider-aware model resolution: per-provider override → global model →
+  // OpenRouter-only free routing alias (MEDIUM-5); never a paid default.
+  const model =
+    config.modelOverrides[id] ??
+    (config.model || (id === 'openrouter' ? OPENROUTER_FREE_ALIAS : ''));
   if (id !== 'openrouter' && model === OPENROUTER_FREE_ALIAS) {
     // `openrouter/free` is a routing alias — meaningless on other providers.
     // A model must come from LLM_MODEL or the per-provider override.
     throw new LLMConfigError(
       `${ENV_KEY_BY_PROVIDER[id]} (or LLM_MODEL) must name a model: 'openrouter/free' is invalid for ${id}`,
+    );
+  }
+  if (!model) {
+    throw new LLMConfigError(
+      `${id === 'gemini' ? 'GEMINI_MODEL' : `${id.toUpperCase()}_MODEL`} (or LLM_MODEL) must name a model for ${id}`,
     );
   }
   const common = {

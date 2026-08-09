@@ -1,6 +1,8 @@
-import { scoutConfig } from '../../../config';
+import { scoutConfig, eventsConfig } from '../../../config';
+import type { AmassEventPublisher } from '../../../observability/domain/ports/event-bus';
 import type { ScoutToolRuntime } from '../../domain/ports/scout-tool-runtime';
 import type { ScoutService } from '../../domain/ports/scout-service';
+import type { SandboxManager } from '../../../sandbox/domain/ports/sandbox-manager';
 import { DefaultScoutService, type ScoutServiceDeps } from '../../application/services/scout.service';
 import { HeuristicAttackSurfacePrioritizer } from '../../application/services/attack-surface-prioritizer';
 import { ScoutRecon, type ScoutReconDeps } from '../../application/services/scout-recon';
@@ -11,7 +13,6 @@ import { RobotsTxtParser } from '../tools/robots-txt-parser';
 import { SignatureTechnologyFingerprinter } from '../tools/signature-technology-fingerprinter';
 import { NmapPortScanner } from '../tools/nmap-port-scanner';
 import { ScoutEndpointDiscoverer } from '../tools/endpoint-discoverer';
-import { createSandboxInfrastructure } from '../../../sandbox/infrastructure/factory/sandbox-factory';
 
 export interface ScoutInfrastructure {
   readonly service: ScoutService;
@@ -34,23 +35,32 @@ export function createScoutRecon(runtime?: ScoutToolRuntime): ScoutRecon {
 }
 
 /** Default (headless) Scout service over the Prisma repository. */
-export function createScoutService(): ScoutService {
+export function createScoutService(options: { readonly events?: AmassEventPublisher } = {}): ScoutService {
   const deps: ScoutServiceDeps = {
     repository: new PrismaScoutRepository(),
     config: scoutConfig,
     recon: createScoutRecon(),
+    events: options.events,
+    eventsConfig,
   };
   return new DefaultScoutService(deps);
 }
 
 /** Bind CLI tools to the target application's sandbox (deploy-time: requires
- * a created runtime sandbox id). HTTP probes still run in-process. */
-export function createSandboxBoundScoutService(sandboxId: string): ScoutService {
-  const manager = createSandboxInfrastructure().manager;
+ * a created runtime sandbox id). HTTP probes still run in-process. The
+ * manager is the application composition root's shared instance — never
+ * built here. */
+export function createSandboxBoundScoutService(
+  sandboxId: string,
+  manager: SandboxManager,
+  options: { readonly events?: AmassEventPublisher } = {},
+): ScoutService {
   const deps: ScoutServiceDeps = {
     repository: new PrismaScoutRepository(),
     config: scoutConfig,
     recon: createScoutRecon(new SandboxToolRuntime(manager, sandboxId)),
+    events: options.events,
+    eventsConfig,
   };
   return new DefaultScoutService(deps);
 }

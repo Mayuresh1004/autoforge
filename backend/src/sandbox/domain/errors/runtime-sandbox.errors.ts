@@ -62,6 +62,23 @@ export class InvalidRuntimeRepositoryError extends RuntimeSandboxError {
   }
 }
 
+/**
+ * `hostExpose: true` was requested but host port publishing is disabled in
+ * config (`SANDBOX_ALLOW_HOST_EXPOSE=false`, the secure default). Fail fast
+ * with a typed error instead of silently dropping the request and later
+ * failing health probes from the host side.
+ */
+export class RuntimeSandboxHostExposureDeniedError extends RuntimeSandboxError {
+  readonly code = 'HOST_EXPOSURE_DENIED';
+  constructor() {
+    super(
+      'host port publishing is disabled (SANDBOX_ALLOW_HOST_EXPOSE=false); ' +
+        'set it to expose the app on 127.0.0.1 or create without hostExpose'
+    );
+    this.name = 'RuntimeSandboxHostExposureDeniedError';
+  }
+}
+
 export class UnsupportedRuntimeError extends RuntimeSandboxError {
   readonly code = 'UNSUPPORTED_RUNTIME';
   /** Files that triggered the detection (kept short). */

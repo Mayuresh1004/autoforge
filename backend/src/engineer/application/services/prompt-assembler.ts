@@ -14,6 +14,7 @@ import type { LLMMessage } from '../../../llm/domain/ports/llm-provider';
 import type { PromptRegistry } from '../../../prompts/domain/prompt-registry';
 import type { ConfirmedVulnerabilityFinding } from '../../domain/ports/confirmed-finding-repository';
 import type { SourceReadResult } from '../../domain/ports/source-reader';
+import type { EngineerFeedback } from '../../domain/models/engineer-feedback';
 
 export interface EngineerPromptInput {
   readonly finding: ConfirmedVulnerabilityFinding;
@@ -25,6 +26,8 @@ export interface EngineerPromptInput {
   readonly source: SourceReadResult;
   readonly ragAdvisory: string;
   readonly ragDocsUsed: number;
+  /** Present on retry attempts: Critic rejection feedback for the prior patch. */
+  readonly feedback?: EngineerFeedback | null;
 }
 
 export interface EngineerPromptAssembly {
@@ -60,6 +63,7 @@ export async function assembleEngineerRequest(
     registry.get('engineer.patch-generation'),
     registry.get('engineer.rag-context'),
   ]);
+  const feedbackTemplate = input.feedback ? await registry.get('engineer.feedback') : '';
 
   const f = input.finding;
 
@@ -157,6 +161,20 @@ export async function assembleEngineerRequest(
         'For REJECTED: filePath=null and diff=null with a concrete reason.',
       ].join('\n'),
     },
+    ...(input.feedback
+      ? [
+          {
+            key: 'feedback',
+            title: '11. Critic feedback from the rejected attempt (retry guidance)',
+            body: fill(feedbackTemplate, {
+              reason: input.feedback.reason,
+              failedChecks: input.feedback.failedChecks.slice(0, 6).join(', '),
+              guidance: input.feedback.guidance,
+              attempt: String(input.feedback.attempt),
+            }),
+          },
+        ]
+      : []),
   ];
 
   const contextBlock = sections.map((s) => `### ${s.title}\n${s.body}`).join('\n\n');

@@ -22,7 +22,7 @@ export interface EmbeddingProvider {
 
 /** Config consumed by the embedding factory. All values zod-bounded. */
 export interface EmbeddingConfig {
-  readonly provider: 'gemini';
+  readonly provider: 'gemini' | 'noop';
   readonly model: string;
   readonly dimensions: number;
   readonly apiKey?: string;

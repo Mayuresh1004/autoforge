@@ -36,6 +36,15 @@ export interface SourceReadResult {
   readonly byteLength: number;
 }
 
+export interface ReadWholeFileResult {
+  /** The normalized path that was read. */
+  readonly filePath: string;
+  /** Whole file content (bounded by maxBytes). */
+  readonly content: string;
+  /** Raw byte length of the file (pre-truncation). */
+  readonly byteLength: number;
+}
+
 export interface EngineerSourceReader {
   /**
    * Read a bounded window of a file inside the sandbox.
@@ -43,4 +52,10 @@ export interface EngineerSourceReader {
    * oversized files, exec failures.
    */
   read(context: RuntimeSandboxContext, request: SourceReadRequest): Promise<SourceReadResult>;
+  /**
+   * Read an ENTIRE file (bounded by maxBytes, no line cap) — used by the
+   * Critic to reconstruct the diff base deterministically. Same safety
+   * invariants as read().
+   */
+  readWholeFile(context: RuntimeSandboxContext, request: SourceReadRequest): Promise<ReadWholeFileResult>;
 }

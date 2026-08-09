@@ -8,6 +8,7 @@ import { createSniperRouter } from '../sniper/presentation/routes/sniper.routes'
 import { runtimeSandboxRoutes } from '../sandbox/presentation/routes/runtime-sandbox.routes';
 import { knowledgeRoutes } from '../knowledge/presentation/routes/knowledge.routes';
 import { engineerRoutes } from '../engineer/presentation/routes/engineer.routes';
+import { scanEventsRoutes } from '../observability/presentation/routes/events.routes';
 
 export function createRouter(): Router {
   const router = Router();
@@ -21,6 +22,7 @@ export function createRouter(): Router {
   router.use('/api', runtimeSandboxRoutes);
   router.use('/api', knowledgeRoutes);
   router.use('/api', engineerRoutes);
+  router.use('/api', scanEventsRoutes);
 
   return router;
 }

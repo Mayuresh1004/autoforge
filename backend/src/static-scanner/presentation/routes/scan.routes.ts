@@ -11,7 +11,7 @@ import { ScannerRunnerService } from '../../infrastructure/scanning/runner/scann
 import { KeyedFindingDeduplicator } from '../../infrastructure/scanning/deduplicator/deduplicator';
 import { PrismaScanRepository } from '../../infrastructure/persistence/prisma/scan-repository.prisma';
 import { ScanController } from '../controllers/scan.controller';
-import { createSandboxInfrastructure } from '../../../sandbox/infrastructure/factory/sandbox-factory';
+import { applicationInfrastructure } from '../../../application/application';
 import { SandboxedScanOrchestrator } from '../../../sandbox/application/services/sandboxed-scan-orchestrator';
 
 /**
@@ -36,6 +36,7 @@ const scanService = new ScanService({
   deduplicator,
   repository,
   severityThreshold,
+  events: applicationInfrastructure.events.publisher,
 });
 
 const gateway: StaticScanGateway =
@@ -43,12 +44,13 @@ const gateway: StaticScanGateway =
     ? scanService
     : new SandboxedScanGateway(
         new SandboxedScanOrchestrator({
-          manager: createSandboxInfrastructure().manager,
+          manager: applicationInfrastructure.manager,
           analyzeTarget: createRepositoryTargetAnalyzer(),
           runner,
           deduplicator,
           repository,
           severityThreshold,
+          events: applicationInfrastructure.events.publisher,
         }),
         scanService
       );

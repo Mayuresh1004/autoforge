@@ -5,13 +5,18 @@ import { ScoutRunError, ScoutScanNotFoundError } from '../../domain/errors/scout
 import type { ScoutRepository } from '../../domain/ports/scout-repository';
 import type { ScoutService, RunScoutInput } from '../../domain/ports/scout-service';
 import type { AttackSurfaceEntry } from '../../domain/models/attack-surface';
-import type { ScoutConfig } from '../../../config';
+import type { ScoutConfig, EventsConfig } from '../../../config';
+import { eventsConfig } from '../../../config';
+import type { AmassEventPublisher } from '../../../observability/domain/ports/event-bus';
 import { ScoutRecon, resolveOptions, type ResolvedScoutOptions } from './scout-recon';
 
 export interface ScoutServiceDeps {
   readonly repository: import('../../domain/ports/scout-repository').ScoutRepository;
   readonly config: ScoutConfig;
   readonly recon: ScoutRecon;
+  /** Phase 9 observability publisher (default: silent). */
+  readonly events?: AmassEventPublisher;
+  readonly eventsConfig?: Pick<EventsConfig, 'endpointCap'>;
 }
 
 /**
@@ -34,6 +39,15 @@ export class DefaultScoutService implements ScoutService {
     const errors: string[] = [];
 
     logger.info({ scanId: input.scanId, targetUrl: input.targetUrl }, 'scout.run: started');
+
+    this.emit(input.scanId, {
+      eventType: 'SCOUT_STARTED',
+      agentType: 'SCOUT',
+      phase: 'recon',
+      status: 'STARTED',
+      message: `recon started for ${input.targetUrl}`,
+      metadata: { targetUrl: input.targetUrl },
+    });
 
     const scoutScan = await this.deps.repository.createScoutScan({
       scanId: input.scanId,
@@ -60,6 +74,26 @@ export class DefaultScoutService implements ScoutService {
       });
       await this.deps.repository.completeScoutScan(scoutScan.id, 'COMPLETED', summary, new Date());
 
+      const cap = this.deps.eventsConfig?.endpointCap ?? eventsConfig.endpointCap;
+      for (const entry of attackSurface.slice(0, cap)) {
+        this.emit(input.scanId, {
+          eventType: 'SCOUT_ENDPOINT_DISCOVERED',
+          agentType: 'SCOUT',
+          phase: 'recon',
+          status: 'SUCCEEDED',
+          message: `endpoint ${entry.method} ${entry.url}`,
+          metadata: { endpoint: entry.url, method: entry.method, httpStatus: entry.statusCode ?? undefined, source: entry.source },
+        });
+      }
+      this.emit(input.scanId, {
+        eventType: 'SCOUT_COMPLETED',
+        agentType: 'SCOUT',
+        phase: 'recon',
+        status: 'COMPLETED',
+        message: `scout finished with ${attackSurface.length} endpoints`,
+        metadata: { counts: { endpoints: attackSurface.length, ports: ports.length } },
+      });
+
       logger.info(
         {
           scoutScanId: scoutScan.id,
@@ -85,12 +119,33 @@ export class DefaultScoutService implements ScoutService {
       };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      this.emit(input.scanId, {
+        eventType: 'SCOUT_COMPLETED',
+        agentType: 'SCOUT',
+        phase: 'recon',
+        level: 'ERROR',
+        status: 'FAILED',
+        message: 'scout run failed',
+        metadata: { error: message },
+      });
       logger.error({ scoutScanId: scoutScan.id, err }, 'scout.run: failed');
       await this.deps.repository
         .completeScoutScan(scoutScan.id, 'FAILED', EMPTY_SCOUT_SUMMARY, new Date())
         .catch(() => undefined);
       if (err instanceof ScoutRunError) throw err;
       throw new ScoutRunError(message);
+    }
+  }
+
+  private emit(
+    scanId: string,
+    input: Omit<import('../../../observability/domain/ports/event-bus').AmassEventInput, 'scanId'>,
+  ): void {
+    if (!this.deps.events) return;
+    try {
+      this.deps.events.publish({ ...input, scanId });
+    } catch (error) {
+      logger.warn({ err: error }, 'scout.events: publish ignored');
     }
   }
 

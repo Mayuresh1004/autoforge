@@ -19,6 +19,14 @@ export interface RunSniperInput {
     readonly timeoutMs?: number;
     readonly concurrency?: number;
     readonly maxAttempts?: number;
+    /**
+     * When false, verification still runs and returns the same PoC records
+     * but NOTHING is written to the repository (no Exploit / Verification-
+     * Attempt / Evidence rows). Used for non-destructive re-verification
+     * (e.g. Critic baseline/retest) so agent checks never pollute scan data.
+     * Default: true.
+     */
+    readonly persist?: boolean;
   };
 }
 

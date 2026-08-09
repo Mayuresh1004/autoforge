@@ -30,6 +30,8 @@ export interface AttemptParts {
   readonly context: VerificationContext;
   readonly exploitId: string;
   readonly maxAttempts: number;
+  /** True when attempts must be persisted (default). False = dry-run check. */
+  readonly persist: boolean;
 }
 
 /** Final-answer statuses — never retried, even if the classifier flags them. */
@@ -66,7 +68,9 @@ export class AttemptLoop {
       const outcome = await this.singleAttempt(verifier, context, attempt);
       const durationMs = Date.now() - attemptStarted;
 
-      await this.persistAttempt(parts, outcome, attempt, durationMs, attemptStarted);
+      if (parts.persist) {
+        await this.persistAttempt(parts, outcome, attempt, durationMs, attemptStarted);
+      }
       last = outcome;
 
       logger.info(

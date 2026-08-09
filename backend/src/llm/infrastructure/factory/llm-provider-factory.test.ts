@@ -89,6 +89,34 @@ describe('createLLMProvider factory', () => {
     expect(provider.getModelInfo().model).toBe('mistral-small-latest');
   });
 
+  it('resolves the free routing alias when openrouter has no explicit model (MEDIUM-5)', () => {
+    const provider = createLLMProvider(
+      cfg({ provider: 'openrouter', model: '', modelOverrides: { ...MODELS, openrouter: undefined } }),
+    );
+    expect(provider).toBeInstanceOf(OpenRouterLLMProvider);
+    expect(provider.getModelInfo()).toEqual({
+      provider: 'openrouter',
+      model: 'openrouter/free',
+      freeAlias: true,
+      supportsStructuredJson: true,
+    });
+  });
+
+  it('fails with a clear config error when a non-openrouter provider has no model (no paid default)', () => {
+    expect(() =>
+      createLLMProvider(cfg({ model: '', provider: 'gemini', modelOverrides: { ...MODELS, gemini: undefined } })),
+    ).toThrowError(/GEMINI_MODEL.*must name a model/);
+    expect(() =>
+      createLLMProvider(cfg({ model: '', provider: 'groq', modelOverrides: { ...MODELS, gemini: undefined, groq: undefined } })),
+    ).toThrowError(/GROQ_MODEL.*must name a model/);
+    expect(() =>
+      createLLMProvider(cfg({ model: '', provider: 'mistral', modelOverrides: { ...MODELS, gemini: undefined, mistral: undefined } })),
+    ).toThrowError(/MISTRAL_MODEL.*must name a model/);
+    expect(createLLMProvider(cfg({ model: '', provider: 'openrouter' }))).toBeInstanceOf(
+      OpenRouterLLMProvider,
+    );
+  });
+
   it('rejects the openrouter/free alias as a model on non-openrouter providers (clear config error)', () => {
     const sentinelCfg = { ...cfg(), model: 'openrouter/free', modelOverrides: { ...MODELS, gemini: undefined } };
     expect(() => createLLMProvider(sentinelCfg)).toThrowError(/GEMINI_API_KEY.*must name a model/);

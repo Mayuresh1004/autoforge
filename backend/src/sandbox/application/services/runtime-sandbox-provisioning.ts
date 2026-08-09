@@ -1,5 +1,6 @@
 import type { RuntimeSandboxConfig } from '../../../config';
 import type { RuntimeSandbox } from '../../domain/entities/runtime-sandbox';
+import { RuntimeSandboxHostExposureDeniedError as HostExposureDeniedError } from '../../domain/errors/runtime-sandbox.errors';
 import type {
   CreateSandboxInput,
   SandboxManager,
@@ -43,6 +44,13 @@ export function buildProvisionRequest(
   input: { hostExpose?: boolean },
   config: RuntimeSandboxConfig
 ): CreateSandboxInput {
+  // Fail fast: an EXPLICIT hostExpose request must never be silently dropped
+  // (that would leave probes pointed at an unreachable internal IP). The
+  // service also guards before any provisioning side effect; this is the
+  // defense-in-depth for direct callers.
+  if (input.hostExpose === true && !config.allowHostExpose) {
+    throw new HostExposureDeniedError();
+  }
   const hostExpose = input.hostExpose === true && config.allowHostExpose;
   return {
     scanId: sandbox.scanId,
