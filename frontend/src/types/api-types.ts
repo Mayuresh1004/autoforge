@@ -1,6 +1,6 @@
 /**
  * Domain & REST API Data Models for AMASS Frontend.
- * Matches backend endpoints and database/domain models.
+ * Matches backend endpoints and domain models.
  */
 
 export interface ApiResponse<T = unknown> {
@@ -28,7 +28,8 @@ export type ScanStatus = 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'CANCE
 export type VulnerabilitySeverity = 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW' | 'INFO';
 
 export interface ScanModel {
-  readonly id: string;
+  readonly id?: string;
+  readonly scanId: string;
   readonly repositoryUrl?: string;
   readonly commitHash?: string;
   readonly status: ScanStatus;
@@ -40,17 +41,25 @@ export interface ScanModel {
 
 export interface FindingModel {
   readonly id: string;
-  readonly scanId: string;
-  readonly ruleId: string;
+  readonly scanId?: string;
+  readonly ruleId?: string;
   readonly vulnerabilityId?: string;
-  readonly title: string;
-  readonly description: string;
+  readonly type?: string;
+  readonly scanner?: string;
+  readonly title?: string;
+  readonly description?: string;
+  readonly message?: string;
   readonly severity: VulnerabilitySeverity;
-  readonly confidence: string;
-  readonly filePath: string;
-  readonly lineStart: number;
-  readonly lineEnd: number;
+  readonly confidence?: string | number;
+  readonly file?: string | null;
+  readonly filePath?: string;
+  readonly line?: number | null;
+  readonly lineStart?: number;
+  readonly lineEnd?: number;
   readonly snippet?: string;
+  readonly evidence?: string | null;
+  readonly cwe?: string | null;
+  readonly cve?: string | null;
   readonly endpoint?: string;
   readonly parameter?: string;
   readonly isConfirmed?: boolean;
@@ -67,11 +76,14 @@ export interface ScanStatistics {
 
 export interface ScoutEndpoint {
   readonly id?: string;
-  readonly path: string;
+  readonly path?: string;
+  readonly url?: string;
   readonly method: string;
   readonly description?: string;
+  readonly risk?: string;
   readonly isAuthRequired?: boolean;
-  readonly parameters?: Array<{ name: string; type: string; required?: boolean }>;
+  readonly statusCode?: number | null;
+  readonly parameters?: Array<{ name: string; type: string; required?: boolean }> | readonly string[];
 }
 
 export interface ScoutRunResult {
@@ -79,7 +91,8 @@ export interface ScoutRunResult {
   readonly status: string;
   readonly endpointsDiscovered: number;
   readonly portsDiscovered?: number;
-  readonly endpoints: ScoutEndpoint[];
+  readonly endpoints?: ScoutEndpoint[];
+  readonly attackSurface?: ScoutEndpoint[];
 }
 
 export interface TargetModel {

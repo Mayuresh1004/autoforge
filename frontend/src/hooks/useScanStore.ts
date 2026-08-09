@@ -158,15 +158,17 @@ export function useScanStore(initialScanId: string | null = null) {
         setSandbox((prev) => (prev ? { ...prev, status: event.eventType === 'SANDBOX_FAILED' ? 'FAILED' : 'DESTROYED' } : null));
         break;
 
-      case 'SCOUT_ENDPOINT_DISCOVERED':
-        if (event.metadata?.endpoint) {
+      case 'SCOUT_ENDPOINT_DISCOVERED': {
+        const targetEp = (event.metadata?.endpoint || event.metadata?.targetUrl || event.metadata?.url) as string | undefined;
+        if (targetEp) {
           setEndpoints((prev) => {
-            const exists = prev.some((e) => e.path === event.metadata?.endpoint && e.method === (event.metadata?.method ?? 'GET'));
+            const exists = prev.some((e) => (e.path || e.url) === targetEp && e.method === (event.metadata?.method ?? 'GET'));
             if (exists) return prev;
             return [
               ...prev,
               {
-                path: event.metadata!.endpoint as string,
+                path: targetEp,
+                url: targetEp,
                 method: (event.metadata?.method as string) ?? 'GET',
                 description: event.message,
               },
@@ -174,6 +176,7 @@ export function useScanStore(initialScanId: string | null = null) {
           });
         }
         break;
+      }
 
       case 'SNIPER_CONFIRMED':
         if (event.metadata?.vulnerabilityId || event.metadata?.targetId) {
@@ -289,7 +292,10 @@ export function useScanStore(initialScanId: string | null = null) {
       }
 
       if (resultsRes.success && resultsRes.data) {
-        setFindings(resultsRes.data);
+        const rawFindings = Array.isArray(resultsRes.data)
+          ? resultsRes.data
+          : resultsRes.data.findings ?? [];
+        setFindings(rawFindings);
       }
 
       // Try fetching plan for targets

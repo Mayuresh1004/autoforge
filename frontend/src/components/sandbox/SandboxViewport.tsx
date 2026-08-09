@@ -116,26 +116,33 @@ export function SandboxViewport({ sandbox, endpoints }: SandboxViewportProps) {
             No endpoints discovered yet. Scout Recon agent will populate endpoints when run.
           </div>
         ) : (
-          <div className="divide-y divide-zinc-800/80 rounded-lg border border-zinc-800 bg-zinc-900/40">
-            {endpoints.map((ep, idx) => (
-              <div key={idx} className="flex items-center justify-between p-2.5 text-xs font-mono">
-                <div className="flex items-center gap-2">
-                  <span
-                    className={`rounded px-1.5 py-0.2 text-[10px] font-bold ${
-                      ep.method === 'GET'
-                        ? 'bg-sky-500/20 text-sky-400'
-                        : ep.method === 'POST'
-                          ? 'bg-emerald-500/20 text-emerald-400'
-                          : 'bg-amber-500/20 text-amber-400'
-                    }`}
-                  >
-                    {ep.method}
-                  </span>
-                  <span className="text-zinc-200">{ep.path}</span>
+          <div className="divide-y divide-zinc-800/80 rounded-lg border border-zinc-800 bg-zinc-900/40 max-h-64 overflow-y-auto">
+            {endpoints.map((ep, idx) => {
+              const targetPath = ep.path || ep.url || '';
+              return (
+                <div key={idx} className="flex items-center justify-between p-2.5 text-xs font-mono">
+                  <div className="flex items-center gap-2">
+                    <span
+                      className={`rounded px-1.5 py-0.2 text-[10px] font-bold ${
+                        ep.method === 'GET'
+                          ? 'bg-sky-500/20 text-sky-400'
+                          : ep.method === 'POST'
+                            ? 'bg-emerald-500/20 text-emerald-400'
+                            : 'bg-amber-500/20 text-amber-400'
+                      }`}
+                    >
+                      {ep.method ?? 'GET'}
+                    </span>
+                    <span className="text-zinc-200">{targetPath}</span>
+                  </div>
+                  {ep.risk && (
+                    <span className="rounded bg-zinc-800 px-1.5 py-0.2 text-[10px] text-amber-400 border border-zinc-700">
+                      {ep.risk}
+                    </span>
+                  )}
                 </div>
-                {ep.description && <span className="text-zinc-500 text-[11px] truncate max-w-xs">{ep.description}</span>}
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </Card>

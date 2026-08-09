@@ -1,7 +1,5 @@
-import { useState } from 'react';
 import { Button } from '../ui/Button';
 import { StatusPill } from './StatusPill';
-import { NewScanModal } from './NewScanModal';
 import type { SseConnectionStatus } from '../../types/amass-events';
 import type { ScanModel } from '../../types/api-types';
 
@@ -11,18 +9,15 @@ export interface HeaderProps {
   connectionStatus: SseConnectionStatus;
   scansList?: ScanModel[];
   onSelectScan: (scanId: string) => void;
-  onScanCreated: (scan: ScanModel) => void;
+  onOpenNewScan: () => void;
 }
 
 export function Header({
   activeScanId,
   scanStatus,
   connectionStatus,
-  onSelectScan,
-  onScanCreated,
+  onOpenNewScan,
 }: HeaderProps) {
-  const [isModalOpen, setIsModalOpen] = useState(false);
-
   return (
     <header className="border-b border-zinc-800 bg-zinc-950/90 px-6 py-3 backdrop-blur-md sticky top-0 z-40">
       <div className="flex flex-wrap items-center justify-between gap-4">
@@ -71,20 +66,11 @@ export function Header({
 
           <StatusPill status={connectionStatus} />
 
-          <Button variant="primary" size="sm" onClick={() => setIsModalOpen(true)}>
+          <Button variant="primary" size="sm" onClick={onOpenNewScan}>
             + New Scan
           </Button>
         </div>
       </div>
-
-      <NewScanModal
-        isOpen={isModalOpen}
-        onClose={() => setIsModalOpen(false)}
-        onScanCreated={(newScan) => {
-          onScanCreated(newScan);
-          onSelectScan(newScan.id);
-        }}
-      />
     </header>
   );
 }

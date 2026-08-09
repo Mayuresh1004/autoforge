@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { Header } from './components/shell/Header';
+import { NewScanModal } from './components/shell/NewScanModal';
 import { AgentPipeline } from './components/pipeline/AgentPipeline';
 import { EventTimeline } from './components/timeline/EventTimeline';
 import { SandboxViewport } from './components/sandbox/SandboxViewport';
@@ -16,6 +17,7 @@ export default function App() {
   const store = useScanStore(null);
   const [activeCenterTab, setActiveCenterTab] = useState<string>('sandbox');
   const [selectedFinding, setSelectedFinding] = useState<FindingModel | null>(null);
+  const [isNewScanOpen, setIsNewScanOpen] = useState<boolean>(false);
 
   const centerTabs: TabItem[] = [
     { id: 'sandbox', label: '1. Live Sandbox & Recon', count: store.endpoints.length },
@@ -32,7 +34,7 @@ export default function App() {
         scanStatus={store.scanStatus}
         connectionStatus={store.connectionStatus}
         onSelectScan={store.selectScan}
-        onScanCreated={(newScan) => store.selectScan(newScan.id)}
+        onOpenNewScan={() => setIsNewScanOpen(true)}
       />
 
       {/* Agent Pipeline Bar */}
@@ -99,6 +101,13 @@ export default function App() {
           <EventTimeline events={store.events} lastSequence={store.lastSequence} connectionStatus={store.connectionStatus} />
         </section>
       </main>
+
+      {/* Global New Scan Modal Dialog */}
+      <NewScanModal
+        isOpen={isNewScanOpen}
+        onClose={() => setIsNewScanOpen(false)}
+        onScanCreated={(newScan) => store.selectScan(newScan.scanId || newScan.id!)}
+      />
     </div>
   );
 }

@@ -46,7 +46,11 @@ async function fetchJson<T>(path: string, options?: RequestInit): Promise<ApiRes
       return {
         success: false,
         data: null,
-        error: { code: `HTTP_${res.status}`, message: `Server returned HTTP ${res.status}` },
+        error: {
+          code: `HTTP_${res.status}`,
+          message: data.message || `Server returned HTTP ${res.status}`,
+          details: data.details,
+        },
         timestamp: new Date().toISOString(),
       };
     }
@@ -67,8 +71,8 @@ export const api = {
   getHealth: () => fetchJson<HealthData>('/health'),
   getVersion: () => fetchJson<VersionData>('/version'),
 
-  // Static Scans
-  createStaticScan: (payload: { repositoryUrl?: string; targetPath?: string; scanType?: string }) =>
+  // Static Scans — Backend schema expects { url: string }
+  createStaticScan: (payload: { url: string }) =>
     fetchJson<ScanModel>('/api/scan/static', {
       method: 'POST',
       body: JSON.stringify(payload),
@@ -76,7 +80,7 @@ export const api = {
 
   getScan: (scanId: string) => fetchJson<ScanModel>(`/api/scan/${scanId}`),
 
-  getScanResults: (scanId: string) => fetchJson<FindingModel[]>(`/api/scan/${scanId}/results`),
+  getScanResults: (scanId: string) => fetchJson<{ scanId: string; findings: FindingModel[] }>(`/api/scan/${scanId}/results`),
 
   getScanStatistics: (scanId: string) => fetchJson<ScanStatistics>(`/api/scan/${scanId}/statistics`),
 

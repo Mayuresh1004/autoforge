@@ -16,7 +16,9 @@ ENV NODE_ENV=production
 # git is required at runtime to clone repositories for analysis.
 # util-linux provides `unshare`, which the sandbox uses to give scanner/analyzer
 # subprocesses a private network namespace (no egress) when the host supports it.
-RUN apk add --no-cache git util-linux
+# python3/pip are required for the built-in Python scanners: semgrep, bandit, pip-audit.
+RUN apk add --no-cache git util-linux python3 py3-pip
+RUN pip install --no-cache-dir --break-system-packages --timeout 120 --retries 10 semgrep bandit pip-audit
 RUN addgroup --system --gid 1001 nodejs && \
     adduser --system --uid 1001 amass && \
     mkdir -p /app/workspace && \
