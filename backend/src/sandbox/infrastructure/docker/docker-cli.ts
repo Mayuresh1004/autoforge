@@ -102,7 +102,17 @@ export function buildCreateCommand(
     spec.appCommand !== undefined && spec.appCommand.length === 0;
 
   if (spec.mountRepository !== false) {
-    // Repo tree is the only host writable path; workdir inside it.
+    // Repo tree is the only host writable path; workdir inside it. The host
+    // source MUST be an absolute path: analysis sandboxes either pass a real
+    // host path or (via the DockerSandboxBackend) request a backend-owned
+    // ephemeral workspace, which is substituted with an absolute path before
+    // this builder runs. A bare relative value (e.g. the synthetic
+    // 'in-sandbox' marker) must never become an arbitrary host mount.
+    if (!spec.repositoryPath.startsWith('/')) {
+      throw new Error(
+        `refusing to bind-mount non-absolute repositoryPath '${spec.repositoryPath}'`
+      );
+    }
     command.push(
       '--volume',
       `${spec.repositoryPath}:${mountPath}`,

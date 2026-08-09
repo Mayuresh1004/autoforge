@@ -31,7 +31,14 @@ export function createSandboxInfrastructure(
     logger.info('sandbox.infrastructure: docker backend');
     return {
       manager: new SandboxManagerService({
-        backend: new DockerSandboxBackend(),
+        backend: new DockerSandboxBackend(undefined, {
+          // Backend-provisioned analysis workspaces must live on a HOST-visible
+          // path. Overridable for deployments where the backend itself runs in
+          // Docker (point it at a host dir mounted into the backend container).
+          workspaceRoot:
+            process.env.AMASS_DOCKER_WORKSPACE_ROOT ??
+            path.join(os.tmpdir(), 'amass-workspaces'),
+        }),
         store: new MemorySandboxStore(),
       }),
       runtime: 'docker',

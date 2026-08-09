@@ -1,5 +1,7 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { promises as fs } from 'node:fs';
+import path from 'node:path';
+import { tmpdir } from 'node:os';
 import type { SandboxSpec } from '../../domain/models/sandbox';
 import { DockerSandboxBackend } from './docker-sandbox-backend';
 import { buildCreateCommand, buildImageCommand, type DockerRunner, type CliOutput } from './docker-cli';
@@ -109,6 +111,15 @@ describe('buildCreateCommand (pure)', () => {
     expect(args).toContain('-f');
     expect(args[args.length - 1]).toBe('/tmp/ctx');
   });
+
+  it('refuses to bind-mount a non-absolute repositoryPath (no arbitrary host mounts)', () => {
+    expect(() => buildCreateCommand(spec({ repositoryPath: 'in-sandbox' }), 'amass_demo')).toThrow(
+      /non-absolute repositoryPath/
+    );
+    expect(() => buildCreateCommand(spec({ repositoryPath: '../etc' }), 'amass_demo')).toThrow(
+      /non-absolute repositoryPath/
+    );
+  });
 });
 
 describe('DockerSandboxBackend (fake docker runner)', () => {
@@ -193,5 +204,190 @@ describe('DockerSandboxBackend (fake docker runner)', () => {
     await backend.destroy(containerId);
     expect(calls).toContainEqual(['rm', '-f', containerId]);
     if (networkId) expect(calls).toContainEqual(['network', 'rm', networkId]);
+  });
+});
+
+/**
+ * Fake docker that answers the image-user probe and the ownership helper like
+ * a real daemon: the image's own USER reports uid/gid `1001:1001`, and the
+ * root helper container chowns successfully.
+ */
+function programmedRunner(record: string[][]): DockerRunner {
+  return async (args) => {
+    record.push([...args]);
+    if (args[0] === 'run' && args.includes('-c') && args.includes('id -u; id -g')) {
+      return { stdout: '1001\n1001\n', stderr: '', exitCode: 0, timedOut: false };
+    }
+    if (args[0] === 'run' && args.includes('chown')) {
+      return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+    }
+    return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+  };
+}
+
+describe('DockerSandboxBackend — analysis workspace provisioning', () => {
+  const roots: string[] = [];
+  let workspaceRoot: string;
+
+  beforeEach(async () => {
+    workspaceRoot = await fs.mkdtemp(path.join(tmpdir(), 'amass-test-ws-'));
+    roots.push(workspaceRoot);
+  });
+
+  afterEach(async () => {
+    for (const root of roots.splice(0)) {
+      await fs.rm(root, { recursive: true, force: true }).catch(() => undefined);
+    }
+  });
+
+  it('provisions a real host workspace for the synthetic repositoryPath and mounts it at /workspace', async () => {
+    const calls: string[][] = [];
+    const backend = new DockerSandboxBackend(programmedRunner(calls), { workspaceRoot });
+
+    const { containerId, workspacePath } = await backend.create(
+      spec({ repositoryPath: 'in-sandbox' })
+    );
+
+    // A REAL host workspace was provisioned under the backend's workspace root.
+    expect(workspacePath).toBeDefined();
+    expect(workspacePath!.startsWith(workspaceRoot + path.sep)).toBe(true);
+    expect(workspacePath).not.toBe('/workspace');
+    await expect(fs.access(workspacePath!)).resolves.toBeUndefined();
+
+    // The generated docker command mounts <host-workspace>:/workspace — never
+    // the synthetic marker.
+    const create = calls.find((c) => c[0] === 'run' && c.includes('--name'))!;
+    expect(create).toBeDefined();
+    expect(create.join(' ')).toContain(`${workspacePath}:/workspace`);
+    expect(create.join(' ')).not.toContain('in-sandbox:/workspace');
+    expect(create.join(' ')).toContain('--workdir /workspace');
+    expect(create.join(' ')).toContain(`--name ${containerId}`);
+  });
+
+  it('resolves the non-root container user from the image and sets compatible ownership', async () => {
+    const calls: string[][] = [];
+    const backend = new DockerSandboxBackend(programmedRunner(calls), { workspaceRoot });
+
+    await backend.create(spec({ repositoryPath: 'in-sandbox' }));
+
+    // The image-user probe ran as the image's own USER and read uid/gid.
+    const probe = calls.find(
+      (c) => c[0] === 'run' && c.includes('-c') && c.includes('id -u; id -g')
+    );
+    expect(probe).toBeDefined();
+    expect(probe!.join(' ')).toContain('amass/analysis:latest');
+
+    // Ownership is applied via the image itself (root helper, same image),
+    // chowning the workspace to the image user's group — no chmod 777.
+    const chownCall = calls.find((c) => c[0] === 'run' && c.some((arg) => arg.includes('chown')));
+    expect(chownCall).toBeDefined();
+    expect(chownCall!.join(' ')).toContain('chown');
+    // Owner = the host backend process (it analyzes the tree); group = the
+    // image user's group (the non-root container user writes through it).
+    expect(chownCall!.join(' ')).toMatch(/chown \d+:1001 \/ws/);
+    expect(chownCall!.join(' ')).toContain('chmod 770 /ws');
+    expect(chownCall!.join(' ')).not.toContain('777');
+    expect(chownCall!.join(' ')).toContain('--user 0:0'); // root helper only
+    expect(chownCall!.join(' ')).toContain('amass/analysis:latest');
+  });
+
+  it('keeps the container non-root: no --user 0, and no --user when the image user governs', async () => {
+    const calls: string[][] = [];
+    const backend = new DockerSandboxBackend(programmedRunner(calls), { workspaceRoot });
+
+    await backend.create(spec({ repositoryPath: 'in-sandbox' }));
+    const create = calls.find((c) => c[0] === 'run' && c.includes('--name'))!;
+    expect(create.join(' ')).not.toContain('--user 0');
+    expect(create.join(' ')).toContain('--user 10001'); // explicit spec uid stays
+
+    // Without an explicit uid the container runs as the image's amass user.
+    calls.length = 0;
+    const backend2 = new DockerSandboxBackend(programmedRunner(calls), { workspaceRoot });
+    await backend2.create(spec({ repositoryPath: 'in-sandbox', uid: undefined }));
+    const create2 = calls.find((c) => c[0] === 'run' && c.includes('--name'))!;
+    expect(create2.join(' ')).not.toContain('--user');
+  });
+
+  it('maps the host workspace workdir back to /workspace for manager.execute', async () => {
+    const calls: string[][] = [];
+    const backend = new DockerSandboxBackend(programmedRunner(calls), { workspaceRoot });
+    const { containerId, workspacePath } = await backend.create(
+      spec({ repositoryPath: 'in-sandbox' })
+    );
+
+    calls.length = 0;
+    await backend.execute(containerId, {
+      argv: ['git', 'clone', '--depth', '1', 'https://example.test/repo.git', '.'],
+      cwd: workspacePath!, // orchestrator hands the HOST path
+      timeoutMs: 3_000,
+      envAllowlist: [],
+    });
+
+    const exec = calls.find((c) => c[0] === 'exec')!;
+    expect(exec).toBeDefined();
+    expect(exec.join(' ')).toContain('--workdir /workspace');
+    expect(exec.join(' ')).not.toContain(workspacePath!); // host path never leaks into the container
+  });
+
+  it('destroy removes the temporary workspace and is idempotent', async () => {
+    const calls: string[][] = [];
+    const backend = new DockerSandboxBackend(programmedRunner(calls), { workspaceRoot });
+    const { containerId, workspacePath } = await backend.create(
+      spec({ repositoryPath: 'in-sandbox' })
+    );
+
+    await backend.destroy(containerId);
+    await expect(fs.access(workspacePath!)).rejects.toThrow();
+
+    await expect(backend.destroy(containerId)).resolves.toBeUndefined(); // idempotent
+  });
+
+  it('sweep removes orphaned workspace directories (tracked and crash-orphaned)', async () => {
+    const calls: string[][] = [];
+    const backend = new DockerSandboxBackend(programmedRunner(calls), { workspaceRoot });
+    const { containerId, workspacePath } = await backend.create(
+      spec({ repositoryPath: 'in-sandbox' })
+    );
+    // Simulate a crash-orphaned workspace dir that is no longer in memory.
+    const orphan = path.join(workspaceRoot, 'amass_scan_9_ab12cd34');
+    await fs.mkdir(orphan, { recursive: true });
+
+    await backend.sweep();
+
+    await expect(fs.access(workspacePath!)).rejects.toThrow();
+    await expect(fs.access(orphan)).rejects.toThrow();
+    void containerId;
+  });
+
+  it('runtime sandboxes with mountRepository=false stay host-filesystem isolated', async () => {
+    const calls: string[][] = [];
+    const backend = new DockerSandboxBackend(programmedRunner(calls), { workspaceRoot });
+
+    const { workspacePath } = await backend.create(
+      spec({ type: 'runtime', repositoryPath: '/tmp/repo', mountRepository: false })
+    );
+
+    expect(workspacePath).toBeUndefined();
+    // No image-user probe, no ownership helper, no volume — host stays out.
+    expect(calls.some((c) => c.includes('id -u; id -g'))).toBe(false);
+    expect(calls.some((c) => c.includes('chown'))).toBe(false);
+    expect(calls.some((c) => c.includes('--volume'))).toBe(false);
+    const entries = await fs.readdir(workspaceRoot).catch(() => []);
+    expect(entries).toHaveLength(0);
+  });
+
+  it('absolute host repositoryPath preserves the existing behavior (no provisioning)', async () => {
+    const calls: string[][] = [];
+    const backend = new DockerSandboxBackend(programmedRunner(calls), { workspaceRoot });
+
+    const { workspacePath } = await backend.create(spec({ repositoryPath: '/tmp/ws/repo' }));
+
+    expect(workspacePath).toBe('/workspace'); // legacy contract unchanged
+    expect(calls.some((c) => c.includes('id -u; id -g'))).toBe(false);
+    expect(calls.some((c) => c.includes('chown'))).toBe(false);
+    const create = calls.find((c) => c[0] === 'run' && c.includes('--name'))!;
+    expect(create.join(' ')).toContain('/tmp/ws/repo:/workspace');
+    const entries = await fs.readdir(workspaceRoot).catch(() => []);
+    expect(entries).toHaveLength(0);
   });
 });

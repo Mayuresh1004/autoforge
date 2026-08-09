@@ -24,6 +24,35 @@ import {
 } from './docker-cli';
 
 const MOUNT = '/workspace';
+/**
+ * Synthetic `repositoryPath` value analysis sandboxes pass to signal "the
+ * backend materializes its own workspace". The Docker backend interprets it
+ * as a request for a backend-owned ephemeral HOST workspace: a unique
+ * directory under `workspaceRoot` is provisioned (owned compatibly with the
+ * image's non-root user), bind-mounted at `/workspace`, and returned as the
+ * HOST path in `workspacePath` so the orchestrator can analyze the cloned
+ * tree from the host side.
+ */
+const SYNTHETIC_REPO_PATH = 'in-sandbox';
+
+export interface DockerSandboxBackendOptions {
+  /**
+   * Root that holds one throwaway workspace dir per analysis sandbox. Must
+   * be a real host path (the Docker daemon resolves bind-mount sources on
+   * the host). Defaults to the same AMASS temp root the process backend
+   * uses. When the backend itself runs inside Docker, point this at a host
+   * directory mounted into the backend container.
+   */
+  readonly workspaceRoot?: string;
+}
+
+interface DockerSandboxContext {
+  readonly scanId: string;
+  readonly networkId?: string;
+  readonly hostPort?: number;
+  /** Host path of the backend-provisioned workspace (analysis sandboxes). */
+  readonly hostWorkspace?: string;
+}
 
 /**
  * The only Docker-touching implementation. Sandboxes are long-lived named
@@ -31,19 +60,36 @@ const MOUNT = '/workspace';
  * and destroys. Everything here is argv-only and delegated to `docker`, never
  * to a shell. `create` returns the generated container/network names.
  *
+ * ANALYSIS sandboxes: when `repositoryPath` is the synthetic `'in-sandbox'`
+ * marker, the backend provisions a REAL ephemeral host workspace (unique
+ * directory under `workspaceRoot`), sets its ownership so the image's
+ * non-root user can write to it, bind-mounts it at `/workspace`, and returns
+ * the HOST path in `workspacePath`. `destroy` removes the container, the
+ * network AND the temporary workspace, idempotently. Absolute host
+ * `repositoryPath` values keep the original behavior (mounted verbatim).
+ *
+ * RUNTIME sandboxes (`mountRepository: false`) never touch the host
+ * filesystem: the image carries the payload and no volume is bound.
+ *
  * Phase 6 additions: `buildImage` / `removeImage` / `inspect` for runtime
  * sandboxes, plus container-level hardening knobs (no host mount, explicit
  * env allowlist, PID limit, image-default CMD, localhost-only dynamic port).
  */
 export class DockerSandboxBackend implements SandboxBackend {
   private readonly runner: DockerRunner;
-  private readonly ctx = new Map<
-    string,
-    { scanId: string; networkId?: string; hostPort?: number }
-  >();
+  private readonly workspaceRoot: string;
+  private readonly ctx = new Map<string, DockerSandboxContext>();
+  /** host workspace path -> container name (cleanup can find both sides). */
+  private readonly hostWorkspaces = new Map<string, string>();
+  /** image -> resolved non-root uid/gid the sandbox container runs as. */
+  private readonly imageUserCache = new Map<string, { uid: number; gid: number }>();
 
-  constructor(runner: DockerRunner = defaultDockerRunner) {
+  constructor(
+    runner: DockerRunner = defaultDockerRunner,
+    options: DockerSandboxBackendOptions = {}
+  ) {
     this.runner = runner;
+    this.workspaceRoot = options.workspaceRoot ?? path.join(tmpdir(), 'amass-workspaces');
   }
 
   async create(spec: SandboxSpec): Promise<{
@@ -61,9 +107,23 @@ export class DockerSandboxBackend implements SandboxBackend {
       await this.ensureNetwork(networkId, spec.scanId);
     }
 
-    const args = buildCreateCommand(spec, name, MOUNT);
+    // Analysis sandboxes request a backend-owned ephemeral workspace with the
+    // synthetic marker. Provision a real host dir and mount THAT, so the
+    // non-root container user gets a writable `/workspace` and the
+    // orchestrator gets a host-visible path for analyze/scan.
+    let hostWorkspace: string | undefined;
+    let effectiveSpec = spec;
+    if (spec.mountRepository !== false && spec.repositoryPath === SYNTHETIC_REPO_PATH) {
+      hostWorkspace = await this.provisionWorkspace(spec.image, name);
+      effectiveSpec = { ...spec, repositoryPath: hostWorkspace };
+    }
+
+    const args = buildCreateCommand(effectiveSpec, name, MOUNT);
     const out = await this.runner(args, 120_000);
     if (out.exitCode !== 0) {
+      if (hostWorkspace) {
+        await fs.rm(hostWorkspace, { recursive: true, force: true }).catch(() => undefined);
+      }
       throw new Error(`docker create failed: ${out.stderr.trim()}`);
     }
 
@@ -71,8 +131,18 @@ export class DockerSandboxBackend implements SandboxBackend {
       ? await this.readPublishedPort(name)
       : undefined;
 
-    this.ctx.set(name, { scanId: spec.scanId, networkId, hostPort });
-    return { containerId: name, networkId, workspacePath: spec.mountRepository !== false ? MOUNT : undefined, hostPort };
+    this.ctx.set(name, { scanId: spec.scanId, networkId, hostPort, hostWorkspace });
+    if (hostWorkspace) {
+      this.hostWorkspaces.set(hostWorkspace, name);
+    }
+    return {
+      containerId: name,
+      networkId,
+      // Analysis sandboxes with a backend-owned workspace expose the REAL
+      // host path; absolute-host-path sandboxes keep the original behavior.
+      workspacePath: hostWorkspace ?? (spec.mountRepository !== false ? MOUNT : undefined),
+      hostPort,
+    };
   }
 
   async start(id: string): Promise<void> {
@@ -85,8 +155,10 @@ export class DockerSandboxBackend implements SandboxBackend {
   }
 
   async execute(id: string, request: ExecRequest): Promise<ExecResult> {
+    const ctx = this.ctx.get(id);
+    const cwd = request.cwd ? this.toMountPath(request.cwd, ctx?.hostWorkspace) : undefined;
     const args = ['exec'].concat(
-      request.cwd ? ['--workdir', this.toMountPath(request.cwd)] : [],
+      cwd ? ['--workdir', cwd] : [],
       ...this.envArgs(request),
       id,
       ...request.argv
@@ -130,6 +202,10 @@ export class DockerSandboxBackend implements SandboxBackend {
     await this.runner(['rm', '-f', id]);
     if (ctx?.networkId) {
       await this.runner(['network', 'rm', ctx.networkId]);
+    }
+    if (ctx?.hostWorkspace) {
+      await fs.rm(ctx.hostWorkspace, { recursive: true, force: true });
+      this.hostWorkspaces.delete(ctx.hostWorkspace);
     }
     this.ctx.delete(id);
   }
@@ -178,6 +254,21 @@ export class DockerSandboxBackend implements SandboxBackend {
     const out = await this.runner(['ps', '-aq', '--filter', 'label=amass.manager=1']);
     const ids = out.stdout.split('\n').filter(Boolean);
     for (const id of ids) await this.runner(['rm', '-f', id]);
+
+    // Containers are gone: drop every backend-provisioned workspace, plus any
+    // crash-orphaned workspace dirs under this backend's root (crash orphans
+    // are not in memory, but they share the `amass_` naming convention).
+    for (const ws of [...this.hostWorkspaces.keys()]) {
+      await fs.rm(ws, { recursive: true, force: true }).catch(() => undefined);
+      this.hostWorkspaces.delete(ws);
+    }
+    const entries = await fs.readdir(this.workspaceRoot, { withFileTypes: true }).catch(() => []);
+    for (const entry of entries) {
+      if (entry.isDirectory() && entry.name.startsWith('amass_')) {
+        await fs.rm(path.join(this.workspaceRoot, entry.name), { recursive: true, force: true }).catch(() => undefined);
+      }
+    }
+
     const nets = await this.runner(['network', 'ls', '-q', '--filter', 'label=amass.manager=1']);
     for (const net of nets.stdout.split('\n').filter(Boolean)) {
       await this.runner(['network', 'rm', net]);
@@ -211,10 +302,22 @@ export class DockerSandboxBackend implements SandboxBackend {
     if (out.exitCode !== 0) throw new Error(`docker ${label} failed: ${out.stderr.trim()}`);
   }
 
-  private toMountPath(containerPath: string): string {
-    // Relative paths are resolved under the mount; absolute paths are used as-is.
-    if (containerPath.startsWith('/')) return containerPath;
-    return `${MOUNT}/${containerPath}`;
+  /**
+   * Map an exec/copy target to the CONTAINER path. The orchestrator hands the
+   * backend-provisioned HOST workspace path as the workdir; translate it back
+   * into the container mount so `docker exec --workdir` stays valid inside the
+   * sandbox. Absolute container paths and relative paths are handled as before.
+   */
+  private toMountPath(containerOrHostPath: string, hostWorkspace?: string): string {
+    if (
+      hostWorkspace &&
+      (containerOrHostPath === hostWorkspace ||
+        containerOrHostPath.startsWith(hostWorkspace + path.sep))
+    ) {
+      return MOUNT + containerOrHostPath.slice(hostWorkspace.length);
+    }
+    if (containerOrHostPath.startsWith('/')) return containerOrHostPath;
+    return `${MOUNT}/${containerOrHostPath}`;
   }
 
   private envArgs(request: ExecRequest): string[] {
@@ -227,6 +330,92 @@ export class DockerSandboxBackend implements SandboxBackend {
       for (const [k, v] of Object.entries(request.envOverrides)) env.push('--env', `${k}=${v}`);
     }
     return env;
+  }
+
+  /** Provision a unique, image-user-compatible host workspace for one sandbox. */
+  private async provisionWorkspace(image: string, name: string): Promise<string> {
+    await fs.mkdir(this.workspaceRoot, { recursive: true });
+    const dir = path.join(this.workspaceRoot, name);
+    await fs.mkdir(dir, { recursive: true });
+    const { uid, gid } = await this.resolveImageUser(image);
+    await this.makeWritableBy(dir, uid, gid, image);
+    return dir;
+  }
+
+  /**
+   * Resolve the numeric uid/gid the sandbox container will run as, from the
+   * image itself: run the image with its OWN default USER (exactly what the
+   * sandbox container does — no `--user` override) and read `id -u` / `id -g`.
+   * Deterministic, never couples the container uid to a host uid, and works
+   * for both name and numeric `USER` declarations. Cached per image.
+   */
+  private async resolveImageUser(image: string): Promise<{ uid: number; gid: number }> {
+    const cached = this.imageUserCache.get(image);
+    if (cached) return cached;
+    const out = await this.runner(
+      ['run', '--rm', '--entrypoint', 'sh', image, '-c', 'id -u; id -g'],
+      60_000
+    );
+    if (out.exitCode !== 0) {
+      throw new Error(
+        `cannot resolve sandbox user for image ${image} (does it have /bin/sh?): ${out.stderr.trim()}`
+      );
+    }
+    const [uid, gid] = out.stdout.trim().split('\n').map((line) => Number(line.trim()));
+    if (!Number.isInteger(uid) || !Number.isInteger(gid) || gid < 0 || uid < 0) {
+      throw new Error(`cannot parse uid/gid for image ${image} (got '${out.stdout.trim()}')`);
+    }
+    const resolved = { uid, gid };
+    this.imageUserCache.set(image, resolved);
+    return resolved;
+  }
+
+  /**
+   * Give the bind-mounted host workspace ownership compatible with the
+   * container's non-root user WITHOUT running the container as root or
+   * chmod-ing 777:
+   *   - owner  = the host backend process (it must read the cloned tree for
+   *     analyze/scan on the host side),
+   *   - group  = the image user's group (the container user writes through
+   *     group permissions),
+   *   - mode   = 0770 (no world access).
+   * When the backend cannot chown itself (non-root host), ownership is set by
+   * a throwaway root helper container built from the SAME image, so the
+   * workspace is only ever owned/accessed in terms of the image's own user.
+   */
+  private async makeWritableBy(
+    dir: string,
+    uid: number,
+    gid: number,
+    image: string
+  ): Promise<void> {
+    const myUid = process.getuid?.();
+    if (myUid === uid) {
+      // Backend runs as the sandbox user: dir is already owner-writable.
+      await fs.chmod(dir, 0o770).catch(() => undefined);
+      return;
+    }
+    if (myUid === 0) {
+      // Root backend: chown directly; the container user matches via owner.
+      await fs.chown(dir, uid, gid);
+      await fs.chmod(dir, 0o770);
+      return;
+    }
+    const ownerUid = myUid ?? uid;
+    const out = await this.runner(
+      [
+        'run', '--rm', '--user', '0:0',
+        '--volume', `${dir}:/ws`,
+        '--entrypoint', 'sh', image,
+        '-c', `chown ${ownerUid}:${gid} /ws && chmod 770 /ws`,
+      ],
+      60_000
+    );
+    if (out.exitCode !== 0) {
+      throw new Error(
+        `failed to set workspace ownership for ${image}: ${out.stderr.trim()}`
+      );
+    }
   }
 }
 
