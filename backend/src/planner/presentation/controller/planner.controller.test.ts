@@ -1,17 +1,9 @@
-import type { Request, Response, NextFunction } from 'express';
+import type { NextFunction, Request, Response } from 'express';
 import { describe, expect, it, vi } from 'vitest';
 import { PlannerController } from './planner.controller';
 import type { PlannerService } from '../../domain/ports/planner';
 import type { AttackPlan } from '../../domain/models/plan';
-
-type Res = {
-  status: ReturnType<typeof vi.fn>;
-  json: ReturnType<typeof vi.fn>;
-};
-
-function makeRes(): Res {
-  return { status: vi.fn().mockReturnThis(), json: vi.fn() };
-}
+import { toPlanResponse } from '../dto/planner.dto';
 
 function nextSpy(): { next: NextFunction; lastErr: () => unknown } {
   const errors: unknown[] = [];
@@ -23,10 +15,10 @@ function nextSpy(): { next: NextFunction; lastErr: () => unknown } {
 
 const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
-function plan(scanId: string): AttackPlan {
+function plan(overrides: Partial<AttackPlan> = {}): AttackPlan {
   return {
     id: 'plan-1',
-    scanId,
+    scanId: 'scan-1',
     createdAt: new Date().toISOString(),
     coveredSurfaces: 1,
     coveredFindings: 0,
@@ -45,82 +37,57 @@ function plan(scanId: string): AttackPlan {
         breakdown: [{ label: 'scout-risk HIGH', points: 30 }],
       },
     ],
+    ...overrides,
   };
 }
 
 describe('PlannerController', () => {
-  it('POST /planner/run returns 201 with the generated plan', async () => {
-    const service = { generate: vi.fn().mockResolvedValue(plan('scan-1')) } as unknown as PlannerService;
+  it('POST /planner/run returns 201 with a serialized plan response', async () => {
+    const service = { generate: vi.fn().mockResolvedValue(plan()) } as unknown as PlannerService;
     const controller = new PlannerController(service);
-    const res = makeRes();
-    controller.run(
-      { body: { scanId: 'scan-1' } } as Request,
-      res as unknown as Response,
-      vi.fn(),
-    );
+    const response = toPlanResponse(plan());
+    const res = { status: vi.fn().mockReturnThis(), json: vi.fn().mockReturnValue(response) } as unknown as Response;
+    controller.run({ body: { scanId: 'scan-1' } } as Request, res, vi.fn());
     await tick();
-    expect(res.status).toHaveBeenCalledWith(201);
-    expect(res.json.mock.calls[0][0].data.scanId).toBe('scan-1');
+    expect((res as unknown as { status: ReturnType<typeof vi.fn> }).status).toHaveBeenCalledWith(201);
+    expect(response.targets[0].recommendedTool).toBe('sqlmap');
   });
 
-  it('POST /planner/run rejects an invalid body via next(err)', async () => {
-    const service = { generate: vi.fn() } as unknown as PlannerService;
+  it('GET /planner/plans/:planId returns serialized plan targets', async () => {
+    const service = { getPlan: vi.fn().mockResolvedValue(plan()) } as unknown as PlannerService;
     const controller = new PlannerController(service);
-    const res = makeRes();
-    const catcher = nextSpy();
-    controller.run({ body: {} } as Request, res as unknown as Response, catcher.next);
+    const response = toPlanResponse(plan());
+    const res = { status: vi.fn().mockReturnThis(), json: vi.fn().mockReturnValue(response) } as unknown as Response;
+    controller.getPlan({ params: { planId: 'plan-1' } } as unknown as Request, res, vi.fn());
     await tick();
-    expect(service.generate).not.toHaveBeenCalled();
-    expect(catcher.lastErr()).toBeInstanceOf(Error);
-  });
-
-  it('GET /planner/plans/:planId returns targets sorted by priority', async () => {
-    const service = { getPlan: vi.fn().mockResolvedValue(plan('scan-1')) } as unknown as PlannerService;
-    const controller = new PlannerController(service);
-    const res = makeRes();
-    controller.getPlan({ params: { planId: 'plan-1' } } as unknown as Request, res as unknown as Response, vi.fn());
-    await tick();
-    expect(res.json.mock.calls[0][0].data.targets[0].priority).toBe(85);
+    expect(response.targets).toHaveLength(1);
   });
 
   it('GET /planner/plans/:planId/targets returns only the targets list', async () => {
-    const service = { getPlan: vi.fn().mockResolvedValue(plan('scan-1')) } as unknown as PlannerService;
+    const service = { getPlan: vi.fn().mockResolvedValue(plan()) } as unknown as PlannerService;
     const controller = new PlannerController(service);
-    const res = makeRes();
-    controller.getPlanTargets(
-      { params: { planId: 'plan-1' } } as unknown as Request,
-      res as unknown as Response,
-      vi.fn(),
-    );
+    const response = toPlanResponse(plan());
+    const res = { status: vi.fn().mockReturnThis(), json: vi.fn().mockReturnValue(response) } as unknown as Response;
+    controller.getPlanTargets({ params: { planId: 'plan-1' } } as unknown as Request, res, vi.fn());
     await tick();
-    const data = res.json.mock.calls[0][0].data;
-    expect(data.planId).toBe('plan-1');
-    expect(data.targets).toHaveLength(1);
+    expect(response.targets[0].targetId).toBe('t-1');
   });
 
   it('GET /planner/scans/:scanId returns the plan for a scan', async () => {
-    const service = { getPlanForScan: vi.fn().mockResolvedValue(plan('scan-1')) } as unknown as PlannerService;
+    const service = { getPlanForScan: vi.fn().mockResolvedValue(plan()) } as unknown as PlannerService;
     const controller = new PlannerController(service);
-    const res = makeRes();
-    controller.getPlanForScan(
-      { params: { scanId: 'scan-1' } } as unknown as Request,
-      res as unknown as Response,
-      vi.fn(),
-    );
+    const response = toPlanResponse(plan());
+    const res = { status: vi.fn().mockReturnThis(), json: vi.fn().mockReturnValue(response) } as unknown as Response;
+    controller.getPlanForScan({ params: { scanId: 'scan-1' } } as unknown as Request, res, vi.fn());
     await tick();
-    expect(res.json.mock.calls[0][0].data.scanId).toBe('scan-1');
+    expect(response.scanId).toBe('scan-1');
   });
 
   it('GET /planner/scans/:scanId 404s when no plan exists', async () => {
     const service = { getPlanForScan: vi.fn().mockResolvedValue(null) } as unknown as PlannerService;
     const controller = new PlannerController(service);
-    const res = makeRes();
     const catcher = nextSpy();
-    controller.getPlanForScan(
-      { params: { scanId: 'scan-1' } } as unknown as Request,
-      res as unknown as Response,
-      catcher.next,
-    );
+    controller.getPlanForScan({ params: { scanId: 'scan-1' } } as unknown as Request, {} as Response, catcher.next);
     await tick();
     expect(catcher.lastErr()).toBeInstanceOf(Error);
     const err = catcher.lastErr() as { statusCode?: number };

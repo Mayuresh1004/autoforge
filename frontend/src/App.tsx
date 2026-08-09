@@ -5,26 +5,31 @@ import { AgentPipeline } from './components/pipeline/AgentPipeline';
 import { EventTimeline } from './components/timeline/EventTimeline';
 import { SandboxViewport } from './components/sandbox/SandboxViewport';
 import { FindingsList } from './components/findings/FindingsList';
+import { PlanPanel } from './components/planner/PlanPanel';
 import { ExploitPanel } from './components/evidence/ExploitPanel';
 import { PatchView } from './components/remediation/PatchView';
 import { ValidationMatrix } from './components/critic/ValidationMatrix';
 import { Tabs, type TabItem } from './components/ui/Tabs';
 import { Button } from './components/ui/Button';
 import { useScanStore } from './hooks/useScanStore';
-import type { FindingModel } from './types/api-types';
+import type { FindingModel, PlanModel } from './types/api-types';
 
 export default function App() {
   const store = useScanStore(null);
-  const [activeCenterTab, setActiveCenterTab] = useState<string>('sandbox');
+  const [activeCenterTab, setActiveCenterTab] = useState<string>('plan');
   const [selectedFinding, setSelectedFinding] = useState<FindingModel | null>(null);
   const [isNewScanOpen, setIsNewScanOpen] = useState<boolean>(false);
 
   const centerTabs: TabItem[] = [
-    { id: 'sandbox', label: '1. Live Sandbox & Recon', count: store.endpoints.length },
-    { id: 'exploitation', label: '2. Exploitation Evidence', count: store.exploits.length },
-    { id: 'patch', label: '3. Remediation Patch', count: store.patches.length },
-    { id: 'critic', label: '4. Critic QA Matrix', count: store.criticStages.filter((s) => s.status === 'PASSED').length },
+    { id: 'plan', label: 'Plan & Targets', count: store.targets.length },
+    { id: 'sandbox', label: 'Live Sandbox & Recon', count: store.endpoints.length },
+    { id: 'exploitation', label: 'Exploitation Evidence', count: store.exploits.length },
+    { id: 'patch', label: 'Remediation Patch', count: store.patches.length },
+    { id: 'critic', label: 'Critic QA Matrix', count: store.criticStages.filter((s) => s.status === 'PASSED').length },
   ];
+
+  const selectedPlan = (store.scan as { plan?: PlanModel } | null | undefined)?.plan ?? null;
+  const selectedPlanFromTargets: PlanModel | null = store.targets.length ? { targets: store.targets } : null;
 
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100 flex flex-col font-sans antialiased selection:bg-sky-500/30 selection:text-sky-200">
@@ -70,6 +75,10 @@ export default function App() {
           <Tabs tabs={centerTabs} activeTab={activeCenterTab} onChange={setActiveCenterTab} />
 
           <div className="flex-1 overflow-y-auto p-4">
+            {activeCenterTab === 'plan' && (
+              <PlanPanel plan={selectedPlan ?? selectedPlanFromTargets} sandboxStatus={store.sandbox?.status ?? null} />
+            )}
+
             {activeCenterTab === 'sandbox' && (
               <SandboxViewport sandbox={store.sandbox} endpoints={store.endpoints} />
             )}

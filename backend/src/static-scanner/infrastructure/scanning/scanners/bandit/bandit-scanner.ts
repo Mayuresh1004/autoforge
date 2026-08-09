@@ -54,7 +54,10 @@ export class BanditScanner extends BaseScanner {
     };
   }
 
-  parse(output: { stdout: string }): readonly RawFinding[] {
+  parse(output: { stdout: string; stderr: string; exitCode: number | null; timedOut: boolean }): readonly RawFinding[] {
+    if (!output.stdout.trim()) {
+      return [];
+    }
     const parsed = JSON.parse(output.stdout) as BanditOutput;
     const findings: RawFinding[] = [];
     for (const result of parsed.results ?? []) {

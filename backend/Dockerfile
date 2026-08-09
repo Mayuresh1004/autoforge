@@ -17,12 +17,18 @@ ENV NODE_ENV=production
 # util-linux provides `unshare`, which the sandbox uses to give scanner/analyzer
 # subprocesses a private network namespace (no egress) when the host supports it.
 # python3/pip are required for the built-in Python scanners: semgrep, bandit, pip-audit.
-RUN apk add --no-cache git util-linux python3 py3-pip
+RUN apk add --no-cache git util-linux python3 py3-pip docker-cli
 RUN pip install --no-cache-dir --break-system-packages --timeout 120 --retries 10 semgrep bandit pip-audit
+ARG DOCKER_GID=999
 RUN addgroup --system --gid 1001 nodejs && \
     adduser --system --uid 1001 amass && \
     mkdir -p /app/workspace && \
     chown -R amass:nodejs /app
+RUN set -eux; \
+    if ! getent group docker >/dev/null 2>&1; then \
+        addgroup -S docker; \
+    fi; \
+    addgroup amass docker
 ENV ANALYZER_WORKSPACE_DIR=/app/workspace
 USER amass
 COPY --from=builder --chown=amass:nodejs /app/dist ./dist

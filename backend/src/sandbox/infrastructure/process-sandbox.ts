@@ -12,11 +12,11 @@ import type {
 } from '../domain/ports/sandbox';
 
 interface ExecFileError extends Error {
-  code?: number | null;
+  code?: number | string | null;
   killed?: boolean;
   signal?: NodeJS.Signals | null;
-  stdout?: string;
-  stderr?: string;
+  stdout?: Buffer | string | null;
+  stderr?: Buffer | string | null;
 }
 
 /** Minimal env allowlist used when a command does not specify one. */
@@ -94,7 +94,7 @@ export class ProcessSandboxRuntime implements SandboxRuntime {
       return {
         stdout: (err.stdout ?? '') as string,
         stderr: (err.stderr ?? '') as string,
-        exitCode: err.code ?? null,
+        exitCode: (err.code ?? null) as number | null,
         timedOut: err.killed === true && err.signal === 'SIGTERM',
       };
     }
@@ -148,7 +148,9 @@ function promisifiedExecFile(
   return new Promise((resolve, reject) => {
     execFile(file, args, options, (error, stdout, stderr) => {
       if (error) {
-        reject(error as ExecFileError);
+        (error as ExecFileError).stdout = stdout;
+        (error as ExecFileError).stderr = stderr;
+        reject(error);
         return;
       }
       resolve({ stdout, stderr });

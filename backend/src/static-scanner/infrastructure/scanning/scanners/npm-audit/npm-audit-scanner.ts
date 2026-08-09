@@ -55,7 +55,10 @@ export class NpmAuditScanner extends BaseScanner {
     };
   }
 
-  parse(output: { stdout: string }): readonly RawFinding[] {
+  parse(output: { stdout: string; stderr: string; exitCode: number | null; timedOut: boolean }): readonly RawFinding[] {
+    if (!output.stdout.trim()) {
+      return [];
+    }
     const parsed = JSON.parse(output.stdout) as NpmAuditOutput;
     const findings: RawFinding[] = [];
     for (const pkg of Object.values(parsed.vulnerabilities ?? {})) {

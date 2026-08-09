@@ -25,6 +25,7 @@ import type {
   ExploitEvidenceModel,
   PatchModel,
   RuntimeSandboxModel,
+  SniperRunReportModel,
 } from '../types/api-types';
 
 const API_BASE_URL = (import.meta.env.VITE_API_URL as string | undefined)?.replace(/\/$/, '') ?? 'http://localhost:3001';
@@ -107,8 +108,8 @@ export const api = {
   getPlanForScan: (scanId: string) => fetchJson<PlanModel>(`/api/planner/scans/${scanId}`),
 
   // Sniper Exploitation Agent
-  runSniper: (payload: { scanId: string; targetId?: string }) =>
-    fetchJson<ExploitEvidenceModel>('/api/sniper/run', {
+  runSniper: (payload: { scanId: string; sandboxId: string; baseUrl: string; targetIds: string[] }) =>
+    fetchJson<SniperRunReportModel>('/api/sniper/run', {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
@@ -127,7 +128,7 @@ export const api = {
   getEngineerRun: (executionId: string) => fetchJson<PatchModel>(`/api/engineer/${executionId}`),
 
   // Runtime Sandbox
-  createRuntimeSandbox: (payload: { targetUrl?: string; runtime?: string }) =>
+  createRuntimeSandbox: (payload: { scanId: string; repository: { url?: string; path?: string } }) =>
     fetchJson<RuntimeSandboxModel>('/api/sandboxes/runtime', {
       method: 'POST',
       body: JSON.stringify(payload),

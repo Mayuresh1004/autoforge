@@ -49,6 +49,7 @@ export class DockerSandboxBackend implements SandboxBackend {
   async create(spec: SandboxSpec): Promise<{
     containerId: string;
     networkId?: string;
+    workspacePath?: string;
     ipAddress?: string;
     hostPort?: number;
   }> {
@@ -71,7 +72,7 @@ export class DockerSandboxBackend implements SandboxBackend {
       : undefined;
 
     this.ctx.set(name, { scanId: spec.scanId, networkId, hostPort });
-    return { containerId: name, networkId, hostPort };
+    return { containerId: name, networkId, workspacePath: spec.mountRepository !== false ? MOUNT : undefined, hostPort };
   }
 
   async start(id: string): Promise<void> {

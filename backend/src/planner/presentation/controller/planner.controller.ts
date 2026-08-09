@@ -4,7 +4,7 @@ import { asyncHandler } from '../../../middlewares/request.middleware';
 import { ValidationError, NotFoundError } from '../../../utils/errors';
 import type { PlannerService } from '../../domain/ports/planner';
 import { ScanNotFoundError, PlanNotFoundError } from '../../domain/errors/planner.errors';
-import { RunPlannerSchema } from '../dto/planner.dto';
+import { RunPlannerSchema, toPlanResponse } from '../dto/planner.dto';
 
 /**
  * HTTP adapter for the Attack Planner. Transport only. The planner *reasons*:
@@ -22,7 +22,7 @@ export class PlannerController {
     }
     try {
       const plan = await this.service.generate(parsed.data.scanId);
-      res.status(201).json(createSuccessResponse(plan));
+      res.status(201).json(createSuccessResponse(toPlanResponse(plan as any)));
     } catch (err) {
       if (err instanceof ScanNotFoundError) throw new NotFoundError(err.message);
       throw err;
@@ -34,7 +34,7 @@ export class PlannerController {
     const planId = String(req.params.planId);
     try {
       const plan = await this.service.getPlan(planId);
-      res.json(createSuccessResponse(plan));
+      res.json(createSuccessResponse(toPlanResponse(plan as any)));
     } catch (err) {
       if (err instanceof PlanNotFoundError) throw new NotFoundError(err.message);
       throw err;
@@ -46,7 +46,7 @@ export class PlannerController {
     const planId = String(req.params.planId);
     try {
       const plan = await this.service.getPlan(planId);
-      res.json(createSuccessResponse({ planId, targets: plan.targets }));
+      res.json(createSuccessResponse(toPlanResponse(plan as any)));
     } catch (err) {
       if (err instanceof PlanNotFoundError) throw new NotFoundError(err.message);
       throw err;
@@ -58,6 +58,6 @@ export class PlannerController {
     const scanId = String(req.params.scanId);
     const plan = await this.service.getPlanForScan(scanId);
     if (plan === null) throw new NotFoundError(`Attack plan for scan '${scanId}'`);
-    res.json(createSuccessResponse(plan));
+    res.json(createSuccessResponse(toPlanResponse(plan as any)));
   });
 }

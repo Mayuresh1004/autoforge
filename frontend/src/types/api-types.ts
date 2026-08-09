@@ -103,13 +103,17 @@ export interface TargetModel {
   readonly vulnerabilityType: string;
   readonly priorityScore: number;
   readonly rationale?: string;
+  readonly estimatedRisk?: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
+  readonly recommendedTool?: string;
+  readonly reason?: string;
+  readonly candidateVulnerabilities?: readonly string[];
 }
 
 export interface PlanModel {
-  readonly planId: string;
-  readonly scanId: string;
-  readonly status: string;
-  readonly targets: TargetModel[];
+  readonly planId?: string;
+  readonly scanId?: string;
+  readonly status?: string;
+  readonly targets: readonly TargetModel[];
 }
 
 export interface ExploitEvidenceModel {
@@ -152,12 +156,52 @@ export interface CriticResultModel {
 }
 
 export interface RuntimeSandboxModel {
-  readonly sandboxId: string;
-  readonly status: 'PROVISIONING' | 'READY' | 'FAILED' | 'DESTROYING' | 'DESTROYED';
-  readonly targetUrl?: string;
-  readonly runtime: 'docker' | 'process' | string;
-  readonly containerId?: string;
-  readonly hostPort?: number;
+  readonly runtime?: 'docker' | 'process' | string;
   readonly healthStatus?: string;
+  readonly id: string;
+  readonly scanId: string;
+  readonly status: 'PROVISIONING' | 'READY' | 'FAILED' | 'DESTROYING' | 'DESTROYED';
+  readonly name?: string;
+  readonly repository: {
+    readonly name?: string;
+    readonly url?: string;
+    readonly path?: string;
+  };
+  readonly sandboxId?: string;
+  readonly imageName?: string;
+  readonly networkId?: string;
+  readonly targetUrl?: string;
+  readonly internalHost?: string;
+  readonly internalPort?: number;
+  readonly exposedPort?: number;
   readonly createdAt: string;
+  readonly expiresAt?: string;
+  readonly destroyedAt?: string;
+  readonly failureStage?: string;
+  readonly failureReason?: string;
+}
+
+export interface SniperRunReportModel {
+  readonly runId: string;
+  readonly scanId: string;
+  readonly sandboxId: string;
+  readonly results: readonly {
+    readonly targetId: string;
+    readonly exploit: {
+      readonly exploitId: string;
+      readonly targetId: string;
+      readonly scanId: string;
+      readonly status: string;
+      readonly confirmed: boolean;
+      readonly payload?: string;
+      readonly endpoint?: string;
+      readonly method?: string;
+      readonly parameter?: string;
+      readonly httpStatusCode?: number;
+      readonly responseSnippet?: string;
+      readonly verificationNotes?: string;
+    };
+  }[];
+  readonly completed: number;
+  readonly total: number;
 }

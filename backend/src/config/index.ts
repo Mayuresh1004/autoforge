@@ -1,10 +1,19 @@
 import { z } from 'zod';
 import os from 'node:os';
 import path from 'node:path';
+import dotenv from 'dotenv';
 import type { LLMProviderConfig } from '../llm/domain/ports/llm-config';
+
+// Load environment variables from process.cwd()/.env and monorepo root .env if available
+dotenv.config();
+dotenv.config({ path: path.resolve(__dirname, '../../../.env') });
+dotenv.config({ path: path.resolve(process.cwd(), '../.env') });
 import type { LLMProviderId } from '../llm/domain/ports/llm-provider';
 import { LLM_PROVIDER_IDS } from '../llm/domain/ports/llm-provider';
 import type { EmbeddingConfig } from '../embedding/domain/ports/embedding-provider';
+
+const emptyToUndefined = (val: unknown) =>
+  typeof val === 'string' && val.trim() === '' ? undefined : val;
 
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
@@ -124,13 +133,15 @@ const envSchema = z.object({
   // --- LLM provider (free-first) ---
   // Preferred order: gemini → openrouter → groq → mistral. No paid provider
   // is required; only the configured provider(s) need keys.
-  LLM_PROVIDER: z
-    .enum(['gemini', 'openrouter', 'groq', 'mistral'])
-    .default('gemini'),
+  LLM_PROVIDER: z.preprocess(
+    emptyToUndefined,
+    z.enum(['gemini', 'openrouter', 'groq', 'mistral']).default('gemini')
+  ),
   // Explicit primary override (takes precedence over LLM_PROVIDER when set).
-  LLM_PRIMARY_PROVIDER: z
-    .enum(['gemini', 'openrouter', 'groq', 'mistral'])
-    .optional(),
+  LLM_PRIMARY_PROVIDER: z.preprocess(
+    emptyToUndefined,
+    z.enum(['gemini', 'openrouter', 'groq', 'mistral']).optional()
+  ),
   // Default model: EMPTY by default — resolved provider-aware at build time
   // (MEDIUM-5). Only OpenRouter gets the 'openrouter/free' routing alias for
   // free; non-openrouter providers require an explicit LLM_MODEL or
@@ -154,7 +165,10 @@ const envSchema = z.object({
 
   // --- Embeddings + knowledge/RAG (free-first; independent of the LLM axis) ---
   // Embedding provider is a SEPARATE configuration line from LLM providers.
-  EMBEDDING_PROVIDER: z.enum(['gemini', 'noop']).default('noop'),
+  EMBEDDING_PROVIDER: z.preprocess(
+    emptyToUndefined,
+    z.enum(['gemini', 'noop']).default('noop')
+  ),
   EMBEDDING_MODEL: z.string().default('text-embedding-004'),
   EMBEDDING_DIMENSIONS: z.coerce.number().int().min(64).max(8192).default(768),
 
@@ -420,7 +434,10 @@ export const llmConfig: LLMProviderConfig = {
 // Embeddings + knowledge/RAG (free-first; independent of the LLM axis).
 // ---------------------------------------------------------------------------
 export const embeddingConfig: EmbeddingConfig = {
-  provider: config.EMBEDDING_PROVIDER,
+  provider:
+    config.EMBEDDING_PROVIDER === 'gemini' && !config.GEMINI_API_KEY
+      ? 'noop'
+      : config.EMBEDDING_PROVIDER,
   model: config.EMBEDDING_MODEL,
   dimensions: config.EMBEDDING_DIMENSIONS,
   apiKey: config.GEMINI_API_KEY,

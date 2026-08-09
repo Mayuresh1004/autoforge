@@ -43,14 +43,47 @@ export function NewScanModal({ isOpen, onClose, onScanCreated }: NewScanModalPro
         onScanCreated(scanObj);
         onClose();
 
-        // 2. Automatically trigger downstream agent pipeline (Scout Recon -> Planner)
+        // 2. Automatically trigger downstream agent pipeline
         // Background trigger without blocking UI modal closing
-        api.runScout({
-          scanId,
-          targetUrl: 'http://localhost:8000',
-        }).then(() => {
-          api.runPlanner({ scanId }).catch(() => undefined);
-        }).catch(() => undefined);
+        (async () => {
+          try {
+            await api.runScout({
+              scanId,
+              targetUrl: 'http://localhost:8000',
+            });
+
+            const planRes = await api.runPlanner({ scanId });
+            const plan = (planRes as any).data as any;
+            const targetIds = (plan?.targets ?? [])
+              .map((target: any) => target?.targetId)
+              .filter((id: any) => Boolean(id));
+
+            if (!targetIds.length) {
+              return;
+            }
+
+            const sandboxRes = await api.createRuntimeSandbox({
+              scanId,
+              repository: { url: finalUrl },
+            });
+            const sandbox = (sandboxRes as any).data as any;
+            const sandboxId = sandbox?.sandboxId;
+            const baseUrl = sandbox?.targetUrl;
+
+            if (!sandboxId || !baseUrl) {
+              return;
+            }
+
+            await api.runSniper({
+              scanId,
+              sandboxId,
+              baseUrl,
+              targetIds,
+            });
+          } catch {
+            // ignore background pipeline failures
+          }
+        })();
       } else {
         setError(res.error?.message ?? 'Failed to trigger scan');
       }

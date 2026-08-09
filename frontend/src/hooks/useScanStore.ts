@@ -136,8 +136,11 @@ export function useScanStore(initialScanId: string | null = null) {
       case 'SANDBOX_PROVISIONING':
         setSandbox((prev) => ({
           sandboxId: event.metadata?.sandboxId ?? prev?.sandboxId ?? 'sbx_init',
+          id: event.metadata?.sandboxId ?? prev?.id ?? 'sbx_init',
+          scanId: event.scanId ?? prev?.scanId ?? 'unknown',
           status: 'PROVISIONING',
           runtime: (event.metadata?.runtime as string) ?? 'docker',
+          repository: prev?.repository ?? {},
           targetUrl: event.metadata?.targetUrl,
           createdAt: event.timestamp,
         }));
@@ -146,8 +149,11 @@ export function useScanStore(initialScanId: string | null = null) {
       case 'SANDBOX_READY':
         setSandbox((prev) => ({
           sandboxId: event.metadata?.sandboxId ?? prev?.sandboxId ?? 'sbx_ready',
+          id: event.metadata?.sandboxId ?? prev?.id ?? 'sbx_ready',
+          scanId: event.scanId ?? prev?.scanId ?? 'unknown',
           status: 'READY',
           runtime: (event.metadata?.runtime as string) ?? prev?.runtime ?? 'docker',
+          repository: prev?.repository ?? {},
           targetUrl: event.metadata?.targetUrl ?? prev?.targetUrl,
           createdAt: prev?.createdAt ?? event.timestamp,
         }));
@@ -301,7 +307,7 @@ export function useScanStore(initialScanId: string | null = null) {
       // Try fetching plan for targets
       const planRes = await api.getPlanForScan(scanId);
       if (planRes.success && planRes.data) {
-        setTargets(planRes.data.targets ?? []);
+        setTargets([...(planRes.data.targets ?? [])]);
       }
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Failed to load scan details');
