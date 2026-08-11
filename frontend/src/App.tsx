@@ -20,14 +20,16 @@ export default function App() {
   const [selectedFinding, setSelectedFinding] = useState<FindingModel | null>(null);
   const [isNewScanOpen, setIsNewScanOpen] = useState<boolean>(false);
 
+  const activeFocusFinding = selectedFinding || store.activeFinding;
 
+  const passedGates = store.criticStages.filter((s) => s.status === 'PASSED').length;
 
   const centerTabs: TabItem[] = [
     { id: 'plan', label: 'Plan & Targets', count: store.targets.length },
     { id: 'sandbox', label: 'Live Sandbox & Recon', count: store.endpoints.length },
     { id: 'exploitation', label: 'Exploitation Evidence', count: store.exploits.length },
     { id: 'patch', label: 'Remediation Patch', count: store.patches.length },
-    { id: 'critic', label: 'Critic QA Matrix', count: store.criticStages.filter((s) => s.status === 'PASSED').length },
+    { id: 'critic', label: 'Critic QA Matrix', count: passedGates ? `${passedGates}/6` : 0 },
   ];
 
   const selectedPlan = (store.scan as { plan?: PlanModel } | null | undefined)?.plan ?? null;
@@ -88,22 +90,16 @@ export default function App() {
 
             {activeCenterTab === 'exploitation' && (
               <div className="space-y-4">
-                {(selectedFinding || store.activeFinding) && (
-                  <div className="rounded-lg border border-sky-500/30 bg-sky-500/10 p-3 text-xs text-sky-300">
-                    <span className="font-semibold block mb-0.5">Focus Finding: {(selectedFinding || store.activeFinding)?.title}</span>
-                    <span className="font-mono text-[11px] opacity-80">{(selectedFinding || store.activeFinding)?.filePath}:{(selectedFinding || store.activeFinding)?.lineStart}</span>
-                  </div>
-                )}
-                <ExploitPanel exploits={store.exploits} />
+                <ExploitPanel exploits={store.exploits} activeFinding={activeFocusFinding} />
               </div>
             )}
 
             {activeCenterTab === 'patch' && (
-              <PatchView patches={store.patches} />
+              <PatchView patches={store.patches} activeFinding={activeFocusFinding} />
             )}
 
             {activeCenterTab === 'critic' && (
-              <ValidationMatrix stages={store.criticStages} />
+              <ValidationMatrix stages={store.criticStages} activeFinding={activeFocusFinding} />
             )}
           </div>
         </section>

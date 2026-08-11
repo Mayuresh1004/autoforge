@@ -1,25 +1,38 @@
 import { Card, CardHeader, CardTitle } from '../ui/Card';
 import { Badge } from '../ui/Badge';
 import type { CriticStageState } from '../../hooks/useScanStore';
+import type { FindingModel } from '../../types/api-types';
 
 export interface ValidationMatrixProps {
   stages: CriticStageState[];
+  activeFinding?: FindingModel | null;
+  activeFindingId?: string | null;
 }
 
-export function ValidationMatrix({ stages }: ValidationMatrixProps) {
+export function ValidationMatrix({ stages, activeFinding }: ValidationMatrixProps) {
   const isApproved = stages.find((s) => s.key === 'approval')?.status === 'PASSED';
   const isRejected = stages.find((s) => s.key === 'approval')?.status === 'FAILED';
 
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Critic Quality Assurance & Validation</CardTitle>
+        <div>
+          <CardTitle>Critic Quality Assurance & Validation</CardTitle>
+          <p className="text-[11px] text-zinc-500 mt-0.5">6-Gate Sandbox Verification Pipeline</p>
+        </div>
         <Badge variant={isApproved ? 'success' : isRejected ? 'danger' : 'outline'}>
-          {isApproved ? '✓ APPROVED' : isRejected ? '✕ REJECTED' : 'VALUATION IN PROGRESS'}
+          {isApproved ? '✓ APPROVED' : isRejected ? '✕ REJECTED' : 'VALIDATION IN PROGRESS'}
         </Badge>
       </CardHeader>
 
-      <div className="space-y-2.5">
+      {activeFinding && (
+        <div className="mx-4 mb-4 rounded-lg border border-sky-500/30 bg-sky-500/10 p-3 text-xs text-sky-300 font-mono">
+          <span className="font-semibold block mb-0.5">Validating Patch For: {activeFinding.title} ({activeFinding.cwe || activeFinding.id})</span>
+          <span className="text-[11px] opacity-80">{activeFinding.filePath}:{activeFinding.lineStart}</span>
+        </div>
+      )}
+
+      <div className="space-y-2.5 px-4 pb-4">
         {stages.map((stage) => {
           const isPassed = stage.status === 'PASSED';
           const isRunning = stage.status === 'RUNNING';

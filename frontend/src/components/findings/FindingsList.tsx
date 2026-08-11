@@ -26,6 +26,9 @@ export function FindingsList({ findings, activeFindingId, onSelectFinding }: Fin
   const mediumCount = findings.filter((f) => f.severity === 'MEDIUM').length;
   const lowCount = findings.filter((f) => f.severity === 'LOW').length;
 
+  const confirmedCount = findings.filter((f) => f.isConfirmed || f.status === 'EXPLOIT_CONFIRMED' || f.status === 'REMEDIATION' || f.status === 'PATCHED' || f.status === 'CRITIC_VERIFIED').length;
+  const remediatedCount = findings.filter((f) => f.status === 'CRITIC_VERIFIED' || f.status === 'PATCHED').length;
+
   const filteredFindings = severityFilter === 'ALL'
     ? findings
     : findings.filter((f) => f.severity === severityFilter);
@@ -35,7 +38,9 @@ export function FindingsList({ findings, activeFindingId, onSelectFinding }: Fin
       <CardHeader>
         <div>
           <CardTitle>Vulnerability Findings</CardTitle>
-          <p className="text-[11px] text-zinc-500 mt-0.5">Discovered OWASP Top 10 Security Scenarios</p>
+          <p className="text-[11px] text-zinc-500 mt-0.5 font-mono">
+            {findings.length} Discovered · {confirmedCount} Confirmed · {remediatedCount} Remediated
+          </p>
         </div>
         <Badge variant="purple">{findings.length} Total</Badge>
       </CardHeader>

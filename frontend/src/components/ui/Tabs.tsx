@@ -5,7 +5,7 @@ export interface TabItem {
   id: string;
   label: string;
   icon?: React.ReactNode;
-  count?: number;
+  count?: number | string;
 }
 
 export interface TabsProps {
@@ -20,6 +20,7 @@ export function Tabs({ tabs, activeTab, onChange, className }: TabsProps) {
     <div className={cn('flex border-b border-zinc-800 bg-zinc-950/60 px-2', className)}>
       {tabs.map((tab) => {
         const isActive = tab.id === activeTab;
+        const hasCount = tab.count !== undefined && tab.count !== null && tab.count !== 0;
         return (
           <button
             key={tab.id}
@@ -33,7 +34,7 @@ export function Tabs({ tabs, activeTab, onChange, className }: TabsProps) {
           >
             {tab.icon}
             <span>{tab.label}</span>
-            {typeof tab.count === 'number' && (
+            {hasCount && (
               <span
                 className={cn(
                   'rounded-full px-1.5 py-0.2 text-[10px] font-mono',
