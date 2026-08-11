@@ -6,7 +6,7 @@ import type {
   SandboxManager,
 } from '../../domain/ports/sandbox-manager';
 import type { RuntimeHealthProber } from '../../domain/ports/runtime-health-prober';
-import type { RuntimeConfig } from '../../domain/value-objects/runtime-config';
+import type { HealthProbeResult, RuntimeConfig } from '../../domain/value-objects/runtime-config';
 import { buildRuntimeContainer } from './runtime-env-builder';
 
 /**
@@ -35,13 +35,14 @@ export interface ProvisionContact {
 /**
  * The hardened container request for a runtime sandbox: internal-only egress,
  * no host mounts (the image carries the payload), explicit env allowlist,
- * bounded CPU/memory/PIDs, image-default CMD, optional localhost-only
- * dynamic host port. Host env never leaks (allowlist only).
+ * bounded CPU/memory/PIDs, runtime-config start command (image CMD or a
+ * derived stack-aware command), optional localhost-only dynamic host port.
+ * Host env never leaks (allowlist only).
  */
 export function buildProvisionRequest(
   sandbox: RuntimeSandbox,
   runtime: RuntimeConfig,
-  input: { hostExpose?: boolean },
+  input: { hostExpose?: boolean; env?: Readonly<Record<string, string>> },
   config: RuntimeSandboxConfig
 ): CreateSandboxInput {
   // Fail fast: an EXPLICIT hostExpose request must never be silently dropped
@@ -63,8 +64,12 @@ export function buildProvisionRequest(
     cpus: config.limits.cpus,
     pidsLimit: config.limits.pids,
     mountRepository: false,
-    env: buildRuntimeContainer({ port: runtime.port }),
-    appCommand: [],
+    env: buildRuntimeContainer({ port: runtime.port, extra: input.env }),
+    // The runtime config's command governs: [] = image default CMD (Mode 1
+    // Dockerfiles WITH a CMD, Mode 2 generated images), non-empty = explicit
+    // argv (Mode 1 Dockerfiles WITHOUT a CMD derive a stack-aware start
+    // command — e.g. NodeGoat's `npm start`).
+    appCommand: runtime.command.length > 0 ? runtime.command : [],
     ...(hostExpose ? { hostPublishLocalhost: { containerPort: runtime.port } } : {}),
   };
 }
@@ -103,28 +108,59 @@ export function probeTarget(sandbox: RuntimeSandbox): { host: string; port: numb
 }
 
 /**
+ * The bounded probe call for a sandbox, resolved against its connectivity
+ * model:
+ *  - host-exposed (`exposedPort` set): the host prober targets the
+ *    localhost-only published port (reachable from the backend process),
+ *  - isolated (default): NO host path exists — the internal IP is only
+ *    routable from other containers on the same `--internal` Docker network,
+ *    so the probe runs from a throwaway probe container attached to the
+ *    sandbox's own network via the manager (the only Docker owner).
+ */
+export function buildHealthProbe(
+  deps: RuntimeProvisionDeps,
+  sandbox: RuntimeSandbox,
+  path: string
+): () => Promise<HealthProbeResult> {
+  const target = probeTarget(sandbox);
+  if (sandbox.exposedPort) {
+    return () =>
+      deps.prober.probe({
+        host: target.host,
+        port: target.port,
+        path,
+        timeoutMs: deps.config.healthTimeoutMs,
+      });
+  }
+  if (!sandbox.networkId) {
+    throw new Error(`isolated sandbox ${sandbox.id} has no network for an in-network health probe`);
+  }
+  return () =>
+    deps.manager.probeNetworkHealth({
+      networkId: sandbox.networkId as string,
+      host: target.host,
+      port: target.port,
+      path,
+      timeoutMs: deps.config.healthTimeoutMs,
+      image: deps.config.probeImage,
+    });
+}
+
+/**
  * Bounded readiness re-probing: up to HEALTH_PROBE_RETRIES attempts with a
  * short sleep between them (a container can report running before the app
  * binds its port). Never unbounded — the config timeout caps each attempt.
  */
 export async function probeWithRetries(
-  deps: RuntimeProvisionDeps,
-  host: string,
-  port: number,
-  path: string
-): Promise<Awaited<ReturnType<RuntimeHealthProber['probe']>>> {
-  let last: Awaited<ReturnType<RuntimeHealthProber['probe']>> = {
+  probe: () => Promise<HealthProbeResult>
+): Promise<HealthProbeResult> {
+  let last: HealthProbeResult = {
     reachable: false,
     latencyMs: 0,
     detail: 'unreachable',
   };
   for (let attempt = 0; attempt <= HEALTH_PROBE_RETRIES; attempt += 1) {
-    last = await deps.prober.probe({
-      host,
-      port,
-      path,
-      timeoutMs: deps.config.healthTimeoutMs,
-    });
+    last = await probe();
     if (last.reachable) return last;
     if (attempt < HEALTH_PROBE_RETRIES) {
       await new Promise((resolve) => setTimeout(resolve, HEALTH_PROBE_BACKOFF_MS));

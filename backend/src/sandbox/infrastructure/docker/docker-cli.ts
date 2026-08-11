@@ -154,4 +154,73 @@ export function buildImageCommand(request: {
   return args;
 }
 
+/**
+ * In-network app-health probe executed by the throwaway probe container. It
+ * mirrors the host-side `TcpHttpHealthProber` semantics exactly: TCP connect
+ * first, then HTTP GET — ANY HTTP status counts as reachable (a 4xx/5xx still
+ * means the app process answered). Prints one machine-readable line to stdout
+ * (`HEALTH_OK <status>` / `HEALTH_ERR <detail>`) and exits 0/1. Runs as
+ * `node -e SCRIPT <host> <port> <path> <timeoutMs>` — argv-only, no shell.
+ */
+export const PROBE_SCRIPT = [
+  "const net=require('net'),http=require('http');",
+  "const host=process.argv[1],port=Number(process.argv[2]),path=process.argv[3]||'/',timeout=Number(process.argv[4]||5000);",
+  "const fail=(stage,e)=>{console.log('HEALTH_ERR '+stage+' '+(e&&e.message||String(e)).replace(/\\s+/g,' '));process.exit(1);};",
+  "const tcp=net.connect({host,port});",
+  "tcp.setTimeout(timeout);",
+  "tcp.once('connect',()=>{",
+  "  tcp.destroy();",
+  "  const req=http.get({host,port,path,timeout,headers:{connection:'close'}},(res)=>{res.resume();res.on('end',()=>{console.log('HEALTH_OK '+res.statusCode);process.exit(0);});});",
+  "  req.once('timeout',()=>fail('http',new Error('timeout after '+timeout+'ms')));",
+  "  req.once('error',(e)=>fail('http',e));",
+  "  req.end();",
+  "});",
+  "tcp.once('timeout',()=>fail('tcp',new Error('timeout after '+timeout+'ms')));",
+  "tcp.once('error',(e)=>fail('tcp',e));",
+].join(' ');
+
+/**
+ * Pure builder for the bounded, hardened, throwaway health-probe container.
+ * Attached to the SANDBOX'S OWN internal Docker network — the only place the
+ * target's internal IP is routable — with the same hardening as sandbox
+ * containers (capability drop, no-new-privileges, read-only rootfs, bounded
+ * pids). `--rm` guarantees removal on exit; the `amass.manager=1` label lets
+ * the sweep reclaim a crashed leftover. Never publishes ports, never mounts
+ * the host, never gets external egress (`--internal` nets block it).
+ */
+export function buildProbeCommand(request: {
+  readonly image: string;
+  readonly networkId: string;
+  readonly host: string;
+  readonly port: number;
+  readonly path: string;
+  readonly timeoutMs: number;
+}): string[] {
+  return [
+    'run',
+    '--rm',
+    '--label',
+    'amass.manager=1',
+    '--network',
+    request.networkId,
+    '--cap-drop',
+    'ALL',
+    '--security-opt',
+    'no-new-privileges:true',
+    '--read-only',
+    '--tmpfs',
+    '/tmp:rw,exec,nodev,nosuid',
+    '--pids-limit',
+    '64',
+    request.image,
+    'node',
+    '-e',
+    PROBE_SCRIPT,
+    request.host,
+    String(request.port),
+    request.path,
+    String(request.timeoutMs),
+  ];
+}
+
 export { networkArg as dockerNetworkArg };

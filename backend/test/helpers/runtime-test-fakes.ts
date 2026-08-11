@@ -100,7 +100,7 @@ export class FakeWorkspaceProvider implements RuntimeWorkspaceProvider {
 }
 
 /** Config shared by the headless runtime service tests. */
-export function runtimeTestConfig(overrides: Partial<Record<string, number | boolean>> = {}) {
+export function runtimeTestConfig(overrides: Partial<Record<string, number | boolean | string>> = {}) {
   return {
     maxConcurrent: (overrides.maxConcurrent as number) ?? 3,
     lifetimeMs: 1_800_000,
@@ -108,6 +108,7 @@ export function runtimeTestConfig(overrides: Partial<Record<string, number | boo
     startTimeoutMs: 60_000,
     healthTimeoutMs: 30_000,
     allowHostExpose: (overrides.allowHostExpose as boolean) ?? false,
+    probeImage: (overrides.probeImage as string) ?? 'node:20-alpine',
     limits: { cpus: 0.5, memory: '512m', pids: 256 },
   };
 }

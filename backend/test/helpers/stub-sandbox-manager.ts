@@ -1,5 +1,6 @@
 import type { Sandbox, SandboxContainerInfo, SandboxHealth, SandboxStatus } from '../../src/sandbox/domain/models/sandbox';
-import type { SandboxManager, CreateSandboxInput, BuildImageRequest, BuildImageResult } from '../../src/sandbox/domain/ports/sandbox-manager';
+import type { SandboxManager, CreateSandboxInput, BuildImageRequest, BuildImageResult, NetworkHealthProbeRequest } from '../../src/sandbox/domain/ports/sandbox-manager';
+import type { HealthProbeResult } from '../../src/sandbox/domain/value-objects/runtime-config';
 import type { ExecRequest, ExecResult, SandboxPatch } from '../../src/sandbox/domain/models/sandbox';
 
 /**
@@ -60,6 +61,8 @@ export class StubSandboxManager implements SandboxManager {
   buildCalls: Array<{ request: BuildImageRequest; startedAt: number }> = [];
   removedImages: string[] = [];
   inspectOverrides = new Map<string, SandboxContainerInfo | null>();
+  /** Recorded in-network probe requests (assertions). */
+  networkProbes: NetworkHealthProbeRequest[] = [];
 
   async buildImage(request: BuildImageRequest): Promise<BuildImageResult> {
     this.buildCalls.push({ request, startedAt: Date.now() });
@@ -72,5 +75,10 @@ export class StubSandboxManager implements SandboxManager {
     const overridden = this.inspectOverrides.get(containerId);
     if (overridden !== undefined) return overridden;
     return { running: true, status: 'running', ipAddress: '172.18.0.42' };
+  }
+
+  async probeNetworkHealth(request: NetworkHealthProbeRequest): Promise<HealthProbeResult> {
+    this.networkProbes.push(request);
+    return { reachable: true, latencyMs: 2, statusCode: 200 };
   }
 }

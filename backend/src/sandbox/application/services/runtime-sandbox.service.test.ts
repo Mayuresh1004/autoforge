@@ -28,6 +28,7 @@ function config(overrides: Partial<RuntimeSandboxConfig> = {}): RuntimeSandboxCo
     startTimeoutMs: 60_000,
     healthTimeoutMs: 30_000,
     allowHostExpose: false,
+    probeImage: 'node:20-alpine',
     limits: { cpus: 0.5, memory: '512m', pids: 256 },
     ...overrides,
   };
@@ -162,8 +163,8 @@ describe('DefaultRuntimeSandboxService (headless, no Docker)', () => {
   });
 
   it('unhealthy app → FAILED + container, image and workspace all reclaimed', async () => {
-    const { manager, store, registry, prober, workspace, service } = await makeHarness();
-    prober.failHealth = true;
+    const { manager, store, registry, workspace, service } = await makeHarness();
+    manager.failNetworkProbe = true;
     const repo = await pythonRepo();
 
     await expect(service.create({ scanId: SCAN, repository: { path: repo } })).rejects.toBeInstanceOf(
@@ -266,16 +267,42 @@ describe('DefaultRuntimeSandboxService (headless, no Docker)', () => {
     expect(await registry.countActive()).toBe(0);
   });
 
-  it('healthCheck re-verifies a READY sandbox', async () => {
-    const { prober, service } = await makeHarness();
-    prober.result = { reachable: true, latencyMs: 12, statusCode: 200 };
+  it('healthCheck re-verifies a READY sandbox through the same connectivity model', async () => {
+    const { manager, service } = await makeHarness();
+    manager.networkProbeResult = { reachable: true, latencyMs: 12, statusCode: 200 };
     const repo = await pythonRepo();
     const sandbox = await service.create({ scanId: SCAN, repository: { path: repo } });
 
     const ok = await service.healthCheck(sandbox.id);
     expect(ok.ok).toBe(true);
     expect(ok.statusCode).toBe(200);
-    expect(prober.probes.length).toBeGreaterThanOrEqual(2);
+    // Isolated sandboxes are probed from INSIDE the internal network.
+    expect(manager.networkProbeCalls.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('isolated sandbox health checks probe through its internal network, never the host', async () => {
+    const { manager, prober, service } = await makeHarness();
+    const repo = await pythonRepo();
+    const sandbox = await service.create({ scanId: SCAN, repository: { path: repo } });
+
+    expect(sandbox.exposedPort).toBeNull();
+    expect(sandbox.networkId).toBe(`amass-net-${SCAN}`);
+    // The host prober never touches an internal Docker IP (EHOSTUNREACH path).
+    expect(prober.probes).toHaveLength(0);
+    // Every probe ran from a container attached to the sandbox's network,
+    // targeting the internal IP:port with the pinned probe image.
+    const last = manager.networkProbeCalls[manager.networkProbeCalls.length - 1];
+    expect(last.networkId).toBe(`amass-net-${SCAN}`);
+    expect(last.host).toBe('172.19.0.10');
+    expect(last.port).toBe(8000);
+    expect(last.path).toBe('/');
+    expect(last.image).toBe('node:20-alpine');
+
+    // Re-verification uses the same in-network path.
+    manager.networkProbeCalls.length = 0;
+    await service.healthCheck(sandbox.id);
+    expect(manager.networkProbeCalls).toHaveLength(1);
+    expect(manager.networkProbeCalls[0].host).toBe('172.19.0.10');
   });
 
   it('two concurrent sandboxes stay isolated with distinct ids', async () => {
@@ -291,6 +318,47 @@ describe('DefaultRuntimeSandboxService (headless, no Docker)', () => {
     expect(a.scanId).toBe('scan-a');
     expect(b.scanId).toBe('scan-b');
     expect(await registry.countActive()).toBe(2);
+  });
+
+  it('passes allowlisted env (sibling DB on the internal network) but drops everything else', async () => {
+    const { manager, service } = await makeHarness();
+    const repo = await pythonRepo();
+
+    process.env.AWS_SECRET_ACCESS_KEY = 'do-not-leak'; // host env must never leak
+    const sandbox = await service.create({
+      scanId: SCAN,
+      repository: { path: repo },
+      env: {
+        MONGODB_URI: 'mongodb://mongo-sibling:27017/app',
+        HOME: '/tmp',
+        AWS_SECRET_ACCESS_KEY: 'do-not-leak',
+      },
+    });
+    expect(sandbox.status).toBe('READY');
+    const create = manager.createCalls[0];
+    expect(create.env?.['MONGODB_URI']).toBe('mongodb://mongo-sibling:27017/app');
+    expect(create.env?.['HOME']).toBe('/tmp');
+    expect(create.env?.['AWS_SECRET_ACCESS_KEY']).toBeUndefined(); // not allowlisted
+  });
+
+  it('Mode 1 Dockerfile without a CMD runs the derived stack command (npm start)', async () => {
+    const { manager, service } = await makeHarness();
+    const repo = await fs.mkdtemp(path.join(os.tmpdir(), 'rt-svc-'));
+    await fs.writeFile(path.join(repo, 'Dockerfile'), 'FROM node:20-alpine\nWORKDIR /app\nCOPY . .\n');
+    await fs.writeFile(
+      path.join(repo, 'package.json'),
+      JSON.stringify({ scripts: { start: 'node server.js' } })
+    );
+    await fs.writeFile(
+      path.join(repo, 'server.js'),
+      'require("http").createServer().listen(process.env.PORT || 4000)'
+    );
+
+    const sandbox = await service.create({ scanId: SCAN, repository: { path: repo } });
+    expect(sandbox.status).toBe('READY');
+    // The resolver-derived command reaches the container request (never the
+    // image's inherited default CMD, e.g. the node REPL that exits at once).
+    expect(manager.createCalls[0].appCommand).toEqual(['npm', 'start']);
   });
 
   it('host-exposed sandbox targets 127.0.0.1 for probes and URL', async () => {

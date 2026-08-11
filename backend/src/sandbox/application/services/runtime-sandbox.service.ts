@@ -21,8 +21,8 @@ import type { ResourceLimits } from '../../domain/value-objects/runtime-config';
 import { resolveRuntimeConfig } from './runtime-config-resolver';
 import { RuntimeCleanupCoordinator } from './runtime-cleanup';
 import {
+  buildHealthProbe,
   buildProvisionRequest,
-  probeTarget,
   probeWithRetries,
   provisionContainer,
   type RuntimeProvisionDeps,
@@ -157,9 +157,14 @@ export class DefaultRuntimeSandboxService implements RuntimeSandboxService {
       // 5. Real health verification (TCP + HTTP) — a running container alone
       //    never means READY. Bounded retries absorb the app's boot window
       //    (a freshly started process rejects connections until it binds).
+      //    Probes respect the connectivity model: host-exposed sandboxes are
+      //    checked over the localhost-only published port; isolated sandboxes
+      //    are checked from a probe container INSIDE their internal network
+      //    (the backend process cannot reach an `--internal` Docker IP).
       sandbox = await patchSandbox(this.deps.store, sandbox, { status: 'HEALTH_CHECKING' });
-      const target = probeTarget(sandbox);
-      const probe = await probeWithRetries(this.provisioning, target.host, target.port, resolved.config.healthPath);
+      const probe = await probeWithRetries(
+        buildHealthProbe(this.provisioning, sandbox, resolved.config.healthPath)
+      );
       if (!probe.reachable) {
         throw new Error(`application health check failed: ${probe.detail ?? 'unreachable'}`);
       }
@@ -205,13 +210,7 @@ export class DefaultRuntimeSandboxService implements RuntimeSandboxService {
         checkedAt: new Date().toISOString(),
       };
     }
-    const target = probeTarget(sandbox);
-    const probe = await this.deps.prober.probe({
-      host: target.host,
-      port: target.port,
-      path: '/',
-      timeoutMs: this.deps.config.healthTimeoutMs,
-    });
+    const probe = await buildHealthProbe(this.provisioning, sandbox, '/')();
     return {
       ok: probe.reachable,
       status: sandbox.status,

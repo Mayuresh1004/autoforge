@@ -13,10 +13,12 @@ import type {
   BuildImageRequest,
   BuildImageResult,
   CreateSandboxInput,
+  NetworkHealthProbeRequest,
   SandboxManager,
   SandboxManagerOptions,
   SandboxHealth,
 } from '../../domain/ports/sandbox-manager';
+import type { HealthProbeResult } from '../../domain/value-objects/runtime-config';
 
 /**
  * Orchestrates the full sandbox lifecycle. This is the ONLY surface that
@@ -245,6 +247,10 @@ export class SandboxManagerService implements SandboxManager {
 
   async inspectRuntimeContainer(containerId: string): Promise<SandboxContainerInfo | null> {
     return this.backend.inspect(containerId).catch(() => null);
+  }
+
+  async probeNetworkHealth(request: NetworkHealthProbeRequest): Promise<HealthProbeResult> {
+    return this.backend.probeNetworkHealth(request);
   }
 
   // -- internals -------------------------------------------------------------

@@ -14,14 +14,18 @@ import {
 import type {
   BuildImageRequest,
   BuildImageResult,
+  NetworkHealthProbeRequest,
   SandboxBackend,
 } from '../../domain/ports/sandbox-manager';
+import type { HealthProbeResult } from '../../domain/value-objects/runtime-config';
 import {
   buildCreateCommand,
   buildImageCommand,
+  buildProbeCommand,
   defaultDockerRunner,
   type DockerRunner,
 } from './docker-cli';
+import { logger } from '../../../config/logger';
 
 const MOUNT = '/workspace';
 /**
@@ -34,6 +38,10 @@ const MOUNT = '/workspace';
  * tree from the host side.
  */
 const SYNTHETIC_REPO_PATH = 'in-sandbox';
+/** Fallback image used to empty crash-orphaned workspaces during sweep. */
+const DEFAULT_ANALYSIS_IMAGE = 'amass/analysis:local';
+/** Probe image fallback when no config override is provided. */
+const DEFAULT_PROBE_IMAGE = 'node:20-alpine';
 
 export interface DockerSandboxBackendOptions {
   /**
@@ -50,6 +58,8 @@ interface DockerSandboxContext {
   readonly scanId: string;
   readonly networkId?: string;
   readonly hostPort?: number;
+  /** Image the sandbox runs; needed for root-helper workspace cleanup. */
+  readonly image: string;
   /** Host path of the backend-provisioned workspace (analysis sandboxes). */
   readonly hostWorkspace?: string;
 }
@@ -79,8 +89,8 @@ export class DockerSandboxBackend implements SandboxBackend {
   private readonly runner: DockerRunner;
   private readonly workspaceRoot: string;
   private readonly ctx = new Map<string, DockerSandboxContext>();
-  /** host workspace path -> container name (cleanup can find both sides). */
-  private readonly hostWorkspaces = new Map<string, string>();
+  /** host workspace path -> owning container metadata (cleanup can find both sides). */
+  private readonly hostWorkspaces = new Map<string, { containerId: string; image: string }>();
   /** image -> resolved non-root uid/gid the sandbox container runs as. */
   private readonly imageUserCache = new Map<string, { uid: number; gid: number }>();
 
@@ -131,9 +141,9 @@ export class DockerSandboxBackend implements SandboxBackend {
       ? await this.readPublishedPort(name)
       : undefined;
 
-    this.ctx.set(name, { scanId: spec.scanId, networkId, hostPort, hostWorkspace });
+    this.ctx.set(name, { scanId: spec.scanId, networkId, hostPort, image: spec.image, hostWorkspace });
     if (hostWorkspace) {
-      this.hostWorkspaces.set(hostWorkspace, name);
+      this.hostWorkspaces.set(hostWorkspace, { containerId: name, image: spec.image });
     }
     return {
       containerId: name,
@@ -204,7 +214,7 @@ export class DockerSandboxBackend implements SandboxBackend {
       await this.runner(['network', 'rm', ctx.networkId]);
     }
     if (ctx?.hostWorkspace) {
-      await fs.rm(ctx.hostWorkspace, { recursive: true, force: true });
+      await this.removeWorkspace(ctx.hostWorkspace, ctx.image).catch(() => undefined);
       this.hostWorkspaces.delete(ctx.hostWorkspace);
     }
     this.ctx.delete(id);
@@ -250,6 +260,57 @@ export class DockerSandboxBackend implements SandboxBackend {
     };
   }
 
+  /**
+   * App-liveness probe executed from INSIDE the sandbox network: a hardened
+   * throwaway probe container is attached to the sandbox's own `--internal`
+   * network (the only place the target's internal IP is routable — the host
+   * and unrelated containers are deliberately excluded by Docker's internal
+   * network semantics). Runs `node -e` with the same TCP+HTTP semantics as
+   * the host-side prober; `--rm` + the `amass.manager=1` label guarantee the
+   * probe container never leaks (sweep reclaims crash leftovers).
+   */
+  async probeNetworkHealth(request: NetworkHealthProbeRequest): Promise<HealthProbeResult> {
+    const args = buildProbeCommand({
+      image: request.image ?? DEFAULT_PROBE_IMAGE,
+      networkId: request.networkId,
+      host: request.host,
+      port: request.port,
+      path: request.path,
+      timeoutMs: request.timeoutMs,
+    });
+    const started = Date.now();
+    // Bounded: the probe script self-limits, and the docker call is capped too
+    // (script timeout + a margin for container start/stop).
+    const out = await this.runner(args, request.timeoutMs + 15_000);
+    const latencyMs = Date.now() - started;
+    if (out.timedOut) {
+      return {
+        reachable: false,
+        latencyMs,
+        detail: `probe container timed out (${request.timeoutMs}ms)`,
+      };
+    }
+    const line = out.stdout.split('\n').map((s) => s.trim()).find((s) => s.length > 0) ?? '';
+    if (line.startsWith('HEALTH_OK')) {
+      const statusCode = Number(line.split(/\s+/)[1]);
+      return {
+        reachable: true,
+        latencyMs,
+        statusCode: Number.isInteger(statusCode) ? statusCode : undefined,
+      };
+    }
+    if (line.startsWith('HEALTH_ERR')) {
+      const detail = line.slice('HEALTH_ERR'.length).trim();
+      return { reachable: false, latencyMs, detail: detail || 'application did not answer' };
+    }
+    const stderrTail = out.stderr.trim().split('\n').slice(-3).join(' ');
+    return {
+      reachable: false,
+      latencyMs,
+      detail: `probe container failed: ${stderrTail || out.stdout.trim().slice(0, 200) || 'unknown error'}`,
+    };
+  }
+
   async sweep(): Promise<number> {
     const out = await this.runner(['ps', '-aq', '--filter', 'label=amass.manager=1']);
     const ids = out.stdout.split('\n').filter(Boolean);
@@ -258,14 +319,15 @@ export class DockerSandboxBackend implements SandboxBackend {
     // Containers are gone: drop every backend-provisioned workspace, plus any
     // crash-orphaned workspace dirs under this backend's root (crash orphans
     // are not in memory, but they share the `amass_` naming convention).
-    for (const ws of [...this.hostWorkspaces.keys()]) {
-      await fs.rm(ws, { recursive: true, force: true }).catch(() => undefined);
+    for (const [ws, meta] of [...this.hostWorkspaces]) {
+      await this.removeWorkspace(ws, meta.image).catch(() => undefined);
       this.hostWorkspaces.delete(ws);
     }
     const entries = await fs.readdir(this.workspaceRoot, { withFileTypes: true }).catch(() => []);
     for (const entry of entries) {
       if (entry.isDirectory() && entry.name.startsWith('amass_')) {
-        await fs.rm(path.join(this.workspaceRoot, entry.name), { recursive: true, force: true }).catch(() => undefined);
+        await this.removeWorkspace(path.join(this.workspaceRoot, entry.name), DEFAULT_ANALYSIS_IMAGE)
+          .catch(() => undefined);
       }
     }
 
@@ -371,7 +433,43 @@ export class DockerSandboxBackend implements SandboxBackend {
   }
 
   /**
-   * Give the bind-mounted host workspace ownership compatible with the
+   * Remove a backend-provisioned host workspace. The host process owns the
+   * top directory, but files git-cloned INSIDE the container belong to the
+   * container's non-root uid, which the host cannot unlink (EACCES). When the
+   * plain recursive remove fails that way, the workspace is emptied through a
+   * throwaway root helper container built from the SAME image, then the host
+   * removes the (now empty, host-owned) top directory. Idempotent: a missing
+   * directory is a no-op, and cleanup never throws to the caller.
+   */
+  private async removeWorkspace(dir: string, image: string): Promise<void> {
+    try {
+      await fs.rm(dir, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== 'EACCES' && code !== 'EPERM') throw error;
+    }
+    // Host cannot unlink container-owned files: empty the mount as root.
+    // `find -delete` clears every child (incl. dotfiles) without touching the
+    // bind-mount point itself, so it succeeds where `rm -rf /ws` would
+    // spuriously fail with 'Resource busy'.
+    const out = await this.runner(
+      [
+        'run', '--rm', '--user', '0:0',
+        '--volume', `${dir}:/ws`,
+        '--entrypoint', 'sh', image,
+        '-c', 'find /ws -mindepth 1 -delete',
+      ],
+      60_000
+    );
+    if (out.exitCode !== 0) {
+      logger.warn({ dir, image, stderr: out.stderr.trim() }, 'sandbox.workspace.empty-helper failed; continuing');
+    }
+    // The helper emptied the bind mount; the top dir itself is host-owned.
+    await fs.rm(dir, { recursive: true, force: true }).catch(() => undefined);
+  }
+
+  /** Give the bind-mounted host workspace ownership compatible with the
    * container's non-root user WITHOUT running the container as root or
    * chmod-ing 777:
    *   - owner  = the host backend process (it must read the cloned tree for

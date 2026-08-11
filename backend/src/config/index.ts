@@ -120,6 +120,8 @@ const envSchema = z.object({
   SANDBOX_MAX_CONCURRENT: z.coerce.number().int().min(1).max(64).default(3),
   /** Localhost-only host port publishing is disabled unless explicitly enabled. */
   SANDBOX_ALLOW_HOST_EXPOSE: z.enum(['true', 'false']).default('false'),
+  /** Pinned image for the throwaway in-network health probe container. */
+  SANDBOX_PROBE_IMAGE: z.string().min(1).default('node:20-alpine'),
 
   // --- Observability / event stream (Phase 9) ---
   EVENTS_HEARTBEAT_MS: z.coerce.number().int().min(1_000).default(15_000),
@@ -353,6 +355,8 @@ export interface RuntimeSandboxConfig {
   readonly healthTimeoutMs: number;
   /** Host-exposure (localhost-only publish) requires explicit opt-in. */
   readonly allowHostExpose: boolean;
+  /** Pinned image for the throwaway in-network health probe container. */
+  readonly probeImage: string;
   /** CPU/memory/PID envelope applied to every runtime container. */
   readonly limits: import('../sandbox/domain/value-objects/runtime-config').ResourceLimits;
   /** Backend used to provision containers ('docker' | 'process'). */
@@ -366,6 +370,7 @@ export const runtimeSandboxConfig: RuntimeSandboxConfig = {
   startTimeoutMs: config.SANDBOX_START_TIMEOUT,
   healthTimeoutMs: config.SANDBOX_HEALTH_TIMEOUT,
   allowHostExpose: config.SANDBOX_ALLOW_HOST_EXPOSE === 'true',
+  probeImage: config.SANDBOX_PROBE_IMAGE,
   limits: {
     cpus: config.SANDBOX_CPU_LIMIT,
     memory: config.SANDBOX_MEMORY_LIMIT,

@@ -4,7 +4,7 @@ import path from 'node:path';
 import { tmpdir } from 'node:os';
 import type { SandboxSpec } from '../../domain/models/sandbox';
 import { DockerSandboxBackend } from './docker-sandbox-backend';
-import { buildCreateCommand, buildImageCommand, type DockerRunner, type CliOutput } from './docker-cli';
+import { buildCreateCommand, buildImageCommand, buildProbeCommand, type DockerRunner, type CliOutput } from './docker-cli';
 
 function fakeRunner(record: string[][]): DockerRunner {
   return async (args) => {
@@ -120,6 +120,36 @@ describe('buildCreateCommand (pure)', () => {
       /non-absolute repositoryPath/
     );
   });
+
+  it('buildProbeCommand: hardened throwaway container attached to the internal network', () => {
+    const args = buildProbeCommand({
+      image: 'probe:img',
+      networkId: 'amass-net-scan_1',
+      host: '172.19.0.2',
+      port: 8080,
+      path: '/',
+      timeoutMs: 5_000,
+    });
+    const joined = args.join(' ');
+    expect(args[0]).toBe('run');
+    expect(joined).toContain('--rm'); // never leaks after exit
+    expect(joined).toContain('--label amass.manager=1'); // sweep reclaims crash leftovers
+    expect(joined).toContain('--network amass-net-scan_1'); // sandbox's own internal net
+    expect(joined).toContain('--cap-drop ALL');
+    expect(joined).toContain('--security-opt no-new-privileges:true');
+    expect(joined).toContain('--read-only');
+    expect(joined).toContain('--tmpfs /tmp:rw,exec,nodev,nosuid');
+    expect(joined).not.toContain('0.0.0.0'); // no published ports
+    expect(joined).not.toContain('--publish');
+    expect(joined).not.toContain('--volume'); // no host mounts
+    expect(joined).toContain('probe:img node -e');
+    // The probe arguments are passed verbatim (argv-only, no shell).
+    expect(args.slice(-4)).toEqual(['172.19.0.2', '8080', '/', '5000']);
+    const script = args[args.indexOf('-e') + 1];
+    expect(script).toContain('net.connect');
+    expect(script).toContain('HEALTH_OK');
+    expect(script).toContain('HEALTH_ERR');
+  });
 });
 
 describe('DockerSandboxBackend (fake docker runner)', () => {
@@ -204,6 +234,86 @@ describe('DockerSandboxBackend (fake docker runner)', () => {
     await backend.destroy(containerId);
     expect(calls).toContainEqual(['rm', '-f', containerId]);
     if (networkId) expect(calls).toContainEqual(['network', 'rm', networkId]);
+  });
+
+  it('probeNetworkHealth returns HEALTH_OK + status when the app answers', async () => {
+    const calls: string[][] = [];
+    const runner: DockerRunner = async (args) => {
+      calls.push([...args]);
+      return { stdout: 'HEALTH_OK 200\n', stderr: '', exitCode: 0, timedOut: false };
+    };
+    const backend = new DockerSandboxBackend(runner);
+    const result = await backend.probeNetworkHealth({
+      networkId: 'amass-net-scan_1',
+      host: '172.19.0.2',
+      port: 8080,
+      path: '/',
+      timeoutMs: 5_000,
+    });
+    expect(result).toMatchObject({ reachable: true, statusCode: 200 });
+    expect(result.latencyMs).toBeGreaterThanOrEqual(0);
+    const run = calls[0];
+    expect(run[0]).toBe('run');
+    expect(run.join(' ')).toContain('--network amass-net-scan_1');
+    expect(run.slice(-4)).toEqual(['172.19.0.2', '8080', '/', '5000']);
+  });
+
+  it('probeNetworkHealth reports HEALTH_ERR detail as unreachable', async () => {
+    const runner: DockerRunner = async () => ({
+      stdout: 'HEALTH_ERR tcp connect ECONNREFUSED',
+      stderr: '',
+      exitCode: 1,
+      timedOut: false,
+    });
+    const backend = new DockerSandboxBackend(runner);
+    const result = await backend.probeNetworkHealth({
+      networkId: 'amass-net-scan_1',
+      host: '172.19.0.2',
+      port: 8080,
+      path: '/',
+      timeoutMs: 5_000,
+    });
+    expect(result.reachable).toBe(false);
+    expect(result.detail).toContain('ECONNREFUSED');
+  });
+
+  it('probeNetworkHealth bounds runaway probe containers with the docker timeout', async () => {
+    const runner: DockerRunner = async () => ({
+      stdout: '',
+      stderr: '',
+      exitCode: null,
+      timedOut: true,
+    });
+    const backend = new DockerSandboxBackend(runner);
+    const result = await backend.probeNetworkHealth({
+      networkId: 'amass-net-scan_1',
+      host: '172.19.0.2',
+      port: 8080,
+      path: '/',
+      timeoutMs: 5_000,
+    });
+    expect(result.reachable).toBe(false);
+    expect(result.detail).toMatch(/timed out/);
+  });
+
+  it('probeNetworkHealth surfaces docker-level failures (e.g. probe image missing)', async () => {
+    const runner: DockerRunner = async () => ({
+      stdout: '',
+      stderr: 'Unable to find image \'probe:img\' locally',
+      exitCode: 125,
+      timedOut: false,
+    });
+    const backend = new DockerSandboxBackend(runner);
+    const result = await backend.probeNetworkHealth({
+      networkId: 'amass-net-scan_1',
+      host: '172.19.0.2',
+      port: 8080,
+      path: '/',
+      timeoutMs: 5_000,
+      image: 'probe:img',
+    });
+    expect(result.reachable).toBe(false);
+    expect(result.detail).toContain('Unable to find image');
   });
 });
 
@@ -340,6 +450,35 @@ describe('DockerSandboxBackend — analysis workspace provisioning', () => {
     await expect(fs.access(workspacePath!)).rejects.toThrow();
 
     await expect(backend.destroy(containerId)).resolves.toBeUndefined(); // idempotent
+  });
+
+  it('destroy empties container-owned workspace content via a root helper from the same image', async () => {
+    const calls: string[][] = [];
+    const backend = new DockerSandboxBackend(programmedRunner(calls), { workspaceRoot });
+    const { containerId, workspacePath } = await backend.create(
+      spec({ repositoryPath: 'in-sandbox' })
+    );
+
+    // Simulate files cloned INSIDE the container: a subdir owned/created by
+    // the container user that the host process cannot unlink (no write bit).
+    const locked = path.join(workspacePath!, 'locked');
+    await fs.mkdir(locked);
+    await fs.writeFile(path.join(locked, 'f.txt'), 'x');
+    await fs.chmod(locked, 0o500);
+
+    await backend.destroy(containerId);
+
+    const helper = calls.find(
+      (c) => c[0] === 'run' && c.some((arg) => arg.includes('find /ws -mindepth 1 -delete'))
+    );
+    expect(helper).toBeDefined();
+    expect(helper!.join(' ')).toContain('--user 0:0');
+    expect(helper!.join(' ')).toContain('amass/analysis:latest');
+    expect(helper!.join(' ')).not.toContain('777');
+
+    // Restore perms so the shared temp root can be torn down.
+    await fs.chmod(locked, 0o700).catch(() => undefined);
+    await fs.rm(workspacePath!, { recursive: true, force: true }).catch(() => undefined);
   });
 
   it('sweep removes orphaned workspace directories (tracked and crash-orphaned)', async () => {

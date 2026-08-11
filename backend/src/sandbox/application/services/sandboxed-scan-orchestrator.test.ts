@@ -134,6 +134,9 @@ class CountingSandboxManager implements SandboxManager {
   async inspectRuntimeContainer(containerId: string) {
     return this.inner.inspectRuntimeContainer(containerId);
   }
+  async probeNetworkHealth(request: import('../../domain/ports/sandbox-manager').NetworkHealthProbeRequest) {
+    return this.inner.probeNetworkHealth(request);
+  }
 }
 
 /**

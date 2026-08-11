@@ -11,8 +11,10 @@ import { SandboxRuntimeUnsupportedError } from '../domain/errors/sandbox-runtime
 import type {
   BuildImageRequest,
   BuildImageResult,
+  NetworkHealthProbeRequest,
   SandboxBackend,
 } from '../domain/ports/sandbox-manager';
+import type { HealthProbeResult } from '../domain/value-objects/runtime-config';
 import { ProcessSandboxRuntime } from './process-sandbox';
 
 export interface ProcessSandboxBackendOptions {
@@ -142,6 +144,12 @@ export class ProcessSandboxBackend implements SandboxBackend {
 
   async inspect(_containerId: string): Promise<SandboxContainerInfo | null> {
     throw new SandboxRuntimeUnsupportedError('inspect');
+  }
+
+  async probeNetworkHealth(_request: NetworkHealthProbeRequest): Promise<HealthProbeResult> {
+    // No Docker network exists in process mode — in-network probing is
+    // meaningless here; the runtime sandbox lifecycle is Docker-only.
+    throw new SandboxRuntimeUnsupportedError('probeNetworkHealth');
   }
 
   // -- internals -------------------------------------------------------------

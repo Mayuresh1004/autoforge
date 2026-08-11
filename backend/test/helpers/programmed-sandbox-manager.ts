@@ -9,8 +9,10 @@ import type {
   BuildImageRequest,
   BuildImageResult,
   CreateSandboxInput,
+  NetworkHealthProbeRequest,
   SandboxManager,
 } from '../../src/sandbox/domain/ports/sandbox-manager';
+import type { HealthProbeResult } from '../../src/sandbox/domain/value-objects/runtime-config';
 import type { ExecRequest, ExecResult } from '../../src/sandbox/domain/models/sandbox';
 
 /**
@@ -30,6 +32,10 @@ export class ProgrammedSandboxManager implements SandboxManager {
   failBuild = false;
   createResultOverride: Partial<Sandbox> | null = null;
   execResult: ExecResult = { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+  /** Scripted in-network probe results (default: healthy). */
+  networkProbeResult: HealthProbeResult = { reachable: true, latencyMs: 3, statusCode: 200 };
+  networkProbeCalls: NetworkHealthProbeRequest[] = [];
+  failNetworkProbe = false;
 
   async createSandbox(input: CreateSandboxInput): Promise<Sandbox> {
     this.createCalls.push(input);
@@ -109,6 +115,14 @@ export class ProgrammedSandboxManager implements SandboxManager {
     const overridden = this.inspectOverrides.get(containerId);
     if (overridden !== undefined) return overridden;
     return { running: true, status: 'running', ipAddress: '172.19.0.10' };
+  }
+
+  async probeNetworkHealth(request: NetworkHealthProbeRequest): Promise<HealthProbeResult> {
+    this.networkProbeCalls.push(request);
+    if (this.failNetworkProbe) {
+      return { reachable: false, latencyMs: 1, detail: 'network probe failed (fake)' };
+    }
+    return this.networkProbeResult;
   }
 }
 

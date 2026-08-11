@@ -19,6 +19,11 @@ export const CreateRuntimeSandboxRequestSchema = z.object({
   hostExpose: z.boolean().optional(),
   /** Override the detected application port (advanced). */
   portOverride: z.number().int().min(1).max(65535).optional(),
+  /**
+   * Optional service-provided env (bounded; allowlist-filtered before it ever
+   * reaches the container — see buildRuntimeContainer).
+   */
+  env: z.record(z.string().min(1).max(64), z.string().max(512)).optional(),
 });
 
 export type CreateRuntimeSandboxRequest = z.infer<typeof CreateRuntimeSandboxRequestSchema>;

@@ -76,4 +76,19 @@ describe('ProcessSandboxBackend (real, no-Docker manager backend)', () => {
     });
     expect(out.exitCode).toBe(0);
   });
+
+  it('in-network health probes are Docker-only: process mode rejects them', async () => {
+    const backend = new ProcessSandboxBackend({ workspaceRoot: TMP_ROOT });
+    // No Docker network exists in process mode — in-network probing is
+    // meaningless and must fail loudly, never silently return healthy.
+    await expect(
+      backend.probeNetworkHealth({
+        networkId: 'amass-net-scan_1',
+        host: '172.19.0.2',
+        port: 8080,
+        path: '/',
+        timeoutMs: 5_000,
+      })
+    ).rejects.toThrow(/probeNetworkHealth/);
+  });
 });

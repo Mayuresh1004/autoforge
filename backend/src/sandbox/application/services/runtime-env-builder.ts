@@ -17,6 +17,9 @@ export const ALLOWED_KEYS: readonly string[] = [
   'LANG',
   'TZ',
   'PGHOST',
+  // Sibling database on the sandbox's internal network (same pattern as
+  // PGHOST): the app container reaches it over Docker DNS, never externally.
+  'MONGODB_URI',
 ] as const;
 
 export interface BuildEnv {

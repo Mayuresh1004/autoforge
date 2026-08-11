@@ -21,6 +21,7 @@ function makeBackend(): Record<keyof SandboxBackend, ReturnType<typeof vi.fn>> &
     logs: vi.fn(),
     destroy: vi.fn().mockResolvedValue(undefined),
     sweep: vi.fn().mockResolvedValue(0),
+    probeNetworkHealth: vi.fn(),
   };
   return backend as unknown as SandboxBackend & {
     create: ReturnType<typeof vi.fn>;
@@ -33,6 +34,7 @@ function makeBackend(): Record<keyof SandboxBackend, ReturnType<typeof vi.fn>> &
     logs: ReturnType<typeof vi.fn>;
     destroy: ReturnType<typeof vi.fn>;
     sweep: ReturnType<typeof vi.fn>;
+    probeNetworkHealth: ReturnType<typeof vi.fn>;
   };
 }
 
@@ -147,5 +149,20 @@ describe('SandboxManagerService', () => {
     const { backend, manager } = makeManager();
     backend.sweep.mockResolvedValue(3);
     await expect(manager.sweepOrphans()).resolves.toBe(3);
+  });
+
+  it('delegates in-network health probes to the backend unchanged', async () => {
+    const { backend, manager } = makeManager();
+    backend.probeNetworkHealth.mockResolvedValue({ reachable: true, latencyMs: 4, statusCode: 200 });
+    const request = {
+      networkId: 'amass-net-scan_1',
+      host: '172.19.0.2',
+      port: 8080,
+      path: '/',
+      timeoutMs: 5_000,
+    };
+    const result = await manager.probeNetworkHealth(request);
+    expect(result).toEqual({ reachable: true, latencyMs: 4, statusCode: 200 });
+    expect(backend.probeNetworkHealth).toHaveBeenCalledWith(request);
   });
 });

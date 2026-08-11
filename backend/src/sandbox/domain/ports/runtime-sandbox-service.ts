@@ -14,6 +14,12 @@ export interface CreateRuntimeSandboxRequest {
   readonly hostExpose?: boolean;
   /** Optionally override detected app port (Mode 1 repos with weird setups). */
   readonly portOverride?: number;
+  /**
+   * Optional service-provided env for the app container. Every key is filtered
+   * through the runtime env allowlist — un-allowlisted keys are dropped, so a
+   * caller can never inject arbitrary/host variables into the sandbox.
+   */
+  readonly env?: Readonly<Record<string, string>>;
 }
 
 export interface RuntimeHealthResult {

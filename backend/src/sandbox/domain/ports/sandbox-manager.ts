@@ -8,6 +8,26 @@ import type {
   SandboxStatus,
   SandboxType,
 } from '../models/sandbox';
+import type { HealthProbeResult } from '../value-objects/runtime-config';
+
+/**
+ * App-liveness probe executed from INSIDE a Docker network (isolated runtime
+ * sandboxes have no host path — their internal IP is only routable from other
+ * containers attached to the same `--internal` network). A throwaway probe
+ * container is attached to `networkId` and checks the target address.
+ */
+export interface NetworkHealthProbeRequest {
+  /** The sandbox's internal Docker network the probe container attaches to. */
+  readonly networkId: string;
+  /** Target address INSIDE that network (the sandbox container's IP). */
+  readonly host: string;
+  readonly port: number;
+  /** HTTP path probed (any HTTP status counts as reachable). */
+  readonly path: string;
+  readonly timeoutMs: number;
+  /** Probe image override (defaults to the config/backend default). */
+  readonly image?: string;
+}
 
 export interface BuildImageRequest {
   /** Build context (host directory). */
@@ -109,6 +129,8 @@ export interface SandboxManager {
   removeImage(imageIdOrName: string): Promise<void>;
   /** Ops view of a sandbox container (running state + network IP). */
   inspectRuntimeContainer(containerId: string): Promise<SandboxContainerInfo | null>;
+  /** App-liveness probe from INSIDE the sandbox network (isolated runtime sandboxes). */
+  probeNetworkHealth(request: NetworkHealthProbeRequest): Promise<HealthProbeResult>;
 }
 
 /**
@@ -138,6 +160,8 @@ export interface SandboxBackend {
   removeImage(imageIdOrName: string): Promise<void>;
   /** Inspect a sandbox container (running status + network IP). */
   inspect(containerId: string): Promise<SandboxContainerInfo | null>;
+  /** App-liveness probe from INSIDE a Docker network (runtime sandboxes). */
+  probeNetworkHealth(request: NetworkHealthProbeRequest): Promise<HealthProbeResult>;
 }
 
 export interface SandboxStore {
