@@ -104,41 +104,70 @@ export function SandboxViewport({ sandbox, endpoints }: SandboxViewportProps) {
         )}
       </Card>
 
-      {/* Discovered Endpoints Card */}
+      {/* Discovered Endpoints & Scout Finding-Aware Recon Card */}
       <Card>
         <CardHeader>
-          <CardTitle>Discovered Endpoints (Scout Recon)</CardTitle>
-          <Badge variant="purple">{endpoints.length} Endpoints</Badge>
+          <div>
+            <CardTitle>Scout Reconnaissance</CardTitle>
+            <p className="text-[11px] text-zinc-500 mt-0.5">Finding-Aware Attack Surface Mapping</p>
+          </div>
+          <Badge variant="purple">{endpoints.length} Endpoints Mapped</Badge>
         </CardHeader>
 
         {endpoints.length === 0 ? (
-          <div className="p-4 text-center text-xs text-zinc-500 italic">
-            No endpoints discovered yet. Scout Recon agent will populate endpoints when run.
+          <div className="p-6 text-center text-xs text-zinc-500 italic">
+            No reconnaissance data yet. Scout agent will map discovered findings to attack surfaces.
           </div>
         ) : (
-          <div className="divide-y divide-zinc-800/80 rounded-lg border border-zinc-800 bg-zinc-900/40 max-h-64 overflow-y-auto">
+          <div className="space-y-3">
             {endpoints.map((ep, idx) => {
               const targetPath = ep.path || ep.url || '';
+              const fId = ep.findingId || 'Finding Target';
+              const isEvidenceDone = ep.status === 'EVIDENCE_COLLECTED' || ep.status === 'COMPLETED' || Boolean(ep.evidence);
+
               return (
-                <div key={idx} className="flex items-center justify-between p-2.5 text-xs font-mono">
-                  <div className="flex items-center gap-2">
-                    <span
-                      className={`rounded px-1.5 py-0.2 text-[10px] font-bold ${
-                        ep.method === 'GET'
-                          ? 'bg-sky-500/20 text-sky-400'
-                          : ep.method === 'POST'
-                            ? 'bg-emerald-500/20 text-emerald-400'
-                            : 'bg-amber-500/20 text-amber-400'
-                      }`}
-                    >
-                      {ep.method ?? 'GET'}
-                    </span>
-                    <span className="text-zinc-200">{targetPath}</span>
+                <div key={idx} className="rounded-lg border border-zinc-800 bg-zinc-900/50 p-3 space-y-2 text-xs">
+                  <div className="flex items-center justify-between border-b border-zinc-800/80 pb-2">
+                    <div className="flex items-center gap-2">
+                      <span className="font-mono font-bold text-sky-400 text-[11px]">{fId}</span>
+                      <span
+                        className={`rounded px-1.5 py-0.2 font-mono text-[10px] font-bold ${
+                          ep.method === 'GET'
+                            ? 'bg-sky-500/20 text-sky-400 border border-sky-500/30'
+                            : ep.method === 'POST'
+                              ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+                              : 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
+                        }`}
+                      >
+                        {ep.method ?? 'GET'}
+                      </span>
+                      <span className="font-mono text-zinc-100 font-semibold">{targetPath}</span>
+                    </div>
+
+                    <div className="flex items-center gap-1.5 font-mono text-[10px]">
+                      {isEvidenceDone ? (
+                        <span className="text-emerald-400 font-semibold flex items-center gap-1">
+                          <span>✓</span> EVIDENCE COLLECTED
+                        </span>
+                      ) : (
+                        <span className="text-amber-400 animate-pulse font-semibold flex items-center gap-1">
+                          <span>🔍</span> INVESTIGATING
+                        </span>
+                      )}
+                    </div>
                   </div>
-                  {ep.risk && (
-                    <span className="rounded bg-zinc-800 px-1.5 py-0.2 text-[10px] text-amber-400 border border-zinc-700">
-                      {ep.risk}
-                    </span>
+
+                  {ep.description && (
+                    <div className="text-zinc-400 text-[11px] leading-relaxed">
+                      {ep.description}
+                    </div>
+                  )}
+
+                  {ep.evidence && (
+                    <div className="rounded bg-zinc-950/80 p-2 border border-zinc-800 font-mono text-[11px] text-zinc-300">
+                      <span className="text-amber-400 font-semibold block mb-0.5">Recon Evidence:</span>
+                      <span>{ep.evidence}</span>
+                    </div>
                   )}
                 </div>
               );
@@ -146,16 +175,6 @@ export function SandboxViewport({ sandbox, endpoints }: SandboxViewportProps) {
           </div>
         )}
       </Card>
-
-      {/* Observation Layer Preview Placeholder */}
-      <div className="rounded-lg border border-zinc-800/60 bg-zinc-950/40 p-4 text-xs text-zinc-500">
-        <div className="flex items-center gap-2 font-mono text-[11px] text-zinc-400 mb-1">
-          <span>● Phase 9 Contract Viewport</span>
-        </div>
-        <p>
-          Browser & Network observation contracts (<code className="text-sky-400 font-mono">BROWSER_NAVIGATION</code>, <code className="text-sky-400 font-mono">NETWORK_REQUEST</code>) will plug directly into this viewport when emitted by future Playwright layers.
-        </p>
-      </div>
     </div>
   );
 }

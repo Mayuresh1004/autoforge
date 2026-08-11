@@ -27,6 +27,16 @@ export type ScanStatus = 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'CANCE
 
 export type VulnerabilitySeverity = 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW' | 'INFO';
 
+export type FindingStatus =
+  | 'DISCOVERED'
+  | 'PLANNED'
+  | 'VERIFYING'
+  | 'EXPLOIT_CONFIRMED'
+  | 'EXPLOIT_REJECTED'
+  | 'REMEDIATION'
+  | 'PATCHED'
+  | 'CRITIC_VERIFIED';
+
 export interface ScanModel {
   readonly id?: string;
   readonly scanId: string;
@@ -37,10 +47,12 @@ export interface ScanModel {
   readonly completedAt?: string | null;
   readonly targetUrl?: string;
   readonly error?: string | null;
+  readonly isDemo?: boolean;
 }
 
 export interface FindingModel {
   readonly id: string;
+  readonly findingId?: string;
   readonly scanId?: string;
   readonly ruleId?: string;
   readonly vulnerabilityId?: string;
@@ -62,7 +74,9 @@ export interface FindingModel {
   readonly cve?: string | null;
   readonly endpoint?: string;
   readonly parameter?: string;
+  readonly status?: FindingStatus;
   readonly isConfirmed?: boolean;
+  readonly isDemo?: boolean;
 }
 
 export interface ScanStatistics {
@@ -76,10 +90,13 @@ export interface ScanStatistics {
 
 export interface ScoutEndpoint {
   readonly id?: string;
+  readonly findingId?: string;
   readonly path?: string;
   readonly url?: string;
   readonly method: string;
   readonly description?: string;
+  readonly evidence?: string;
+  readonly status?: string;
   readonly risk?: string;
   readonly isAuthRequired?: boolean;
   readonly statusCode?: number | null;
@@ -97,11 +114,13 @@ export interface ScoutRunResult {
 
 export interface TargetModel {
   readonly targetId: string;
+  readonly findingId?: string;
   readonly scanId: string;
   readonly endpoint: string;
   readonly method: string;
   readonly vulnerabilityType: string;
   readonly priorityScore: number;
+  readonly status?: 'PENDING' | 'IN_PROGRESS' | 'COMPLETED' | 'FAILED';
   readonly rationale?: string;
   readonly estimatedRisk?: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
   readonly recommendedTool?: string;
@@ -119,6 +138,7 @@ export interface PlanModel {
 export interface ExploitEvidenceModel {
   readonly exploitId: string;
   readonly targetId: string;
+  readonly findingId?: string;
   readonly scanId: string;
   readonly confirmed: boolean;
   readonly payload?: string;
@@ -132,6 +152,7 @@ export interface ExploitEvidenceModel {
 
 export interface PatchModel {
   readonly patchId: string;
+  readonly findingId?: string;
   readonly executionId?: string;
   readonly scanId: string;
   readonly filePath: string;

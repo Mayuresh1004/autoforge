@@ -1,0 +1,122 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://amass.local/benchmarks/corpus.schema.json",
+  "title": "AMASS research benchmark corpus",
+  "description": "Ground-truth definitions for vulnerable applications used to evaluate the AMASS pipeline. Each app entry describes how to provision it and the vulnerabilities a correct pipeline should find.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "apps"],
+  "properties": {
+    "version": { "const": 1 },
+    "apps": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/definitions/app" }
+    }
+  },
+  "definitions": {
+    "app": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "repoUrl", "runtime", "groundTruth"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]*$",
+          "description": "Stable machine id (used as the Scan name suffix and in reports)."
+        },
+        "name": { "type": "string", "description": "Human-readable app name." },
+        "repoUrl": { "type": "string", "description": "Git clone URL; also the join key to ScanRepository.url." },
+        "ref": { "type": "string", "description": "Commit/branch to pin for reproducible runs." },
+        "runtime": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["strategy", "port", "healthPath"],
+          "properties": {
+            "strategy": {
+              "enum": ["repo-dockerfile", "generated-python", "generated-node"],
+              "description": "repo-dockerfile = Mode 1 (build the repo's Dockerfile); generated-* = Mode 2 template."
+            },
+            "port": { "type": "integer", "description": "Port the app listens on (health check target)." },
+            "healthPath": { "type": "string", "default": "/" },
+            "startCommand": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Explicit argv when the repo Dockerfile declares no CMD (e.g. NodeGoat: npm start)."
+            },
+            "env": {
+              "type": "object",
+              "additionalProperties": { "type": "string" },
+              "description": "Allowlisted env needed to run the app (e.g. MONGODB_URI)."
+            },
+            "siblingContainers": {
+              "type": "array",
+              "items": { "$ref": "#/definitions/sibling" },
+              "description": "Infrastructure the app needs on the same internal network (e.g. a database)."
+            }
+          }
+        },
+        "expectedSurface": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Route map Scout should discover (recall numerator for recon completeness). Path templates with :params allowed."
+        },
+        "groundTruth": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/definitions/finding" }
+        }
+      }
+    },
+    "sibling": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "image"],
+      "properties": {
+        "name": { "type": "string", "description": "Container name; may contain <scanId> placeholder." },
+        "image": { "type": "string" },
+        "env": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Environment variables, e.g. MONGO_INITDB_DATABASE=nodegoat."
+        }
+      }
+    },
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "cweId", "title", "scope"],
+      "properties": {
+        "id": { "type": "string", "description": "Stable finding id within the app." },
+        "cweId": { "type": "string", "pattern": "^CWE-[0-9]+$" },
+        "vulnerabilityType": {
+          "type": "string",
+          "description": "Canonical type used by the pipeline (e.g. SQL_INJECTION) — matches Exploit.vulnerabilityType."
+        },
+        "title": { "type": "string" },
+        "severity": { "enum": ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"] },
+        "scope": {
+          "enum": ["sniper", "static", "future"],
+          "description": "sniper = current Sniper verifiers must CONFIRM it (counts in precision/recall); static = the static scanner must surface it at DETECTED level; future = known vuln not yet verifiable by this pipeline (reported separately, excluded from scoring)."
+        },
+        "filePath": { "type": "string", "description": "Source file hint for static-level correlation." },
+        "routes": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/route" },
+          "description": "HTTP surface where the vulnerability is reachable. Templates (:param) supported."
+        },
+        "notes": { "type": "string" }
+      }
+    },
+    "route": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "method"],
+      "properties": {
+        "path": { "type": "string", "description": "Path template, e.g. /memos/:id or /search (query params not included)." },
+        "method": { "type": "string" },
+        "parameter": { "type": "string", "description": "Injection parameter when the finding is parameter-level." }
+      }
+    }
+  }
+}

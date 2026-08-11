@@ -9,7 +9,7 @@
     "test": "vitest run",
     "preview": "vite preview",
     "lint": "eslint .",
-    "clean": "rm -rf dist"
+    "clean": "node -e \"fs.rmSync('dist',{recursive:true,force:true})\""
   },
   "dependencies": {
     "clsx": "^2.1.1",

@@ -1,0 +1,111 @@
+{
+  "$schema": "corpus.schema.json",
+  "version": 1,
+  "apps": [
+    {
+      "id": "nodegoat",
+      "name": "OWASP NodeGoat",
+      "repoUrl": "https://github.com/OWASP/NodeGoat.git",
+      "ref": "master",
+      "runtime": {
+        "strategy": "repo-dockerfile",
+        "port": 8080,
+        "healthPath": "/",
+        "startCommand": ["npm", "start"],
+        "env": {
+          "MONGODB_URI": "mongodb://amass-mongo-<scanId>:27017/nodegoat",
+          "NODE_ENV": "production"
+        },
+        "siblingContainers": [
+          {
+            "name": "amass-mongo-<scanId>",
+            "image": "mongo:4.4",
+            "env": ["MONGO_INITDB_DATABASE=nodegoat"]
+          }
+        ]
+      },
+      "expectedSurface": ["/", "/login", "/register", "/reset", "/account", "/memos", "/memos/:id"],
+      "groundTruth": [
+        {
+          "id": "nodegoat-sqli-memos",
+          "cweId": "CWE-89",
+          "vulnerabilityType": "SQL_INJECTION",
+          "title": "SQL injection in the memos listing via userId",
+          "severity": "HIGH",
+          "scope": "sniper",
+          "filePath": "app/routes/memos.js",
+          "routes": [{ "path": "/memos", "method": "GET", "parameter": "userId" }],
+          "notes": "OWASP NodeGoat A1: the memos listing concatenates userId into a SQL query. Confirmed with sqlmap payloads like /memos?userId=1' or '1'='1."
+        },
+        {
+          "id": "nodegoat-xss-memos",
+          "cweId": "CWE-79",
+          "vulnerabilityType": "XSS",
+          "title": "Stored XSS in memo contents",
+          "severity": "MEDIUM",
+          "scope": "static",
+          "filePath": "app/views/memos.js",
+          "routes": [{ "path": "/memos/:id", "method": "GET" }],
+          "notes": "NodeGoat A3: memo contents are stored and re-rendered without sanitization."
+        },
+        {
+          "id": "nodegoat-idor-memos",
+          "cweId": "CWE-639",
+          "vulnerabilityType": "IDOR",
+          "title": "IDOR: any memo retrievable by id regardless of owner",
+          "severity": "HIGH",
+          "scope": "future",
+          "filePath": "app/routes/memos.js",
+          "routes": [{ "path": "/memos/:id", "method": "GET" }],
+          "notes": "NodeGoat A4: the memo detail route does not verify ownership. Requires an auth-aware verifier not yet in the pipeline."
+        },
+        {
+          "id": "nodegoat-reset-enum",
+          "cweId": "CWE-287",
+          "vulnerabilityType": "BROKEN_AUTH",
+          "title": "Broken authentication in the password-reset flow",
+          "severity": "MEDIUM",
+          "scope": "future",
+          "filePath": "app/routes/user.js",
+          "routes": [{ "path": "/reset", "method": "POST" }],
+          "notes": "NodeGoat A2: user enumeration and a predictable reset token. Requires session/auth tooling not yet in the pipeline."
+        },
+        {
+          "id": "nodegoat-csrf-memos",
+          "cweId": "CWE-352",
+          "vulnerabilityType": "CSRF",
+          "title": "CSRF on memo creation",
+          "severity": "MEDIUM",
+          "scope": "future",
+          "filePath": "app/routes/memos.js",
+          "routes": [{ "path": "/memos", "method": "POST" }],
+          "notes": "NodeGoat A8: POST /memos accepts requests without a CSRF token."
+        }
+      ]
+    },
+    {
+      "id": "python-vuln-search",
+      "name": "Intentional Python SQLi app (runtime E2E fixture)",
+      "repoUrl": "https://example.invalid/python-vuln-search",
+      "runtime": {
+        "strategy": "generated-python",
+        "port": 8000,
+        "healthPath": "/"
+      },
+      "expectedSurface": ["/", "/search"],
+      "groundTruth": [
+        {
+          "id": "py-sqli-search",
+          "cweId": "CWE-89",
+          "vulnerabilityType": "SQL_INJECTION",
+          "title": "SQL injection in the product search id parameter",
+          "severity": "HIGH",
+          "scope": "sniper",
+          "filePath": "app.py",
+          "routes": [{ "path": "/search", "method": "GET", "parameter": "q" }],
+          "notes": "The runtime-sandbox E2E fixture (stdlib http.server + sqlite3): SELECT ... WHERE id = {q} with q from the query string. Confirmed with sqlmap."
+        }
+      ]
+    }
+  ]
+}

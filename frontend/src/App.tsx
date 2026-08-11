@@ -20,6 +20,8 @@ export default function App() {
   const [selectedFinding, setSelectedFinding] = useState<FindingModel | null>(null);
   const [isNewScanOpen, setIsNewScanOpen] = useState<boolean>(false);
 
+
+
   const centerTabs: TabItem[] = [
     { id: 'plan', label: 'Plan & Targets', count: store.targets.length },
     { id: 'sandbox', label: 'Live Sandbox & Recon', count: store.endpoints.length },
@@ -61,6 +63,7 @@ export default function App() {
         <section className="lg:col-span-3 flex flex-col h-[calc(100vh-140px)] min-h-[500px]">
           <FindingsList
             findings={store.findings}
+            activeFindingId={store.activeFindingId}
             onSelectFinding={(finding) => {
               setSelectedFinding(finding);
               if (finding.isConfirmed) {
@@ -85,10 +88,10 @@ export default function App() {
 
             {activeCenterTab === 'exploitation' && (
               <div className="space-y-4">
-                {selectedFinding && (
+                {(selectedFinding || store.activeFinding) && (
                   <div className="rounded-lg border border-sky-500/30 bg-sky-500/10 p-3 text-xs text-sky-300">
-                    <span className="font-semibold block mb-0.5">Focus Finding: {selectedFinding.title}</span>
-                    <span className="font-mono text-[11px] opacity-80">{selectedFinding.filePath}:{selectedFinding.lineStart}</span>
+                    <span className="font-semibold block mb-0.5">Focus Finding: {(selectedFinding || store.activeFinding)?.title}</span>
+                    <span className="font-mono text-[11px] opacity-80">{(selectedFinding || store.activeFinding)?.filePath}:{(selectedFinding || store.activeFinding)?.lineStart}</span>
                   </div>
                 )}
                 <ExploitPanel exploits={store.exploits} />

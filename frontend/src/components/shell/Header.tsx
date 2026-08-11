@@ -8,8 +8,8 @@ export interface HeaderProps {
   scanStatus: string;
   connectionStatus: SseConnectionStatus;
   scansList?: ScanModel[];
-  onSelectScan: (scanId: string) => void;
-  onOpenNewScan: () => void;
+  onSelectScan?: (scanId: string) => void;
+  onOpenNewScan?: () => void;
 }
 
 export function Header({
@@ -47,7 +47,7 @@ export function Header({
               <span
                 className={`font-mono text-[11px] uppercase font-semibold ${
                   scanStatus === 'RUNNING'
-                    ? 'text-sky-400'
+                    ? 'text-sky-400 animate-pulse'
                     : scanStatus === 'COMPLETED'
                       ? 'text-emerald-400'
                       : scanStatus === 'FAILED'

@@ -13,7 +13,7 @@
     "dev": "turbo run dev",
     "lint": "turbo run lint",
     "test": "turbo run test",
-    "clean": "turbo run clean && rm -rf node_modules",
+    "clean": "turbo run clean && node -e \"fs.rmSync('node_modules',{recursive:true,force:true})\"",
     "format": "prettier --write \"**/*.{ts,tsx,js,json,md}\"",
     "docker:up": "docker compose -f docker-compose.yml up -d --build",
     "docker:down": "docker compose -f docker-compose.yml down",

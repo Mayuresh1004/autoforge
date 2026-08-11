@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Dialog } from '../ui/Dialog';
 import { Button } from '../ui/Button';
-import { api } from '../../api/client';
+import { getAMASSDataProvider } from '../../providers';
 import type { ScanModel } from '../../types/api-types';
 
 export interface NewScanModalProps {
@@ -11,7 +11,7 @@ export interface NewScanModalProps {
 }
 
 export function NewScanModal({ isOpen, onClose, onScanCreated }: NewScanModalProps) {
-  const [targetUrl, setTargetUrl] = useState('https://github.com/OWASP/NodeGoat.git');
+  const [targetUrl, setTargetUrl] = useState('https://github.com/Mayuresh1004/AskBit');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -27,63 +27,15 @@ export function NewScanModal({ isOpen, onClose, onScanCreated }: NewScanModalPro
     setError(null);
 
     try {
-      // 1. Create static scan (Analyzer + Static Scanner)
-      const res = await api.createStaticScan({
-        url: finalUrl,
+      const provider = getAMASSDataProvider();
+
+      const res = await provider.startScan({
+        repositoryUrl: finalUrl,
       });
 
       if (res.success && res.data) {
-        const scanId = (res.data as any).scanId || res.data.id;
-        const scanObj: ScanModel = {
-          ...res.data,
-          scanId,
-          id: scanId,
-        };
-
-        onScanCreated(scanObj);
+        onScanCreated(res.data);
         onClose();
-
-        // 2. Automatically trigger downstream agent pipeline
-        // Background trigger without blocking UI modal closing
-        (async () => {
-          try {
-            await api.runScout({
-              scanId,
-              targetUrl: 'http://localhost:8000',
-            });
-
-            const planRes = await api.runPlanner({ scanId });
-            const plan = (planRes as any).data as any;
-            const targetIds = (plan?.targets ?? [])
-              .map((target: any) => target?.targetId)
-              .filter((id: any) => Boolean(id));
-
-            if (!targetIds.length) {
-              return;
-            }
-
-            const sandboxRes = await api.createRuntimeSandbox({
-              scanId,
-              repository: { url: finalUrl },
-            });
-            const sandbox = (sandboxRes as any).data as any;
-            const sandboxId = sandbox?.sandboxId;
-            const baseUrl = sandbox?.targetUrl;
-
-            if (!sandboxId || !baseUrl) {
-              return;
-            }
-
-            await api.runSniper({
-              scanId,
-              sandboxId,
-              baseUrl,
-              targetIds,
-            });
-          } catch {
-            // ignore background pipeline failures
-          }
-        })();
       } else {
         setError(res.error?.message ?? 'Failed to trigger scan');
       }
@@ -105,14 +57,14 @@ export function NewScanModal({ isOpen, onClose, onScanCreated }: NewScanModalPro
 
         <div>
           <label className="block text-xs font-medium text-zinc-300 mb-1">
-            Target Repository URL or Workspace Path
+            Target Repository URL
           </label>
           <input
             type="text"
             value={targetUrl}
             onChange={(e) => setTargetUrl(e.target.value)}
-            placeholder="e.g. https://github.com/OWASP/NodeGoat.git"
-            className="w-full rounded-lg border border-zinc-800 bg-zinc-900 px-3 py-2 text-sm text-zinc-100 placeholder-zinc-500 focus:border-sky-500 focus:outline-none"
+            placeholder="e.g. https://github.com/Mayuresh1004/AskBit"
+            className="w-full rounded-lg border border-zinc-800 bg-zinc-900 px-3 py-2 text-sm text-zinc-100 placeholder-zinc-500 focus:border-sky-500 focus:outline-hidden"
             required
           />
         </div>

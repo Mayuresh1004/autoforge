@@ -15,6 +15,7 @@ export const AMASS_EVENT_TYPES = [
   'ANALYZER_COMPLETED',
   // static scanner
   'SCANNER_STARTED',
+  'SCANNER_FINDING_DISCOVERED',
   'SCANNER_COMPLETED',
   // sandbox lifecycle
   'SANDBOX_PROVISIONING',
@@ -24,7 +25,10 @@ export const AMASS_EVENT_TYPES = [
   'SANDBOX_DESTROYED',
   // scout (recon)
   'SCOUT_STARTED',
+  'SCOUT_TARGET_STARTED',
   'SCOUT_ENDPOINT_DISCOVERED',
+  'SCOUT_EVIDENCE_COLLECTED',
+  'SCOUT_TARGET_COMPLETED',
   'SCOUT_COMPLETED',
   // planner
   'PLANNER_STARTED',
@@ -120,7 +124,7 @@ export const AMASS_EVENT_STATUSES = [
 
 export type AmassEventStatus = (typeof AMASS_EVENT_STATUSES)[number];
 
-export type AmassMetadataValue = string | number | boolean | null;
+export type AmassMetadataValue = string | number | boolean | null | Record<string, unknown> | Array<unknown>;
 
 export interface AmassEventCounts {
   readonly [key: string]: number;
@@ -141,6 +145,8 @@ export interface AmassEventMetadata {
   readonly patchId?: string;
   readonly vulnerabilityId?: string;
   readonly targetId?: string;
+  readonly findingId?: string;
+  readonly evidence?: string;
   readonly check?: string;
   readonly result?: string;
   readonly error?: string;
