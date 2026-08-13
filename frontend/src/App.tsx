@@ -22,18 +22,25 @@ export default function App() {
 
   const activeFocusFinding = selectedFinding || store.activeFinding;
 
-  const passedGates = store.criticStages.filter((s) => s.status === 'PASSED').length;
+  const criticValidatedCount = store.findings.filter(
+    (f) => f.status === 'CRITIC_VERIFIED' || f.status === 'EXPLOIT_REJECTED'
+  ).length;
 
   const centerTabs: TabItem[] = [
     { id: 'plan', label: 'Plan & Targets', count: store.targets.length },
     { id: 'sandbox', label: 'Live Sandbox & Recon', count: store.endpoints.length },
     { id: 'exploitation', label: 'Exploitation Evidence', count: store.exploits.length },
     { id: 'patch', label: 'Remediation Patch', count: store.patches.length },
-    { id: 'critic', label: 'Critic QA Matrix', count: passedGates ? `${passedGates}/6` : 0 },
+    { id: 'critic', label: 'Critic QA Matrix', count: criticValidatedCount },
   ];
 
   const selectedPlan = (store.scan as { plan?: PlanModel } | null | undefined)?.plan ?? null;
   const selectedPlanFromTargets: PlanModel | null = store.targets.length ? { targets: store.targets } : null;
+
+  const handleSelectFindingId = (findingId: string) => {
+    const match = store.findings.find((f) => f.id === findingId || f.findingId === findingId);
+    if (match) setSelectedFinding(match);
+  };
 
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100 flex flex-col font-sans antialiased selection:bg-sky-500/30 selection:text-sky-200">
@@ -65,12 +72,9 @@ export default function App() {
         <section className="lg:col-span-3 flex flex-col h-[calc(100vh-140px)] min-h-[500px]">
           <FindingsList
             findings={store.findings}
-            activeFindingId={store.activeFindingId}
+            activeFindingId={activeFocusFinding?.id}
             onSelectFinding={(finding) => {
               setSelectedFinding(finding);
-              if (finding.isConfirmed) {
-                setActiveCenterTab('exploitation');
-              }
             }}
           />
         </section>
@@ -95,11 +99,21 @@ export default function App() {
             )}
 
             {activeCenterTab === 'patch' && (
-              <PatchView patches={store.patches} activeFinding={activeFocusFinding} />
+              <PatchView
+                patches={store.patches}
+                activeFinding={activeFocusFinding}
+                onSelectFindingId={handleSelectFindingId}
+              />
             )}
 
             {activeCenterTab === 'critic' && (
-              <ValidationMatrix stages={store.criticStages} activeFinding={activeFocusFinding} />
+              <ValidationMatrix
+                stages={store.criticStages}
+                criticMatrix={store.criticMatrix}
+                findings={store.findings}
+                activeFinding={activeFocusFinding}
+                onSelectFindingId={handleSelectFindingId}
+              />
             )}
           </div>
         </section>

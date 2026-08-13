@@ -1,9 +1,9 @@
 /**
- * AMASS Event Stream Simulation Engine (Phase 10A).
+ * AMASS Event Stream Simulation Engine.
  * 
- * Emits strictly monotonic Phase 9 AmassEvents into the frontend state reducer.
- * Emits progressive SCANNER_FINDING_DISCOVERED events to reveal findings one-by-one.
- * Emits finding-aware SCOUT recon events for each discovered vulnerability.
+ * Emits strictly monotonic AmassEvents into the frontend state reducer.
+ * Executes phase-gated execution across all discovered findings in target fixtures:
+ * SCANNER → SCOUT → PLANNER → SNIPER → ENGINEER → CRITIC → FINAL VERDICT
  */
 
 import type { AmassEvent } from '../types/amass-events';
@@ -43,6 +43,8 @@ export class DemoRunner {
     const eventsToSchedule: Array<{ delaySec: number; event: Omit<AmassEvent, 'eventId' | 'sequence' | 'timestamp'> }> = [];
 
     const scanId = this.config.fixture.scan.scanId;
+    const findings = this.config.fixture.findings;
+    const isRejectedScenario = this.config.scenarioId === 'critic_rejected';
 
     // 1. SCAN_STARTED
     eventsToSchedule.push({
@@ -61,7 +63,7 @@ export class DemoRunner {
 
     // 2. ANALYZER
     eventsToSchedule.push({
-      delaySec: 3.0,
+      delaySec: 2.0,
       event: {
         scanId,
         eventType: 'ANALYZER_STARTED',
@@ -73,7 +75,7 @@ export class DemoRunner {
       },
     });
     eventsToSchedule.push({
-      delaySec: 9.0,
+      delaySec: 5.0,
       event: {
         scanId,
         eventType: 'ANALYZER_COMPLETED',
@@ -87,7 +89,7 @@ export class DemoRunner {
 
     // 3. SCANNER (Progressive Vulnerability Discovery)
     eventsToSchedule.push({
-      delaySec: 12.0,
+      delaySec: 7.0,
       event: {
         scanId,
         eventType: 'SCANNER_STARTED',
@@ -99,10 +101,9 @@ export class DemoRunner {
       },
     });
 
-    // Emit findings PROGRESSIVELY one-by-one
-    this.config.fixture.findings.forEach((finding, idx) => {
+    findings.forEach((finding, idx) => {
       eventsToSchedule.push({
-        delaySec: 14.0 + idx * 2.0,
+        delaySec: 8.5 + idx * 1.5,
         event: {
           scanId,
           eventType: 'SCANNER_FINDING_DISCOVERED',
@@ -124,7 +125,7 @@ export class DemoRunner {
       });
     });
 
-    const scannerDoneTime = 14.0 + this.config.fixture.findings.length * 2.0 + 2.0;
+    const scannerDoneTime = 8.5 + findings.length * 1.5 + 1.0;
     eventsToSchedule.push({
       delaySec: scannerDoneTime,
       event: {
@@ -134,13 +135,13 @@ export class DemoRunner {
         phase: 'scanning',
         level: 'INFO',
         status: 'COMPLETED',
-        message: `Static Scanner completed execution. Identified ${this.config.fixture.findings.length} candidate vulnerabilities across OWASP Top 10 categories.`,
-        metadata: { counts: { total: this.config.fixture.findings.length } },
+        message: `Static Scanner completed execution. Identified ${findings.length} candidate vulnerabilities across OWASP Top 10 categories.`,
+        metadata: { counts: { total: findings.length } },
       },
     });
 
     // 4. SANDBOX LIFECYCLE
-    const sandboxStartTime = scannerDoneTime + 3.0;
+    const sandboxStartTime = scannerDoneTime + 1.5;
     eventsToSchedule.push({
       delaySec: sandboxStartTime,
       event: {
@@ -155,7 +156,7 @@ export class DemoRunner {
       },
     });
     eventsToSchedule.push({
-      delaySec: sandboxStartTime + 8.0,
+      delaySec: sandboxStartTime + 3.0,
       event: {
         scanId,
         eventType: 'SANDBOX_READY',
@@ -169,7 +170,7 @@ export class DemoRunner {
     });
 
     // 5. FINDING-AWARE SCOUT RECON
-    const scoutStartTime = sandboxStartTime + 11.0;
+    const scoutStartTime = sandboxStartTime + 4.5;
     eventsToSchedule.push({
       delaySec: scoutStartTime,
       event: {
@@ -183,9 +184,8 @@ export class DemoRunner {
       },
     });
 
-    // For every discovered finding, execute a finding-aware Scout recon lifecycle
-    this.config.fixture.findings.forEach((finding, idx) => {
-      const fTime = scoutStartTime + 2.0 + idx * 7.0;
+    findings.forEach((finding, idx) => {
+      const fTime = scoutStartTime + 1.0 + idx * 2.5;
       const scoutEp = this.config.fixture.endpoints.find((ep) => ep.findingId === finding.id || ep.path === finding.endpoint) ?? {
         findingId: finding.id,
         path: finding.endpoint || `/api/target-${idx}`,
@@ -194,7 +194,6 @@ export class DemoRunner {
         evidence: `Identified route handler in ${finding.filePath}`,
       };
 
-      // 5a. SCOUT_TARGET_STARTED
       eventsToSchedule.push({
         delaySec: fTime + 0.0,
         event: {
@@ -214,9 +213,8 @@ export class DemoRunner {
         },
       });
 
-      // 5b. SCOUT_ENDPOINT_DISCOVERED
       eventsToSchedule.push({
-        delaySec: fTime + 2.0,
+        delaySec: fTime + 0.8,
         event: {
           scanId,
           eventType: 'SCOUT_ENDPOINT_DISCOVERED',
@@ -234,9 +232,8 @@ export class DemoRunner {
         },
       });
 
-      // 5c. SCOUT_EVIDENCE_COLLECTED
       eventsToSchedule.push({
-        delaySec: fTime + 4.0,
+        delaySec: fTime + 1.6,
         event: {
           scanId,
           eventType: 'SCOUT_EVIDENCE_COLLECTED',
@@ -253,9 +250,8 @@ export class DemoRunner {
         },
       });
 
-      // 5d. SCOUT_TARGET_COMPLETED
       eventsToSchedule.push({
-        delaySec: fTime + 6.0,
+        delaySec: fTime + 2.2,
         event: {
           scanId,
           eventType: 'SCOUT_TARGET_COMPLETED',
@@ -271,7 +267,7 @@ export class DemoRunner {
       });
     });
 
-    const scoutDoneTime = scoutStartTime + 2.0 + this.config.fixture.findings.length * 7.0 + 2.0;
+    const scoutDoneTime = scoutStartTime + 1.0 + findings.length * 2.5 + 1.0;
     eventsToSchedule.push({
       delaySec: scoutDoneTime,
       event: {
@@ -281,12 +277,12 @@ export class DemoRunner {
         phase: 'recon',
         level: 'INFO',
         status: 'COMPLETED',
-        message: `Scout Recon completed across all ${this.config.fixture.findings.length} discovered findings.`,
+        message: `Scout Recon completed across all ${findings.length} discovered findings.`,
       },
     });
 
-    // 6. ATTACK PLANNER (Consumes Scout Results)
-    const plannerStartTime = scoutDoneTime + 3.0;
+    // 6. ATTACK PLANNER (Generates one plan per vulnerability)
+    const plannerStartTime = scoutDoneTime + 1.5;
     eventsToSchedule.push({
       delaySec: plannerStartTime,
       event: {
@@ -299,8 +295,32 @@ export class DemoRunner {
         message: 'Planner combining static findings and Scout recon evidence into prioritized attack targets',
       },
     });
+
+    this.config.fixture.targets.forEach((target, idx) => {
+      const fId = target.findingId || target.targetId;
+      eventsToSchedule.push({
+        delaySec: plannerStartTime + 1.0 + idx * 1.5,
+        event: {
+          scanId,
+          eventType: 'PLANNER_COMPLETED', // Emitted per target to reveal plans progressively
+          agentType: 'PLANNER',
+          phase: 'planning',
+          level: 'INFO',
+          status: 'IN_PROGRESS',
+          message: `Planner finalized attack plan for ${target.vulnerabilityType} (${fId})`,
+          metadata: {
+            target: target as unknown as Record<string, unknown>,
+            targetId: target.targetId,
+            findingId: fId,
+            endpoint: target.endpoint,
+          },
+        },
+      });
+    });
+
+    const plannerDoneTime = plannerStartTime + 1.0 + this.config.fixture.targets.length * 1.5 + 1.0;
     eventsToSchedule.push({
-      delaySec: plannerStartTime + 8.0,
+      delaySec: plannerDoneTime,
       event: {
         scanId,
         eventType: 'PLANNER_COMPLETED',
@@ -308,13 +328,13 @@ export class DemoRunner {
         phase: 'planning',
         level: 'INFO',
         status: 'COMPLETED',
-        message: `Planner finalized execution plan with ${this.config.fixture.targets.length} high-priority targets.`,
-        metadata: { targets: this.config.fixture.targets },
+        message: `Planner finalized execution plans across all ${this.config.fixture.targets.length} targets.`,
+        metadata: { total: this.config.fixture.targets.length },
       },
     });
 
-    // 7. SNIPER EXPLOITATION (Linked via findingId)
-    const sniperStartTime = plannerStartTime + 11.0;
+    // 7. SNIPER EXPLOITATION (Verified per finding)
+    const sniperStartTime = plannerDoneTime + 1.5;
     eventsToSchedule.push({
       delaySec: sniperStartTime,
       event: {
@@ -330,8 +350,10 @@ export class DemoRunner {
 
     this.config.fixture.exploits.forEach((exp, idx) => {
       const fId = exp.findingId || exp.targetId;
+      const sTime = sniperStartTime + 1.0 + idx * 2.5;
+
       eventsToSchedule.push({
-        delaySec: sniperStartTime + 3.0 + idx * 7.0,
+        delaySec: sTime,
         event: {
           scanId,
           eventType: 'SNIPER_TARGET_SELECTED',
@@ -343,8 +365,9 @@ export class DemoRunner {
           metadata: { targetId: exp.targetId, findingId: fId, endpoint: exp.endpoint, vulnerabilityId: fId },
         },
       });
+
       eventsToSchedule.push({
-        delaySec: sniperStartTime + 7.0 + idx * 7.0,
+        delaySec: sTime + 1.5,
         event: {
           scanId,
           eventType: 'SNIPER_CONFIRMED',
@@ -353,12 +376,18 @@ export class DemoRunner {
           level: 'WARN',
           status: 'CONFIRMED',
           message: exp.verificationNotes || `Vulnerability confirmed at ${exp.endpoint}`,
-          metadata: { targetId: exp.targetId, findingId: fId, endpoint: exp.endpoint, vulnerabilityId: fId },
+          metadata: {
+            targetId: exp.targetId,
+            findingId: fId,
+            endpoint: exp.endpoint,
+            vulnerabilityId: fId,
+            exploit: exp as unknown as Record<string, unknown>,
+          },
         },
       });
     });
 
-    const sniperDoneTime = sniperStartTime + 7.0 + this.config.fixture.exploits.length * 7.0 + 2.0;
+    const sniperDoneTime = sniperStartTime + 1.0 + this.config.fixture.exploits.length * 2.5 + 1.0;
     eventsToSchedule.push({
       delaySec: sniperDoneTime,
       event: {
@@ -372,8 +401,8 @@ export class DemoRunner {
       },
     });
 
-    // 8. ENGINEER REMEDIATION
-    const engineerStartTime = sniperDoneTime + 3.0;
+    // 8. ENGINEER REMEDIATION (Generates patch per finding)
+    const engineerStartTime = sniperDoneTime + 1.5;
     eventsToSchedule.push({
       delaySec: engineerStartTime,
       event: {
@@ -383,58 +412,66 @@ export class DemoRunner {
         phase: 'remediation',
         level: 'INFO',
         status: 'STARTED',
-        message: 'Engineer Agent generating remediation patch using RAG context and source code inspection',
-      },
-    });
-    eventsToSchedule.push({
-      delaySec: engineerStartTime + 4.0,
-      event: {
-        scanId,
-        eventType: 'ENGINEER_RAG_STARTED',
-        agentType: 'ENGINEER',
-        phase: 'remediation',
-        level: 'INFO',
-        status: 'IN_PROGRESS',
-        message: 'Querying vector RAG index for OWASP mitigation guidelines and repository code patterns',
-      },
-    });
-    eventsToSchedule.push({
-      delaySec: engineerStartTime + 8.0,
-      event: {
-        scanId,
-        eventType: 'ENGINEER_LLM_STARTED',
-        agentType: 'ENGINEER',
-        phase: 'remediation',
-        level: 'INFO',
-        status: 'IN_PROGRESS',
-        message: 'Generating minimal defensive code patch for primary target',
+        message: 'Engineer Agent generating remediation patches using RAG context and source code inspection',
       },
     });
 
-    const primaryPatch = this.config.fixture.patches[0];
-    const primaryFindingId = primaryPatch?.findingId || this.config.fixture.findings[0]?.id;
+    this.config.fixture.patches.forEach((patch, idx) => {
+      const fId = patch.findingId || findings[idx]?.id;
+      const eTime = engineerStartTime + 1.0 + idx * 2.5;
+
+      eventsToSchedule.push({
+        delaySec: eTime,
+        event: {
+          scanId,
+          eventType: 'ENGINEER_RAG_STARTED',
+          agentType: 'ENGINEER',
+          phase: 'remediation',
+          level: 'INFO',
+          status: 'IN_PROGRESS',
+          message: `Querying vector RAG index for OWASP mitigation context for ${fId}`,
+          metadata: { findingId: fId, patchId: patch.patchId },
+        },
+      });
+
+      eventsToSchedule.push({
+        delaySec: eTime + 1.5,
+        event: {
+          scanId,
+          eventType: 'ENGINEER_PATCH_GENERATED',
+          agentType: 'ENGINEER',
+          phase: 'remediation',
+          level: 'INFO',
+          status: 'COMPLETED',
+          message: patch.diffContent,
+          metadata: {
+            patchId: patch.patchId,
+            findingId: fId,
+            filePath: patch.filePath,
+            explanation: patch.explanation,
+            patch: patch as unknown as Record<string, unknown>,
+          },
+        },
+      });
+    });
+
+    const engineerDoneTime = engineerStartTime + 1.0 + this.config.fixture.patches.length * 2.5 + 1.0;
     eventsToSchedule.push({
-      delaySec: engineerStartTime + 15.0,
+      delaySec: engineerDoneTime - 0.5,
       event: {
         scanId,
-        eventType: 'ENGINEER_PATCH_GENERATED',
+        eventType: 'ENGINEER_COMPLETED',
         agentType: 'ENGINEER',
         phase: 'remediation',
         level: 'INFO',
         status: 'COMPLETED',
-        message: primaryPatch?.diffContent || 'Remediation patch generated cleanly.',
-        metadata: {
-          patchId: primaryPatch?.patchId || 'patch-001',
-          findingId: primaryFindingId,
-          filePath: primaryPatch?.filePath || 'src/vulnerable.ts',
-        },
+        message: `Engineer Agent completed remediation patch generation across all ${this.config.fixture.patches.length} targets.`,
+        metadata: { total: this.config.fixture.patches.length },
       },
     });
 
-    // 9. CRITIC QUALITY ASSURANCE MATRIX
-    const criticStartTime = engineerStartTime + 18.0;
-    const isRejectedScenario = this.config.scenarioId === 'critic_rejected';
-
+    // 9. CRITIC QUALITY ASSURANCE MATRIX (Evaluates each finding's patch)
+    const criticStartTime = engineerDoneTime + 1.5;
     eventsToSchedule.push({
       delaySec: criticStartTime,
       event: {
@@ -444,174 +481,163 @@ export class DemoRunner {
         phase: 'validation',
         level: 'INFO',
         status: 'STARTED',
-        message: 'Critic Agent initiating 6-stage validation pipeline on generated patch',
-        metadata: { findingId: primaryFindingId },
+        message: 'Critic Agent initiating 6-stage validation pipeline on generated patches',
       },
     });
 
-    // Baseline check
-    eventsToSchedule.push({
-      delaySec: criticStartTime + 3.0,
-      event: {
-        scanId,
-        eventType: 'BASELINE_CHECK_STARTED',
-        agentType: 'CRITIC',
-        phase: 'validation',
-        level: 'INFO',
-        status: 'IN_PROGRESS',
-        message: 'Baseline Check: Confirming vulnerable state before patch application',
-      },
-    });
-    eventsToSchedule.push({
-      delaySec: criticStartTime + 6.0,
-      event: {
-        scanId,
-        eventType: 'BASELINE_CHECK_COMPLETED',
-        agentType: 'CRITIC',
-        phase: 'validation',
-        level: 'INFO',
-        status: 'COMPLETED',
-        message: 'Baseline Check ✓: Vulnerable behavior successfully reproduced in sandbox',
-      },
-    });
+    this.config.fixture.patches.forEach((patch, idx) => {
+      const fId = patch.findingId || findings[idx]?.id;
+      const cTime = criticStartTime + 1.0 + idx * 4.0;
+      // In rejected scenario, reject second finding (e.g. SQL Injection / fnd-askbit-a03 or fnd-geospy-a03)
+      const isThisFindingRejected = isRejectedScenario && (fId.includes('a03') || idx === 1);
 
-    // Patch apply
-    eventsToSchedule.push({
-      delaySec: criticStartTime + 9.0,
-      event: {
-        scanId,
-        eventType: 'PATCH_APPLY_STARTED',
-        agentType: 'CRITIC',
-        phase: 'validation',
-        level: 'INFO',
-        status: 'IN_PROGRESS',
-        message: 'Patch Application: Applying diff to sandbox workspace',
-      },
-    });
-    eventsToSchedule.push({
-      delaySec: criticStartTime + 12.0,
-      event: {
-        scanId,
-        eventType: 'PATCH_APPLIED',
-        agentType: 'CRITIC',
-        phase: 'validation',
-        level: 'INFO',
-        status: 'COMPLETED',
-        message: 'Patch Application ✓: Patch applied cleanly without merge conflicts',
-      },
-    });
-
-    // Build
-    eventsToSchedule.push({
-      delaySec: criticStartTime + 15.0,
-      event: {
-        scanId,
-        eventType: 'BUILD_STARTED',
-        agentType: 'CRITIC',
-        phase: 'validation',
-        level: 'INFO',
-        status: 'IN_PROGRESS',
-        message: 'Sandbox Build: Compiling application with patch applied',
-      },
-    });
-    eventsToSchedule.push({
-      delaySec: criticStartTime + 20.0,
-      event: {
-        scanId,
-        eventType: 'BUILD_COMPLETED',
-        agentType: 'CRITIC',
-        phase: 'validation',
-        level: 'INFO',
-        status: 'COMPLETED',
-        message: 'Sandbox Build ✓: Application compiled cleanly (0 errors)',
-      },
-    });
-
-    // Tests
-    eventsToSchedule.push({
-      delaySec: criticStartTime + 23.0,
-      event: {
-        scanId,
-        eventType: 'TESTS_STARTED',
-        agentType: 'CRITIC',
-        phase: 'validation',
-        level: 'INFO',
-        status: 'IN_PROGRESS',
-        message: 'Test Suite: Executing existing test suite to prevent regression',
-      },
-    });
-    eventsToSchedule.push({
-      delaySec: criticStartTime + 28.0,
-      event: {
-        scanId,
-        eventType: 'TESTS_COMPLETED',
-        agentType: 'CRITIC',
-        phase: 'validation',
-        level: 'INFO',
-        status: 'COMPLETED',
-        message: 'Test Suite ✓: Existing unit test suite passed without regression',
-      },
-    });
-
-    // Exploit Retest & Final Approval / Rejection
-    eventsToSchedule.push({
-      delaySec: criticStartTime + 31.0,
-      event: {
-        scanId,
-        eventType: 'EXPLOIT_RETEST_STARTED',
-        agentType: 'CRITIC',
-        phase: 'validation',
-        level: 'INFO',
-        status: 'IN_PROGRESS',
-        message: 'Exploit Retest: Re-executing Sniper payload against patched build',
-      },
-    });
-
-    if (isRejectedScenario) {
+      // Baseline check
       eventsToSchedule.push({
-        delaySec: criticStartTime + 36.0,
+        delaySec: cTime + 0.0,
         event: {
           scanId,
-          eventType: 'CRITIC_REJECTED',
+          eventType: 'BASELINE_CHECK_STARTED',
           agentType: 'CRITIC',
           phase: 'validation',
-          level: 'ERROR',
-          status: 'REJECTED',
-          message: 'Critic REJECTED: Exploit still succeeds after patch application. Input filter bypass discovered.',
+          level: 'INFO',
+          status: 'IN_PROGRESS',
+          message: `Baseline Check [${fId}]: Confirming vulnerable state before patch application`,
+          metadata: { findingId: fId },
         },
       });
-    } else {
       eventsToSchedule.push({
-        delaySec: criticStartTime + 36.0,
+        delaySec: cTime + 0.6,
         event: {
           scanId,
-          eventType: 'EXPLOIT_RETEST_COMPLETED',
+          eventType: 'BASELINE_CHECK_COMPLETED',
           agentType: 'CRITIC',
           phase: 'validation',
           level: 'INFO',
           status: 'COMPLETED',
-          message: 'Exploit Retest ✓: Exploit payload no longer succeeds against patched sandbox',
+          message: `Baseline Check ✓ [${fId}]: Vulnerable behavior reproduced in sandbox`,
+          metadata: { findingId: fId },
+        },
+      });
+
+      // Patch apply
+      eventsToSchedule.push({
+        delaySec: cTime + 1.2,
+        event: {
+          scanId,
+          eventType: 'PATCH_APPLY_STARTED',
+          agentType: 'CRITIC',
+          phase: 'validation',
+          level: 'INFO',
+          status: 'IN_PROGRESS',
+          message: `Patch Application [${fId}]: Applying diff to sandbox workspace`,
+          metadata: { findingId: fId },
         },
       });
       eventsToSchedule.push({
-        delaySec: criticStartTime + 39.0,
+        delaySec: cTime + 1.8,
         event: {
           scanId,
-          eventType: 'CRITIC_APPROVED',
+          eventType: 'PATCH_APPLIED',
           agentType: 'CRITIC',
           phase: 'validation',
           level: 'INFO',
           status: 'COMPLETED',
-          message: 'Critic APPROVED: Patch verified successfully across all quality gates',
-          metadata: { findingId: primaryFindingId },
+          message: `Patch Application ✓ [${fId}]: Patch applied cleanly without merge conflicts`,
+          metadata: { findingId: fId },
         },
       });
-    }
+
+      // Build & Tests
+      eventsToSchedule.push({
+        delaySec: cTime + 2.4,
+        event: {
+          scanId,
+          eventType: 'BUILD_COMPLETED',
+          agentType: 'CRITIC',
+          phase: 'validation',
+          level: 'INFO',
+          status: 'COMPLETED',
+          message: `Sandbox Build ✓ [${fId}]: Application compiled cleanly`,
+          metadata: { findingId: fId },
+        },
+      });
+      eventsToSchedule.push({
+        delaySec: cTime + 3.0,
+        event: {
+          scanId,
+          eventType: 'TESTS_COMPLETED',
+          agentType: 'CRITIC',
+          phase: 'validation',
+          level: 'INFO',
+          status: 'COMPLETED',
+          message: `Test Suite ✓ [${fId}]: Test suite passed without regression`,
+          metadata: { findingId: fId },
+        },
+      });
+
+      // Exploit Retest & Final Approval / Rejection for this finding
+      if (isThisFindingRejected) {
+        eventsToSchedule.push({
+          delaySec: cTime + 3.6,
+          event: {
+            scanId,
+            eventType: 'CRITIC_REJECTED',
+            agentType: 'CRITIC',
+            phase: 'validation',
+            level: 'ERROR',
+            status: 'REJECTED',
+            message: `Critic REJECTED [${fId}]: Exploit retest failed. Input filter bypass discovered in patch.`,
+            metadata: { findingId: fId, patchId: patch.patchId },
+          },
+        });
+      } else {
+        eventsToSchedule.push({
+          delaySec: cTime + 3.4,
+          event: {
+            scanId,
+            eventType: 'EXPLOIT_RETEST_COMPLETED',
+            agentType: 'CRITIC',
+            phase: 'validation',
+            level: 'INFO',
+            status: 'COMPLETED',
+            message: `Exploit Retest ✓ [${fId}]: Exploit payload no longer succeeds against patched sandbox`,
+            metadata: { findingId: fId },
+          },
+        });
+        eventsToSchedule.push({
+          delaySec: cTime + 3.8,
+          event: {
+            scanId,
+            eventType: 'CRITIC_APPROVED',
+            agentType: 'CRITIC',
+            phase: 'validation',
+            level: 'INFO',
+            status: 'COMPLETED',
+            message: `Critic APPROVED [${fId}]: Patch verified successfully across all quality gates`,
+            metadata: { findingId: fId, patchId: patch.patchId },
+          },
+        });
+      }
+    });
+
+    const criticDoneTime = criticStartTime + 1.0 + this.config.fixture.patches.length * 4.0 + 1.0;
+    eventsToSchedule.push({
+      delaySec: criticDoneTime - 0.5,
+      event: {
+        scanId,
+        eventType: 'CRITIC_COMPLETED',
+        agentType: 'CRITIC',
+        phase: 'validation',
+        level: 'INFO',
+        status: 'COMPLETED',
+        message: `Critic Agent completed 6-stage validation pipeline across all target patches.`,
+        metadata: { total: this.config.fixture.patches.length },
+      },
+    });
 
     // 10. SCAN_COMPLETED
-    const totalTime = criticStartTime + 42.0;
     eventsToSchedule.push({
-      delaySec: totalTime,
+      delaySec: criticDoneTime,
       event: {
         scanId,
         eventType: isRejectedScenario ? 'SCAN_FAILED' : 'SCAN_COMPLETED',
@@ -620,8 +646,8 @@ export class DemoRunner {
         level: isRejectedScenario ? 'WARN' : 'INFO',
         status: isRejectedScenario ? 'FAILED' : 'COMPLETED',
         message: isRejectedScenario
-          ? 'Scan completed with Critic Rejection'
-          : 'Scan completed successfully',
+          ? 'Scan completed with Critic Rejection on one or more patches'
+          : 'Scan completed successfully across all vulnerability pipelines',
       },
     });
 

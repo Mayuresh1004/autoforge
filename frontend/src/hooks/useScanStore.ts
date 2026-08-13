@@ -1,8 +1,13 @@
 /**
- * ScanStore Hook — Derives full reactive state from provider events & APIs.
+ * ScanStore Hook — Single Normalized Event-Driven Reducer Architecture.
  * Works seamlessly with both Real REST/SSE Provider and Demo Provider.
- * Progressive Disclosure: Findings, targets, exploits, and patches populate
- * dynamically as their respective pipeline events arrive.
+ * 
+ * Single Source of Truth: `findingsById` maps each discovered vulnerability
+ * to its finding model, scout endpoint, target plan, exploit evidence, patch,
+ * and Critic QA stage checklist.
+ * 
+ * All UI collections (findings, targets, endpoints, exploits, patches, criticMatrix)
+ * are pure derived selectors from `findingsById`.
  */
 
 import { useState, useEffect, useCallback, useMemo } from 'react';
@@ -34,6 +39,15 @@ export interface CriticStageState {
   message?: string;
 }
 
+export interface FindingRecord {
+  finding: FindingModel;
+  endpoint?: ScoutEndpoint;
+  target?: TargetModel;
+  exploit?: ExploitEvidenceModel;
+  patch?: PatchModel;
+  criticStages: CriticStageState[];
+}
+
 export interface ScanStoreState {
   activeScanId: string | null;
   scan: ScanModel | null;
@@ -49,6 +63,7 @@ export interface ScanStoreState {
   patches: PatchModel[];
   sandbox: RuntimeSandboxModel | null;
   criticStages: CriticStageState[];
+  criticMatrix: Record<string, CriticStageState[]>;
   activeFindingId: string | null;
   activeFinding: FindingModel | null;
   isLoading: boolean;
@@ -78,6 +93,10 @@ const INITIAL_CRITIC_STAGES: CriticStageState[] = [
   { name: 'Final Security Verdict', key: 'approval', status: 'IDLE' },
 ];
 
+export function createInitialCriticStages(): CriticStageState[] {
+  return INITIAL_CRITIC_STAGES.map((s) => ({ ...s }));
+}
+
 export function useScanStore(initialScanId: string | null = null) {
   const provider = getAMASSDataProvider();
 
@@ -91,22 +110,53 @@ export function useScanStore(initialScanId: string | null = null) {
   const [connectionStatus, setConnectionStatus] = useState<SseConnectionStatus>('CONNECTED');
 
   const [agents, setAgents] = useState<Record<AmassAgentType, AgentState>>(INITIAL_AGENTS);
-  const [findings, setFindings] = useState<FindingModel[]>([]);
-  const [endpoints, setEndpoints] = useState<ScoutEndpoint[]>([]);
-  const [targets, setTargets] = useState<TargetModel[]>([]);
-  const [exploits, setExploits] = useState<ExploitEvidenceModel[]>([]);
-  const [patches, setPatches] = useState<PatchModel[]>([]);
   const [sandbox, setSandbox] = useState<RuntimeSandboxModel | null>(null);
-  const [criticStages, setCriticStages] = useState<CriticStageState[]>(INITIAL_CRITIC_STAGES);
+
+  // SINGLE NORMALIZED REDUCER STATE CONTAINER
+  const [findingsById, setFindingsById] = useState<Record<string, FindingRecord>>({});
   const [activeFindingId, setActiveFindingId] = useState<string | null>(null);
 
-  const updateCriticStage = useCallback((key: CriticStageState['key'], status: CriticStageState['status'], message?: string) => {
-    setCriticStages((prev) =>
-      prev.map((s) => (s.key === key ? { ...s, status, message: message ?? s.message } : s))
-    );
-  }, []);
+  // PURE DERIVED SELECTORS FROM `findingsById`
+  const findings = useMemo(() => {
+    return Object.values(findingsById).map((record) => ({
+      ...record.finding,
+      status: record.finding.status,
+    }));
+  }, [findingsById]);
 
-  // Universal Event Handler (Used by both Real SSE and Demo Provider)
+  const targets = useMemo(() => {
+    return Object.values(findingsById)
+      .map((record) => record.target)
+      .filter((t): t is TargetModel => Boolean(t));
+  }, [findingsById]);
+
+  const endpoints = useMemo(() => {
+    return Object.values(findingsById)
+      .map((record) => record.endpoint)
+      .filter((e): e is ScoutEndpoint => Boolean(e));
+  }, [findingsById]);
+
+  const exploits = useMemo(() => {
+    return Object.values(findingsById)
+      .map((record) => record.exploit)
+      .filter((e): e is ExploitEvidenceModel => Boolean(e));
+  }, [findingsById]);
+
+  const patches = useMemo(() => {
+    return Object.values(findingsById)
+      .map((record) => record.patch)
+      .filter((p): p is PatchModel => Boolean(p));
+  }, [findingsById]);
+
+  const criticMatrix = useMemo(() => {
+    const map: Record<string, CriticStageState[]> = {};
+    Object.values(findingsById).forEach((record) => {
+      map[record.finding.id] = record.criticStages;
+    });
+    return map;
+  }, [findingsById]);
+
+  // Universal Event Handler — Single Reducer Authority
   const handleEvent = useCallback(
     (event: AmassEvent) => {
       // Append event & track monotonic sequence
@@ -118,30 +168,29 @@ export function useScanStore(initialScanId: string | null = null) {
       });
       setLastSequence(event.sequence);
 
-      // 1. Agent State Updates
+      // 1. Agent Pipeline Stage Statuses (Strictly driven by explicit phase events)
       if (event.agentType) {
         setAgents((prev) => {
           const current = prev[event.agentType!];
           let nextStatus: AgentStatus = current?.status ?? 'IDLE';
 
-          if (event.eventType.endsWith('_STARTED') || event.status === 'STARTED' || event.status === 'IN_PROGRESS') {
+          if (event.eventType.endsWith('_STARTED') || event.status === 'STARTED') {
             nextStatus = 'RUNNING';
           } else if (
-            event.eventType.endsWith('_COMPLETED') ||
-            event.eventType.endsWith('_CONFIRMED') ||
-            event.eventType.endsWith('_APPROVED') ||
-            event.eventType.endsWith('_PATCH_GENERATED') ||
-            event.status === 'COMPLETED' ||
-            event.status === 'SUCCEEDED' ||
-            event.status === 'CONFIRMED' ||
-            event.status === 'READY'
+            event.eventType === 'ANALYZER_COMPLETED' ||
+            event.eventType === 'SCANNER_COMPLETED' ||
+            (event.agentType === 'SANDBOX' && (event.eventType === 'SANDBOX_READY' || event.status === 'READY')) ||
+            event.eventType === 'SCOUT_COMPLETED' ||
+            (event.eventType === 'PLANNER_COMPLETED' && event.status === 'COMPLETED') ||
+            event.eventType === 'SNIPER_VERIFICATION_COMPLETED' ||
+            event.eventType === 'ENGINEER_COMPLETED' ||
+            event.eventType === 'CRITIC_COMPLETED' ||
+            (event.agentType === 'SYSTEM' && event.eventType === 'SCAN_COMPLETED')
           ) {
             nextStatus = 'COMPLETED';
           } else if (
             event.eventType.endsWith('_FAILED') ||
-            event.eventType.endsWith('_REJECTED') ||
-            event.status === 'FAILED' ||
-            event.status === 'REJECTED'
+            event.status === 'FAILED'
           ) {
             nextStatus = 'FAILED';
           }
@@ -161,13 +210,8 @@ export function useScanStore(initialScanId: string | null = null) {
       // 2. Workflow / Scan status update & Clean State Initialization at start
       if (event.eventType === 'SCAN_STARTED') {
         setScan((prev) => (prev ? { ...prev, status: 'RUNNING' } : null));
-        setFindings([]);
-        setEndpoints([]);
-        setTargets([]);
-        setExploits([]);
-        setPatches([]);
+        setFindingsById({});
         setSandbox(null);
-        setCriticStages(INITIAL_CRITIC_STAGES);
         setActiveFindingId(null);
       } else if (event.eventType === 'SCAN_COMPLETED') {
         setScan((prev) => (prev ? { ...prev, status: 'COMPLETED' } : null));
@@ -175,64 +219,125 @@ export function useScanStore(initialScanId: string | null = null) {
         setScan((prev) => (prev ? { ...prev, status: 'FAILED' } : null));
       }
 
-      // 3. Domain Model Progressive Disclosure Handlers
+      // 3. Domain Model State Reducer (Strictly findingId-keyed updates)
+      const targetFindingId = (event.metadata?.findingId as string) || (event.metadata?.vulnerabilityId as string) || (event.metadata?.targetId as string);
+
       switch (event.eventType) {
-        // SCANNER FINDING DISCOVERED: Append finding progressively & focus it
+        // SCANNER FINDING DISCOVERED: Register finding in findingsById
         case 'SCANNER_FINDING_DISCOVERED': {
           const rawFinding = event.metadata?.finding as FindingModel | undefined;
-          if (rawFinding) {
+          const fId = targetFindingId || rawFinding?.id;
+          if (fId && rawFinding) {
             const newFinding: FindingModel = {
               ...rawFinding,
-              findingId: rawFinding.id,
+              id: fId,
+              findingId: fId,
               status: 'DISCOVERED',
               isConfirmed: false,
             };
-            setFindings((prev) => {
-              if (prev.some((f) => f.id === newFinding.id)) return prev;
-              return [...prev, newFinding];
+            setFindingsById((prev) => {
+              if (prev[fId]) return prev;
+              return {
+                ...prev,
+                [fId]: {
+                  finding: newFinding,
+                  criticStages: createInitialCriticStages(),
+                },
+              };
             });
-            setActiveFindingId(newFinding.id);
+            // Keep active selection stable on first finding
+            setActiveFindingId((prev) => prev ?? fId);
           }
           break;
         }
 
-        // SCANNER COMPLETED: Ensure all findings are present if stream missed any
-        case 'SCANNER_COMPLETED':
-          provider.getScanResults(event.scanId).then((res) => {
-            if (res.success && res.data) {
-              const rawFindings = Array.isArray(res.data)
-                ? res.data
-                : res.data.findings ?? [];
-              setFindings((prev) => {
-                if (prev.length >= rawFindings.length) return prev;
-                return rawFindings.map((f) => ({ ...f, findingId: f.id, status: f.status || 'DISCOVERED', isConfirmed: false }));
-              });
-            }
-          });
+        // SCOUT RECON ENDPOINT DISCOVERED
+        case 'SCOUT_ENDPOINT_DISCOVERED': {
+          const epPath = (event.metadata?.endpoint || event.metadata?.targetUrl || event.metadata?.url) as string | undefined;
+          if (targetFindingId && epPath) {
+            const method = (event.metadata?.method as string) ?? 'GET';
+            const desc = (event.metadata?.description as string) ?? event.message;
+            setFindingsById((prev) => {
+              const record = prev[targetFindingId];
+              if (!record) return prev;
+              const newEndpoint: ScoutEndpoint = {
+                findingId: targetFindingId,
+                path: epPath,
+                url: epPath,
+                method,
+                description: desc,
+                status: 'IDENTIFIED',
+              };
+              return {
+                ...prev,
+                [targetFindingId]: {
+                  ...record,
+                  endpoint: newEndpoint,
+                },
+              };
+            });
+          }
           break;
+        }
 
-        // PLANNER COMPLETED: Load attack plan targets & update findings status to PLANNED
-        case 'PLANNER_COMPLETED':
-          provider.getPlanForScan(event.scanId).then((res) => {
-            if (res.success && res.data) {
-              const planTargets = res.data.targets ?? [];
-              setTargets([...planTargets]);
-              if (planTargets.length > 0) {
-                const targetFindingId = planTargets[0].findingId || planTargets[0].targetId;
-                setActiveFindingId(targetFindingId);
-              }
-              // Mark findings in plan as PLANNED
-              setFindings((prev) =>
-                prev.map((f) => {
-                  if (planTargets.some((t) => t.findingId === f.id || t.targetId === f.id || t.endpoint === f.endpoint)) {
-                    return { ...f, status: 'PLANNED' };
-                  }
-                  return f;
-                })
-              );
-            }
-          });
+        case 'SCOUT_EVIDENCE_COLLECTED': {
+          const evText = (event.metadata?.evidence as string) || event.message;
+          if (targetFindingId) {
+            setFindingsById((prev) => {
+              const record = prev[targetFindingId];
+              if (!record || !record.endpoint) return prev;
+              return {
+                ...prev,
+                [targetFindingId]: {
+                  ...record,
+                  endpoint: { ...record.endpoint, evidence: evText, status: 'EVIDENCE_COLLECTED' },
+                },
+              };
+            });
+          }
           break;
+        }
+
+        case 'SCOUT_TARGET_COMPLETED': {
+          if (targetFindingId) {
+            setFindingsById((prev) => {
+              const record = prev[targetFindingId];
+              if (!record || !record.endpoint) return prev;
+              return {
+                ...prev,
+                [targetFindingId]: {
+                  ...record,
+                  endpoint: { ...record.endpoint, status: 'COMPLETED' },
+                },
+              };
+            });
+          }
+          break;
+        }
+
+        // PLANNER TARGET PLANNED: Attach target model & update finding status
+        case 'PLANNER_COMPLETED': {
+          const targetMeta = event.metadata?.target as TargetModel | undefined;
+          const fId = targetFindingId || targetMeta?.findingId || targetMeta?.targetId;
+          if (fId && targetMeta) {
+            setFindingsById((prev) => {
+              const record = prev[fId];
+              if (!record) return prev;
+              return {
+                ...prev,
+                [fId]: {
+                  ...record,
+                  target: targetMeta,
+                  finding: {
+                    ...record.finding,
+                    status: record.finding.status === 'DISCOVERED' ? 'PLANNED' : record.finding.status,
+                  },
+                },
+              };
+            });
+          }
+          break;
+        }
 
         // SANDBOX LIFECYCLE
         case 'SANDBOX_PROVISIONING':
@@ -266,209 +371,169 @@ export function useScanStore(initialScanId: string | null = null) {
           setSandbox((prev) => (prev ? { ...prev, status: event.eventType === 'SANDBOX_FAILED' ? 'FAILED' : 'DESTROYED' } : null));
           break;
 
-        // FINDING-AWARE SCOUT RECON LIFECYCLE
-        case 'SCOUT_TARGET_STARTED':
-          if (event.metadata?.findingId) {
-            const fId = event.metadata.findingId as string;
-            setActiveFindingId(fId);
-          }
-          break;
-
-        case 'SCOUT_ENDPOINT_DISCOVERED': {
-          const fId = (event.metadata?.findingId as string) || (event.metadata?.vulnerabilityId as string);
-          if (fId) setActiveFindingId(fId);
-
-          const targetEp = (event.metadata?.endpoint || event.metadata?.targetUrl || event.metadata?.url) as string | undefined;
-          if (targetEp) {
-            setEndpoints((prev) => {
-              const exists = prev.some((e) => (e.path || e.url) === targetEp && e.method === (event.metadata?.method ?? 'GET'));
-              if (exists) {
-                return prev.map((e) => ((e.path || e.url) === targetEp ? { ...e, findingId: fId || e.findingId, status: 'IDENTIFIED' } : e));
-              }
-              return [
-                ...prev,
-                {
-                  findingId: fId,
-                  path: targetEp,
-                  url: targetEp,
-                  method: (event.metadata?.method as string) ?? 'GET',
-                  description: (event.metadata?.description as string) ?? event.message,
-                  status: 'IDENTIFIED',
-                },
-              ];
-            });
-          }
-          break;
-        }
-
-        case 'SCOUT_EVIDENCE_COLLECTED': {
-          const fId = event.metadata?.findingId as string | undefined;
-          if (fId) setActiveFindingId(fId);
-
-          const evText = (event.metadata?.evidence as string) || event.message;
-          const epPath = event.metadata?.endpoint as string | undefined;
-
-          setEndpoints((prev) =>
-            prev.map((e) => {
-              if ((fId && e.findingId === fId) || (epPath && (e.path === epPath || e.url === epPath))) {
-                return { ...e, evidence: evText, status: 'EVIDENCE_COLLECTED' };
-              }
-              return e;
-            })
-          );
-          break;
-        }
-
-        case 'SCOUT_TARGET_COMPLETED': {
-          const fId = event.metadata?.findingId as string | undefined;
-          if (fId) {
-            setEndpoints((prev) =>
-              prev.map((e) => (e.findingId === fId ? { ...e, status: 'COMPLETED' } : e))
-            );
-          }
-          break;
-        }
-
-        // SNIPER TARGET SELECTION & EXPLOIT CONFIRMED
+        // SNIPER EXPLOIT VERIFICATION
         case 'SNIPER_TARGET_SELECTED':
-          if (event.metadata?.findingId || event.metadata?.targetId) {
-            const tId = (event.metadata.findingId as string) || (event.metadata.targetId as string);
-            setActiveFindingId(tId);
-            setTargets((prev) =>
-              prev.map((t) => (t.targetId === tId || t.findingId === tId ? { ...t, status: 'IN_PROGRESS' } : t))
-            );
-            setFindings((prev) =>
-              prev.map((f) => (f.id === tId || f.findingId === tId || f.ruleId === tId ? { ...f, status: 'VERIFYING' } : f))
-            );
+          if (targetFindingId) {
+            setFindingsById((prev) => {
+              const record = prev[targetFindingId];
+              if (!record) return prev;
+              return {
+                ...prev,
+                [targetFindingId]: {
+                  ...record,
+                  finding: { ...record.finding, status: 'VERIFYING' },
+                },
+              };
+            });
           }
           break;
 
         case 'SNIPER_CONFIRMED':
-          if (event.metadata?.findingId || event.metadata?.vulnerabilityId || event.metadata?.targetId) {
-            const targetId = (event.metadata?.findingId as string) || (event.metadata?.targetId as string) || (event.metadata?.vulnerabilityId as string);
-            const targetEndpoint = event.metadata?.endpoint as string | undefined;
-
-            setActiveFindingId(targetId);
-
-            // 1. Mark matching finding as EXPLOIT_CONFIRMED
-            setFindings((prev) =>
-              prev.map((f) => {
-                if (
-                  f.id === targetId ||
-                  f.findingId === targetId ||
-                  f.ruleId === targetId ||
-                  f.vulnerabilityId === targetId ||
-                  (targetEndpoint && f.endpoint === targetEndpoint)
-                ) {
-                  return { ...f, isConfirmed: true, status: 'EXPLOIT_CONFIRMED' };
-                }
-                return f;
-              })
-            );
-
-            // 2. Add exploit evidence
-            setExploits((prev) => {
-              const exists = prev.some((e) => e.targetId === targetId || e.findingId === targetId);
-              if (exists) return prev;
-              return [
+          if (targetFindingId) {
+            const expMeta = (event.metadata?.exploit as ExploitEvidenceModel | undefined) ?? {
+              exploitId: `exp_${targetFindingId}`,
+              targetId: targetFindingId,
+              findingId: targetFindingId,
+              scanId: event.scanId,
+              confirmed: true,
+              endpoint: event.metadata?.endpoint as string | undefined,
+              method: (event.metadata?.method as string) ?? 'GET',
+              verificationNotes: event.message,
+            };
+            setFindingsById((prev) => {
+              const record = prev[targetFindingId];
+              if (!record) return prev;
+              return {
                 ...prev,
-                {
-                  exploitId: `exp_${targetId}`,
-                  targetId,
-                  findingId: targetId,
-                  scanId: event.scanId,
-                  confirmed: true,
-                  endpoint: targetEndpoint,
-                  method: (event.metadata?.method as string) ?? 'GET',
-                  verificationNotes: event.message,
+                [targetFindingId]: {
+                  ...record,
+                  exploit: expMeta,
+                  finding: { ...record.finding, status: 'EXPLOIT_CONFIRMED', isConfirmed: true },
                 },
-              ];
+              };
             });
           }
           break;
 
-        // ENGINEER REMEDIATION
-        case 'ENGINEER_STARTED':
-          setFindings((prev) =>
-            prev.map((f) => (f.isConfirmed ? { ...f, status: 'REMEDIATION' } : f))
-          );
-          break;
-
+        // ENGINEER REMEDIATION PATCH
         case 'ENGINEER_PATCH_GENERATED':
-          if (event.metadata?.patchId || event.metadata?.filePath) {
-            const patchFindingId = event.metadata?.findingId as string | undefined;
-            setPatches((prev) => {
-              const patchId = (event.metadata?.patchId as string) ?? `patch_${Date.now()}`;
-              const exists = prev.some((p) => p.patchId === patchId);
-              if (exists) return prev;
-              return [
+          if (targetFindingId) {
+            const patchMeta = (event.metadata?.patch as PatchModel | undefined) ?? {
+              patchId: (event.metadata?.patchId as string) ?? `patch_${targetFindingId}`,
+              findingId: targetFindingId,
+              scanId: event.scanId,
+              filePath: (event.metadata?.filePath as string) ?? 'src/vulnerable.ts',
+              diffContent: event.message,
+              status: 'GENERATED',
+              explanation: (event.metadata?.explanation as string) ?? 'Automated defensive code patch.',
+            };
+            setFindingsById((prev) => {
+              const record = prev[targetFindingId];
+              if (!record) return prev;
+              return {
                 ...prev,
-                {
-                  patchId,
-                  findingId: patchFindingId,
-                  scanId: event.scanId,
-                  filePath: (event.metadata?.filePath as string) ?? 'src/vulnerable.ts',
-                  diffContent: event.message,
-                  status: 'GENERATED',
+                [targetFindingId]: {
+                  ...record,
+                  patch: patchMeta,
+                  finding: { ...record.finding, status: 'PATCHED' },
                 },
-              ];
+              };
             });
-            setFindings((prev) =>
-              prev.map((f) => (f.isConfirmed ? { ...f, status: 'PATCHED' } : f))
-            );
           }
           break;
 
-        // Critic Stage Machine & Final Verdict
+        // CRITIC QA STAGE MACHINE
         case 'BASELINE_CHECK_STARTED':
-          updateCriticStage('baseline', 'RUNNING', event.message);
-          break;
         case 'BASELINE_CHECK_COMPLETED':
-          updateCriticStage('baseline', 'PASSED', event.message);
-          break;
-
         case 'PATCH_APPLY_STARTED':
-          updateCriticStage('patch_apply', 'RUNNING', event.message);
-          break;
         case 'PATCH_APPLIED':
-          updateCriticStage('patch_apply', 'PASSED', event.message);
-          break;
-
         case 'BUILD_STARTED':
-          updateCriticStage('build', 'RUNNING', event.message);
-          break;
         case 'BUILD_COMPLETED':
-          updateCriticStage('build', 'PASSED', event.message);
-          break;
-
         case 'TESTS_STARTED':
-          updateCriticStage('tests', 'RUNNING', event.message);
-          break;
         case 'TESTS_COMPLETED':
-          updateCriticStage('tests', 'PASSED', event.message);
-          break;
-
         case 'EXPLOIT_RETEST_STARTED':
-          updateCriticStage('retest', 'RUNNING', event.message);
+        case 'EXPLOIT_RETEST_COMPLETED': {
+          if (targetFindingId) {
+            const keyMap: Record<string, CriticStageState['key']> = {
+              BASELINE_CHECK_STARTED: 'baseline',
+              BASELINE_CHECK_COMPLETED: 'baseline',
+              PATCH_APPLY_STARTED: 'patch_apply',
+              PATCH_APPLIED: 'patch_apply',
+              BUILD_STARTED: 'build',
+              BUILD_COMPLETED: 'build',
+              TESTS_STARTED: 'tests',
+              TESTS_COMPLETED: 'tests',
+              EXPLOIT_RETEST_STARTED: 'retest',
+              EXPLOIT_RETEST_COMPLETED: 'retest',
+            };
+            const stageKey = keyMap[event.eventType];
+            const stageStatus: CriticStageState['status'] = event.eventType.endsWith('_STARTED')
+              ? 'RUNNING'
+              : event.eventType.endsWith('_COMPLETED') || event.eventType === 'PATCH_APPLIED'
+                ? 'PASSED'
+                : 'IDLE';
+
+            setFindingsById((prev) => {
+              const record = prev[targetFindingId];
+              if (!record) return prev;
+              const nextStages = record.criticStages.map((s) =>
+                s.key === stageKey ? { ...s, status: stageStatus, message: event.message } : s
+              );
+              return {
+                ...prev,
+                [targetFindingId]: {
+                  ...record,
+                  criticStages: nextStages,
+                },
+              };
+            });
+          }
           break;
-        case 'EXPLOIT_RETEST_COMPLETED':
-          updateCriticStage('retest', 'PASSED', event.message);
-          break;
+        }
 
         case 'CRITIC_APPROVED':
-          updateCriticStage('approval', 'PASSED', event.message);
-          setFindings((prev) =>
-            prev.map((f) => (f.isConfirmed ? { ...f, status: 'CRITIC_VERIFIED' } : f))
-          );
+          if (targetFindingId) {
+            setFindingsById((prev) => {
+              const record = prev[targetFindingId];
+              if (!record) return prev;
+              const nextStages = record.criticStages.map((s) =>
+                s.key === 'approval' ? { ...s, status: 'PASSED' as const, message: event.message } : s
+              );
+              return {
+                ...prev,
+                [targetFindingId]: {
+                  ...record,
+                  criticStages: nextStages,
+                  finding: { ...record.finding, status: 'CRITIC_VERIFIED' },
+                },
+              };
+            });
+          }
           break;
 
         case 'CRITIC_REJECTED':
         case 'CRITIC_FAILED':
-          updateCriticStage('approval', 'FAILED', event.message);
+          if (targetFindingId) {
+            setFindingsById((prev) => {
+              const record = prev[targetFindingId];
+              if (!record) return prev;
+              const nextStages = record.criticStages.map((s) =>
+                s.key === 'approval' ? { ...s, status: 'FAILED' as const, message: event.message } : s
+              );
+              return {
+                ...prev,
+                [targetFindingId]: {
+                  ...record,
+                  criticStages: nextStages,
+                  finding: { ...record.finding, status: 'EXPLOIT_REJECTED' },
+                },
+              };
+            });
+          }
           break;
       }
     },
-    [provider, updateCriticStage]
+    [provider]
   );
 
   // Fetch initial REST state when active scan changes
@@ -478,11 +543,10 @@ export function useScanStore(initialScanId: string | null = null) {
       setError(null);
       try {
         const scanRes = await provider.getScan(scanId);
-
         if (scanRes.success && scanRes.data) {
           setScan(scanRes.data);
 
-          // If scan is ALREADY COMPLETED (historical view), fetch final findings and plan immediately
+          // If scan is ALREADY COMPLETED (historical view), fetch final revealed findings & targets
           if (scanRes.data.status === 'COMPLETED') {
             const [resultsRes, planRes] = await Promise.all([
               provider.getScanResults(scanId),
@@ -493,14 +557,22 @@ export function useScanStore(initialScanId: string | null = null) {
               const rawFindings = Array.isArray(resultsRes.data)
                 ? resultsRes.data
                 : resultsRes.data.findings ?? [];
-              setFindings(rawFindings);
               if (rawFindings.length > 0) {
-                setActiveFindingId(rawFindings[0].id);
-              }
-            }
+                const map: Record<string, FindingRecord> = {};
+                const planTargets = planRes.success && planRes.data ? planRes.data.targets ?? [] : [];
 
-            if (planRes.success && planRes.data) {
-              setTargets([...(planRes.data.targets ?? [])]);
+                rawFindings.forEach((f) => {
+                  const fId = f.id || f.findingId || '';
+                  const matchingTarget = planTargets.find((t) => t.findingId === fId || t.targetId === fId);
+                  map[fId] = {
+                    finding: f,
+                    target: matchingTarget,
+                    criticStages: createInitialCriticStages(),
+                  };
+                });
+                setFindingsById(map);
+                setActiveFindingId((prev) => prev ?? rawFindings[0].id);
+              }
             }
           }
         } else {
@@ -520,15 +592,10 @@ export function useScanStore(initialScanId: string | null = null) {
     if (!activeScanId) return;
 
     setAgents(INITIAL_AGENTS);
-    setCriticStages(INITIAL_CRITIC_STAGES);
+    setFindingsById({});
     setEvents([]);
     setLastSequence(0);
     setConnectionStatus('CONNECTED');
-    setFindings([]);
-    setEndpoints([]);
-    setTargets([]);
-    setExploits([]);
-    setPatches([]);
     setSandbox(null);
     setActiveFindingId(null);
 
@@ -577,14 +644,9 @@ export function useScanStore(initialScanId: string | null = null) {
     }
     if (activeScanId) {
       setAgents(INITIAL_AGENTS);
-      setCriticStages(INITIAL_CRITIC_STAGES);
+      setFindingsById({});
       setEvents([]);
       setLastSequence(0);
-      setFindings([]);
-      setEndpoints([]);
-      setTargets([]);
-      setExploits([]);
-      setPatches([]);
       setSandbox(null);
       setActiveFindingId(null);
       fetchScanData(activeScanId);
@@ -595,6 +657,11 @@ export function useScanStore(initialScanId: string | null = null) {
     if (!activeFindingId) return findings[0] ?? null;
     return findings.find((f) => f.id === activeFindingId || f.findingId === activeFindingId) ?? findings[0] ?? null;
   }, [activeFindingId, findings]);
+
+  const activeFindingCriticStages = useMemo(() => {
+    const key = activeFindingId || activeFinding?.id || 'default';
+    return criticMatrix[key] ?? INITIAL_CRITIC_STAGES;
+  }, [activeFinding, activeFindingId, criticMatrix]);
 
   const value = useMemo(
     () => ({
@@ -611,7 +678,8 @@ export function useScanStore(initialScanId: string | null = null) {
       exploits,
       patches,
       sandbox,
-      criticStages,
+      criticStages: activeFindingCriticStages,
+      criticMatrix,
       activeFindingId,
       activeFinding,
       isLoading,
@@ -636,7 +704,8 @@ export function useScanStore(initialScanId: string | null = null) {
       exploits,
       patches,
       sandbox,
-      criticStages,
+      activeFindingCriticStages,
+      criticMatrix,
       activeFindingId,
       activeFinding,
       isLoading,

@@ -120,13 +120,14 @@ export function SandboxViewport({ sandbox, endpoints }: SandboxViewportProps) {
           </div>
         ) : (
           <div className="space-y-3">
-            {endpoints.map((ep, idx) => {
+            {endpoints.map((ep) => {
               const targetPath = ep.path || ep.url || '';
               const fId = ep.findingId || 'Finding Target';
+              const epKey = ep.id || (ep.findingId ? `${ep.findingId}-${ep.method}-${targetPath}` : `${ep.method}-${targetPath}`);
               const isEvidenceDone = ep.status === 'EVIDENCE_COLLECTED' || ep.status === 'COMPLETED' || Boolean(ep.evidence);
 
               return (
-                <div key={idx} className="rounded-lg border border-zinc-800 bg-zinc-900/50 p-3 space-y-2 text-xs">
+                <div key={epKey} className="rounded-lg border border-zinc-800 bg-zinc-900/50 p-3 space-y-2 text-xs">
                   <div className="flex items-center justify-between border-b border-zinc-800/80 pb-2">
                     <div className="flex items-center gap-2">
                       <span className="font-mono font-bold text-sky-400 text-[11px]">{fId}</span>

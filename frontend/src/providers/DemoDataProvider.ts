@@ -96,9 +96,7 @@ export class DemoDataProvider implements AMASSDataProvider {
       }
 
       case 'SCANNER_COMPLETED':
-        if (this.revealedFindings.length === 0) {
-          this.revealedFindings = this.activeFixture.findings.map((f) => ({ ...f, status: 'DISCOVERED', isConfirmed: false }));
-        }
+        // Global completion event — do not bulk-hydrate findings
         break;
 
       case 'SANDBOX_PROVISIONING':
@@ -124,38 +122,52 @@ export class DemoDataProvider implements AMASSDataProvider {
 
       case 'SCOUT_ENDPOINT_DISCOVERED': {
         const epPath = (event.metadata?.endpoint || event.metadata?.targetUrl || event.metadata?.url) as string | undefined;
+        const findingId = (event.metadata?.findingId as string) || (event.metadata?.vulnerabilityId as string);
         if (epPath) {
           const method = (event.metadata?.method as string) ?? 'GET';
-          const matchFixtureEp = this.activeFixture.endpoints.find((e) => e.path === epPath && e.method === method);
+          const matchFixtureEp = this.activeFixture.endpoints.find((e) => e.findingId === findingId || (e.path === epPath && e.method === method));
           const newEp: ScoutEndpoint = matchFixtureEp ?? {
+            findingId,
             path: epPath,
             url: epPath,
             method,
             description: event.message,
           };
-          if (!this.revealedEndpoints.some((e) => e.path === newEp.path && e.method === newEp.method)) {
+          if (!this.revealedEndpoints.some((e) => (e.findingId && e.findingId === newEp.findingId) || (e.path === newEp.path && e.method === newEp.method))) {
             this.revealedEndpoints.push(newEp);
           }
         }
         break;
       }
 
-      case 'PLANNER_COMPLETED':
-        this.revealedTargets = [...this.activeFixture.targets];
+      case 'PLANNER_COMPLETED': {
+        const targetMeta = event.metadata?.target as TargetModel | undefined;
+        const metaFindingId = event.metadata?.findingId as string | undefined;
+
+        if (targetMeta && !this.revealedTargets.some((t) => t.targetId === targetMeta.targetId)) {
+          this.revealedTargets.push(targetMeta);
+        }
+
+        const targetIds = this.revealedTargets.map((t) => t.findingId || t.targetId);
+        if (metaFindingId && !targetIds.includes(metaFindingId)) {
+          targetIds.push(metaFindingId);
+        }
+
         // Mark matching findings as PLANNED
         this.revealedFindings = this.revealedFindings.map((f) => {
-          if (this.revealedTargets.some((t) => t.targetId === f.id || t.endpoint === f.endpoint)) {
-            return { ...f, status: 'PLANNED' };
+          if (targetIds.includes(f.id) || targetIds.includes(f.findingId || '')) {
+            return { ...f, status: f.status === 'DISCOVERED' ? 'PLANNED' : f.status };
           }
           return f;
         });
         break;
+      }
 
       case 'SNIPER_TARGET_SELECTED': {
-        const targetId = event.metadata?.targetId as string | undefined;
+        const targetId = (event.metadata?.findingId as string) || (event.metadata?.targetId as string);
         if (targetId) {
           this.revealedFindings = this.revealedFindings.map((f) => {
-            if (f.id === targetId || f.ruleId === targetId) {
+            if (f.id === targetId || f.findingId === targetId || f.ruleId === targetId) {
               return { ...f, status: 'VERIFYING' };
             }
             return f;
@@ -165,47 +177,74 @@ export class DemoDataProvider implements AMASSDataProvider {
       }
 
       case 'SNIPER_CONFIRMED': {
-        const targetId = (event.metadata?.targetId as string) || (event.metadata?.vulnerabilityId as string);
+        const targetId = (event.metadata?.findingId as string) || (event.metadata?.targetId as string) || (event.metadata?.vulnerabilityId as string);
         const ep = event.metadata?.endpoint as string | undefined;
 
-        // Mark finding EXPLOIT_CONFIRMED
+        // Mark matching finding EXPLOIT_CONFIRMED
         this.revealedFindings = this.revealedFindings.map((f) => {
-          if (f.id === targetId || f.ruleId === targetId || (ep && f.endpoint === ep)) {
+          if (f.id === targetId || f.findingId === targetId || f.ruleId === targetId || (ep && f.endpoint === ep)) {
             return { ...f, status: 'EXPLOIT_CONFIRMED', isConfirmed: true };
           }
           return f;
         });
 
         // Add exploit evidence
-        const matchExp = this.activeFixture.exploits.find((e) => e.targetId === targetId || e.exploitId === `exp-${targetId}`);
-        if (matchExp && !this.revealedExploits.some((e) => e.targetId === targetId)) {
+        const matchExp = (event.metadata?.exploit as ExploitEvidenceModel | undefined) ??
+          this.activeFixture.exploits.find((e) => e.findingId === targetId || e.targetId === targetId || e.exploitId === `exp-${targetId}`);
+        if (matchExp && !this.revealedExploits.some((e) => e.findingId === targetId || e.targetId === targetId)) {
           this.revealedExploits.push({ ...matchExp, confirmed: true });
         }
         break;
       }
 
-      case 'ENGINEER_STARTED':
       case 'ENGINEER_PATCH_GENERATED': {
         const patchId = event.metadata?.patchId as string | undefined;
-        const matchPatch = this.activeFixture.patches.find((p) => p.patchId === patchId) ?? this.activeFixture.patches[0];
+        const findingId = event.metadata?.findingId as string | undefined;
+
+        const matchPatch = (event.metadata?.patch as PatchModel | undefined) ??
+          this.activeFixture.patches.find((p) => p.patchId === patchId || (findingId && p.findingId === findingId));
+
         if (matchPatch && !this.revealedPatches.some((p) => p.patchId === matchPatch.patchId)) {
           this.revealedPatches.push(matchPatch);
         }
-        // Mark primary finding as REMEDIATION / PATCHED
-        this.revealedFindings = this.revealedFindings.map((f, idx) => {
-          if (idx === 0) return { ...f, status: event.eventType === 'ENGINEER_PATCH_GENERATED' ? 'PATCHED' : 'REMEDIATION' };
-          return f;
-        });
+
+        // Mark matching finding as PATCHED
+        if (findingId) {
+          this.revealedFindings = this.revealedFindings.map((f) => {
+            if (f.id === findingId || f.findingId === findingId) {
+              return { ...f, status: 'PATCHED' };
+            }
+            return f;
+          });
+        }
         break;
       }
 
-      case 'CRITIC_APPROVED':
-        this.revealedFindings = this.revealedFindings.map((f, idx) => {
-          if (idx === 0) return { ...f, status: 'CRITIC_VERIFIED' };
-          return f;
-        });
-        this.scanState = 'COMPLETED';
+      case 'CRITIC_APPROVED': {
+        const findingId = event.metadata?.findingId as string | undefined;
+        if (findingId) {
+          this.revealedFindings = this.revealedFindings.map((f) => {
+            if (f.id === findingId || f.findingId === findingId) {
+              return { ...f, status: 'CRITIC_VERIFIED' };
+            }
+            return f;
+          });
+        }
         break;
+      }
+
+      case 'CRITIC_REJECTED': {
+        const findingId = event.metadata?.findingId as string | undefined;
+        if (findingId) {
+          this.revealedFindings = this.revealedFindings.map((f) => {
+            if (f.id === findingId || f.findingId === findingId) {
+              return { ...f, status: 'EXPLOIT_REJECTED' };
+            }
+            return f;
+          });
+        }
+        break;
+      }
 
       case 'SCAN_COMPLETED':
         this.scanState = 'COMPLETED';
@@ -255,15 +294,11 @@ export class DemoDataProvider implements AMASSDataProvider {
   }
 
   async getScanResults(_scanId: string): Promise<ApiResponse<{ scanId: string; findings: FindingModel[] }>> {
-    const findingsToReturn = this.scanState === 'COMPLETED'
-      ? this.activeFixture.findings
-      : this.revealedFindings;
-
     return {
       success: true,
       data: {
         scanId: this.activeFixture.scan.scanId,
-        findings: findingsToReturn,
+        findings: this.revealedFindings,
       },
       error: null,
       timestamp: new Date().toISOString(),
@@ -271,9 +306,7 @@ export class DemoDataProvider implements AMASSDataProvider {
   }
 
   async getScanStatistics(_scanId: string): Promise<ApiResponse<ScanStatistics>> {
-    const findings = this.scanState === 'COMPLETED'
-      ? this.activeFixture.findings
-      : this.revealedFindings;
+    const findings = this.revealedFindings;
 
     const stats: ScanStatistics = {
       totalFindings: findings.length,
@@ -293,17 +326,13 @@ export class DemoDataProvider implements AMASSDataProvider {
   }
 
   async getPlanForScan(_scanId: string): Promise<ApiResponse<PlanModel>> {
-    const targetsToReturn = this.scanState === 'COMPLETED'
-      ? this.activeFixture.targets
-      : this.revealedTargets;
-
     return {
       success: true,
       data: {
         planId: `plan-${this.activeTargetId.toLowerCase()}`,
         scanId: this.activeFixture.scan.scanId,
         status: this.scanState === 'COMPLETED' ? 'COMPLETED' : 'IN_PROGRESS',
-        targets: targetsToReturn,
+        targets: this.revealedTargets,
       },
       error: null,
       timestamp: new Date().toISOString(),

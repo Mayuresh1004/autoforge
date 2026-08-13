@@ -83,11 +83,21 @@ describe('Frontend UI Components', () => {
     ];
 
     render(<PatchView patches={mockPatches} />);
-    expect(screen.getByText('src/routes/auth.ts')).toBeInTheDocument();
+    expect(screen.getAllByText('src/routes/auth.ts')[0]).toBeInTheDocument();
     expect(screen.getByText('Replaced string concatenation with parameterized query')).toBeInTheDocument();
   });
 
-  it('renders ValidationMatrix with 6 QA stages', () => {
+  it('renders ValidationMatrix with per-vulnerability QA matrix', () => {
+    const mockFindings: FindingModel[] = [
+      {
+        id: 'fnd-1',
+        title: 'Broken Access Control',
+        severity: 'CRITICAL',
+        filePath: 'src/routes/admin.ts',
+        status: 'CRITIC_VERIFIED',
+      },
+    ];
+
     const mockStages: CriticStageState[] = [
       { name: 'Baseline System Check', key: 'baseline', status: 'PASSED' },
       { name: 'Patch Application', key: 'patch_apply', status: 'PASSED' },
@@ -97,9 +107,8 @@ describe('Frontend UI Components', () => {
       { name: 'Final Security Verdict', key: 'approval', status: 'PASSED' },
     ];
 
-    render(<ValidationMatrix stages={mockStages} />);
-    expect(screen.getByText('✓ APPROVED')).toBeInTheDocument();
-    expect(screen.getByText('Baseline System Check')).toBeInTheDocument();
-    expect(screen.getByText('Final Security Verdict')).toBeInTheDocument();
+    render(<ValidationMatrix findings={mockFindings} stages={mockStages} />);
+    expect(screen.getByText('Broken Access Control')).toBeInTheDocument();
+    expect(screen.getByText('APPROVED')).toBeInTheDocument();
   });
 });

@@ -4,78 +4,163 @@ import type { CriticStageState } from '../../hooks/useScanStore';
 import type { FindingModel } from '../../types/api-types';
 
 export interface ValidationMatrixProps {
-  stages: CriticStageState[];
+  stages?: CriticStageState[];
+  criticMatrix?: Record<string, CriticStageState[]>;
+  findings?: FindingModel[];
   activeFinding?: FindingModel | null;
   activeFindingId?: string | null;
+  onSelectFindingId?: (findingId: string) => void;
 }
 
-export function ValidationMatrix({ stages, activeFinding }: ValidationMatrixProps) {
-  const isApproved = stages.find((s) => s.key === 'approval')?.status === 'PASSED';
-  const isRejected = stages.find((s) => s.key === 'approval')?.status === 'FAILED';
+export function ValidationMatrix({
+  stages = [],
+  criticMatrix = {},
+  findings = [],
+  activeFinding,
+  onSelectFindingId,
+}: ValidationMatrixProps) {
+  const activeFindingId = activeFinding?.id || activeFinding?.findingId;
+
+  // Determine list of findings to display rows for
+  const displayFindings = findings.length > 0
+    ? findings
+    : activeFinding
+      ? [activeFinding]
+      : [];
+
+  const verifiedCount = displayFindings.filter((f) => {
+    const fId = f.id || f.findingId || '';
+    const fStages = criticMatrix[fId];
+    return f.status === 'CRITIC_VERIFIED' || fStages?.find((s) => s.key === 'approval')?.status === 'PASSED';
+  }).length;
+
+  const rejectedCount = displayFindings.filter((f) => {
+    const fId = f.id || f.findingId || '';
+    const fStages = criticMatrix[fId];
+    return f.status === 'EXPLOIT_REJECTED' || fStages?.find((s) => s.key === 'approval')?.status === 'FAILED';
+  }).length;
+
+  const renderStatusPill = (status?: CriticStageState['status']) => {
+    if (status === 'PASSED') {
+      return <span className="font-bold text-emerald-400">PASS</span>;
+    }
+    if (status === 'FAILED') {
+      return <span className="font-bold text-rose-400">FAIL</span>;
+    }
+    if (status === 'RUNNING') {
+      return <span className="font-bold text-sky-400 animate-pulse">RUNNING</span>;
+    }
+    return <span className="text-zinc-600">PENDING</span>;
+  };
 
   return (
     <Card>
       <CardHeader>
         <div>
-          <CardTitle>Critic Quality Assurance & Validation</CardTitle>
-          <p className="text-[11px] text-zinc-500 mt-0.5">6-Gate Sandbox Verification Pipeline</p>
+          <CardTitle>Critic QA Matrix</CardTitle>
+          <p className="text-[11px] text-zinc-500 mt-0.5">Per-Vulnerability 6-Gate Sandbox Verification Pipeline</p>
         </div>
-        <Badge variant={isApproved ? 'success' : isRejected ? 'danger' : 'outline'}>
-          {isApproved ? '✓ APPROVED' : isRejected ? '✕ REJECTED' : 'VALIDATION IN PROGRESS'}
-        </Badge>
+        <div className="flex items-center gap-2">
+          {rejectedCount > 0 ? (
+            <Badge variant="danger">{rejectedCount} Rejected</Badge>
+          ) : verifiedCount > 0 ? (
+            <Badge variant="success">{verifiedCount} / {displayFindings.length} Approved</Badge>
+          ) : (
+            <Badge variant="outline" className="font-mono text-[10px]">VALIDATION PENDING</Badge>
+          )}
+        </div>
       </CardHeader>
 
-      {activeFinding && (
-        <div className="mx-4 mb-4 rounded-lg border border-sky-500/30 bg-sky-500/10 p-3 text-xs text-sky-300 font-mono">
-          <span className="font-semibold block mb-0.5">Validating Patch For: {activeFinding.title} ({activeFinding.cwe || activeFinding.id})</span>
-          <span className="text-[11px] opacity-80">{activeFinding.filePath}:{activeFinding.lineStart}</span>
+      {displayFindings.length === 0 ? (
+        <div className="p-8 text-center text-xs text-zinc-500 italic">
+          No Critic validation records yet. Critic agent will validate each generated patch across all 6 quality gates independently.
+        </div>
+      ) : (
+        <div className="space-y-4 px-4 pb-4">
+          <div className="overflow-x-auto">
+            <table className="w-full text-left font-mono text-xs border-collapse">
+              <thead>
+                <tr className="border-b border-zinc-800 text-[10px] text-zinc-400 uppercase tracking-wider bg-zinc-900/80">
+                  <th className="p-2.5 rounded-l">Finding</th>
+                  <th className="p-2.5 text-center">Baseline</th>
+                  <th className="p-2.5 text-center">Patch</th>
+                  <th className="p-2.5 text-center">Build</th>
+                  <th className="p-2.5 text-center">Tests</th>
+                  <th className="p-2.5 text-center">Retest</th>
+                  <th className="p-2.5 text-center rounded-r">Verdict</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-zinc-800/60">
+                {displayFindings.map((f) => {
+                  const fId = f.id || f.findingId || '';
+                  const fStages = criticMatrix[fId] ?? stages;
+                  const isSelected = activeFindingId === fId;
+
+                  const baselineStatus = fStages.find((s) => s.key === 'baseline')?.status;
+                  const patchStatus = fStages.find((s) => s.key === 'patch_apply')?.status;
+                  const buildStatus = fStages.find((s) => s.key === 'build')?.status;
+                  const testStatus = fStages.find((s) => s.key === 'tests')?.status;
+                  const retestStatus = fStages.find((s) => s.key === 'retest')?.status;
+                  const verdictStatus = fStages.find((s) => s.key === 'approval')?.status;
+
+                  const shortId = (f.cwe || f.ruleId || fId).replace('OWASP-', '');
+
+                  return (
+                    <tr
+                      key={fId}
+                      onClick={() => onSelectFindingId?.(fId)}
+                      className={`cursor-pointer transition-colors ${
+                        isSelected
+                          ? 'bg-sky-500/10 border-l-2 border-sky-500'
+                          : 'hover:bg-zinc-900/60'
+                      }`}
+                    >
+                      <td className="p-2.5">
+                        <div className="font-semibold text-zinc-200 truncate max-w-[200px]">
+                          {f.title || f.id}
+                        </div>
+                        <div className="text-[10px] text-zinc-500">
+                          {shortId} · {f.filePath}
+                        </div>
+                      </td>
+
+                      <td className="p-2.5 text-center font-mono text-[11px]">
+                        {renderStatusPill(baselineStatus)}
+                      </td>
+
+                      <td className="p-2.5 text-center font-mono text-[11px]">
+                        {renderStatusPill(patchStatus)}
+                      </td>
+
+                      <td className="p-2.5 text-center font-mono text-[11px]">
+                        {renderStatusPill(buildStatus)}
+                      </td>
+
+                      <td className="p-2.5 text-center font-mono text-[11px]">
+                        {renderStatusPill(testStatus)}
+                      </td>
+
+                      <td className="p-2.5 text-center font-mono text-[11px]">
+                        {renderStatusPill(retestStatus)}
+                      </td>
+
+                      <td className="p-2.5 text-center font-mono text-[11px]">
+                        {verdictStatus === 'PASSED' || f.status === 'CRITIC_VERIFIED' ? (
+                          <Badge variant="success" size="sm">APPROVED</Badge>
+                        ) : verdictStatus === 'FAILED' || f.status === 'EXPLOIT_REJECTED' ? (
+                          <Badge variant="danger" size="sm">REJECTED</Badge>
+                        ) : (
+                          <span className="text-zinc-500 text-[10px]">PENDING</span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
-
-      <div className="space-y-2.5 px-4 pb-4">
-        {stages.map((stage) => {
-          const isPassed = stage.status === 'PASSED';
-          const isRunning = stage.status === 'RUNNING';
-          const isFailed = stage.status === 'FAILED';
-
-          return (
-            <div
-              key={stage.key}
-              className={`flex items-center justify-between rounded-lg border p-3 text-xs transition-colors ${
-                isPassed
-                  ? 'border-emerald-500/30 bg-emerald-500/5 text-emerald-300'
-                  : isRunning
-                    ? 'border-sky-500/40 bg-sky-500/10 text-sky-300'
-                    : isFailed
-                      ? 'border-rose-500/30 bg-rose-500/10 text-rose-300'
-                      : 'border-zinc-800 bg-zinc-900/40 text-zinc-500'
-              }`}
-            >
-              <div className="flex items-center gap-3">
-                <span className="flex h-5 w-5 items-center justify-center rounded-full border text-[11px] font-bold">
-                  {isPassed ? (
-                    <span className="text-emerald-400">✓</span>
-                  ) : isRunning ? (
-                    <span className="text-sky-400 animate-spin">◌</span>
-                  ) : isFailed ? (
-                    <span className="text-rose-400">✕</span>
-                  ) : (
-                    <span className="text-zinc-600">•</span>
-                  )}
-                </span>
-                <div>
-                  <span className="font-medium text-zinc-200 block">{stage.name}</span>
-                  {stage.message && <span className="text-[11px] text-zinc-400 font-mono block">{stage.message}</span>}
-                </div>
-              </div>
-
-              <span className="font-mono text-[10px] uppercase font-semibold">
-                {stage.status}
-              </span>
-            </div>
-          );
-        })}
-      </div>
     </Card>
   );
 }
