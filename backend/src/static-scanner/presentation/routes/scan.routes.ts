@@ -51,6 +51,7 @@ const gateway: StaticScanGateway =
           repository,
           severityThreshold,
           events: applicationInfrastructure.events.publisher,
+          pipelineRunner: applicationInfrastructure.pipeline,
         }),
         scanService
       );

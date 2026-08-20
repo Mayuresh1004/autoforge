@@ -7,13 +7,14 @@ import type { SniperService } from '../../domain/ports/sniper-service';
 import { PrismaSniperRepository } from '../repository/prisma-sniper-repository';
 import { DefaultVerifierRegistry } from '../verifiers/verifier-registry';
 import { SqlInjectionVerifier } from '../verifiers/sql-injection/sql-injection-verifier';
+import { NoSqlInjectionVerifier } from '../verifiers/nosql-injection/nosql-injection-verifier';
 
 export interface SniperInfrastructureOptions {
   /** The application composition root's SINGLE shared manager — required so
    *  the Sniper can validate sandboxes created through the runtime surface. */
   readonly manager: SandboxManager;
   readonly repository?: SniperRepository;
-  /** Injectable verifier set (defaults: SQL injection only this phase). */
+  /** Injectable verifier set (defaults: SQL + NoSQL injection). */
   readonly verifiers?: DefaultVerifierRegistry;
   /** Optional observability publisher (default: no events emitted). */
   readonly events?: AmassEventPublisher;
@@ -21,13 +22,15 @@ export interface SniperInfrastructureOptions {
 
 /**
  * Composition root for the Sniper Agent. The only component that knows which
- * verifiers exist (SQL injection for this phase) and which sandbox manager to
+ * verifiers exist (SQL + NoSQL injection) and which sandbox manager to
  * use. Everything downstream talks to ports. Never builds its own manager.
  */
 export function createSniperInfrastructure(
   options: SniperInfrastructureOptions
 ): { readonly service: SniperService } {
-  const verifiers = options.verifiers ?? new DefaultVerifierRegistry([new SqlInjectionVerifier()]);
+  const verifiers =
+    options.verifiers ??
+    new DefaultVerifierRegistry([new SqlInjectionVerifier(), new NoSqlInjectionVerifier()]);
   const deps: SniperServiceDeps = {
     repository: options.repository ?? new PrismaSniperRepository(),
     manager: options.manager,

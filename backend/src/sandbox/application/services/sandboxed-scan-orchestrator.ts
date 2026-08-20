@@ -31,6 +31,8 @@ export interface SandboxedScanOrchestratorOptions {
   readonly cloneTimeoutMs?: number;
   /** Phase 9 observability publisher (default: silent). */
   readonly events?: AmassEventPublisher;
+  /** Autonomous pipeline runner for downstream stages. */
+  readonly pipelineRunner?: { runPipeline(options: { scanId: string; repositoryUrl: string }): Promise<void> };
 }
 
 /**
@@ -60,6 +62,7 @@ export class SandboxedScanOrchestrator {
   private readonly createTimeoutMs: number;
   private readonly cloneTimeoutMs: number;
   private readonly events: AmassEventPublisher | undefined;
+  private readonly pipelineRunner?: { runPipeline(options: { scanId: string; repositoryUrl: string }): Promise<void> };
 
   constructor(options: SandboxedScanOrchestratorOptions) {
     this.manager = options.manager;
@@ -73,6 +76,7 @@ export class SandboxedScanOrchestrator {
     this.createTimeoutMs = options.createTimeoutMs ?? 120_000;
     this.cloneTimeoutMs = options.cloneTimeoutMs ?? 60_000;
     this.events = options.events;
+    this.pipelineRunner = options.pipelineRunner;
   }
 
   async runScan(repositoryUrl: string): Promise<ScanResult> {
@@ -146,7 +150,12 @@ export class SandboxedScanOrchestrator {
       );
 
       this.emit(store.id, { eventType: 'SCANNER_COMPLETED', agentType: 'SCANNER', phase: 'scanning', status: 'COMPLETED', message: `scanners finished with ${result.findings.length} findings`, metadata: { counts: { findings: result.findings.length, scanners: result.scannerStatistics.length } } });
-      this.emit(store.id, { eventType: 'SCAN_COMPLETED', agentType: 'SYSTEM', phase: 'scan', status: 'COMPLETED', message: `scan ${store.id} completed`, metadata: { counts: { findings: result.findings.length } } });
+
+      if (this.pipelineRunner) {
+        await this.pipelineRunner.runPipeline({ scanId: store.id, repositoryUrl });
+      } else {
+        this.emit(store.id, { eventType: 'SCAN_COMPLETED', agentType: 'SYSTEM', phase: 'scan', status: 'COMPLETED', message: `scan ${store.id} completed`, metadata: { counts: { findings: result.findings.length } } });
+      }
 
       logger.info({ scanId, status: result.status, repositoryUrl }, 'sandboxed_scan:complete');
       return result;

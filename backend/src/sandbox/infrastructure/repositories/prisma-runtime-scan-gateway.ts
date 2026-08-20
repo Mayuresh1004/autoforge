@@ -38,9 +38,9 @@ export class PrismaRuntimeScanGateway implements RuntimeScanGateway {
 }
 
 function sameUrl(left: string, right: string): boolean {
-  return stripTrailingSlash(left) === stripTrailingSlash(right);
+  return normalizeUrl(left) === normalizeUrl(right);
 }
 
-function stripTrailingSlash(value: string): string {
-  return value.replace(/\/+$/, '');
+function normalizeUrl(value: string): string {
+  return value.trim().toLowerCase().replace(/\.git$/, '').replace(/\/+$/, '');
 }

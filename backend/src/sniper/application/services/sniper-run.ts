@@ -428,7 +428,9 @@ function bestFindingFor(
   let best: CorrelatedFinding | null = null;
   for (const f of findings) {
     const resolved = f.vulnType ? resolveVulnerabilityType(f.vulnType) : null;
-    const cweMatches = /89/.test(f.cwe ?? '');
+    const cweMatches =
+      (type === 'SQL_INJECTION' && /89/.test(f.cwe ?? '')) ||
+      (type === 'NOSQL_INJECTION' && /943/.test(f.cwe ?? ''));
     if (resolved === type || cweMatches) {
       if (!best || f.confidence > best.confidence) best = f;
     }

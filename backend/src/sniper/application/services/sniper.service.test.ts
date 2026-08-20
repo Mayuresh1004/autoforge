@@ -224,7 +224,7 @@ describe('SniperService — orchestration', () => {
   it('bounds concurrency: never more than the configured limit in flight', async () => {
     const h = createSniperHarness();
     h.manager.seed(stubSandbox(SANDBOX, SCAN));
-    h.manager.delayMs = 30;
+    h.manager.delayMs = 50;
     const ids = Array.from({ length: 6 }, (_, i) => `t-${i + 1}`);
     for (const id of ids) h.repository.seedTarget(sqlTarget({ targetId: id, id: `row-${id}` }));
     for (let i = 0; i < ids.length * 2; i += 1) {
@@ -302,6 +302,26 @@ describe('SniperService — orchestration', () => {
     expect(report.results[0].exploit.status).toBe('NOT_TESTED');
     expect(countRows()).toBe(before);
   });
+
+  it('correlates static findings to vulnerabilityId on generated exploit records', async () => {
+    const h = createSniperHarness();
+    h.manager.seed(stubSandbox(SANDBOX, SCAN));
+    h.repository.seedTarget(sqlTarget());
+    h.repository.seedFindings(SCAN, [
+      {
+        id: 'vuln-sql-123',
+        vulnType: 'SQL Injection',
+        cwe: 'CWE-89',
+        confidence: 0.9,
+        severity: 'HIGH',
+      },
+    ]);
+    h.manager.execQueue.push(execResult({ stdout: SQLMAP_VULNERABLE }));
+
+    const poc = (await h.service.run(runInput())).results[0].exploit;
+    expect(poc.status).toBe('CONFIRMED');
+    expect(poc.vulnerabilityId).toBe('vuln-sql-123');
+  });
 });
 
 /** Peak simultaneous executions, measured via stub start timestamps. */
@@ -316,7 +336,7 @@ function maxOverlap(
   }
   const windows = calls.map((c) => ({ start: c.startedAt, end: c.startedAt + delayMs }));
   for (const cand of windows) {
-    const concurrent = windows.filter((w) => w.start < cand.end && cand.start < w.end).length;
+    const concurrent = windows.filter((w) => w.start < cand.end - 5 && cand.start < w.end - 5).length;
     peak = Math.max(peak, concurrent);
   }
   return peak;

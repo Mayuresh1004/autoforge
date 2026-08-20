@@ -42,18 +42,20 @@ export class ScoutEndpointDiscoverer implements EndpointDiscoverer {
 
     // 1. Crawled pages <- GET endpoints.
     for (const page of input.pages) {
-      this.add(endpoints, {
-        url: page.url,
-        method: 'GET',
-        parameters: [],
-        authentication: page.statusCode === 401 || page.statusCode === 403,
-        source: 'crawler',
-        statusCode: page.statusCode,
-      });
+      if (isSameOrigin(page.url, input.baseUrl)) {
+        this.add(endpoints, {
+          url: page.url,
+          method: 'GET',
+          parameters: [],
+          authentication: page.statusCode === 401 || page.statusCode === 403,
+          source: 'crawler',
+          statusCode: page.statusCode,
+        });
+      }
 
       for (const href of extractHrefs(page.html)) {
         const url = resolveHref(href, page.url);
-        if (!url) continue;
+        if (!url || !isSameOrigin(url, input.baseUrl)) continue;
         this.add(endpoints, {
           url,
           method: 'GET',
@@ -68,6 +70,7 @@ export class ScoutEndpointDiscoverer implements EndpointDiscoverer {
       for (const form of extractForms(page.html)) {
         const targetUrl = form.action ? resolveHref(form.action, page.url) : null;
         const url = targetUrl ?? page.url;
+        if (!isSameOrigin(url, input.baseUrl)) continue;
         const signals = classifyEndpoint(url, form.method, page.statusCode);
         forms.push({
           url: targetUrl === null ? `${form.action || page.url}` : url,
@@ -203,6 +206,16 @@ export class ScoutEndpointDiscoverer implements EndpointDiscoverer {
 // ---------------------------------------------------------------------------
 // Pure helpers
 // ---------------------------------------------------------------------------
+
+function isSameOrigin(urlStr: string, baseUrlStr: string): boolean {
+  try {
+    const url = new URL(urlStr);
+    const base = new URL(baseUrlStr);
+    return url.origin === base.origin;
+  } catch {
+    return false;
+  }
+}
 
 function resolveHref(href: string, base: string): string | null {
   try {

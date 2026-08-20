@@ -36,14 +36,28 @@ export class PrismaScanRepository implements ScanRepository {
   }
 
   async createScan(input: CreateScanInput): Promise<StoredScan> {
+    const repo = await this.upsertRepository({
+      url: input.repositoryUrl,
+      name: input.name,
+      branch: 'main',
+    }).catch(() => null);
+
     const row = await prisma.scan.create({
       data: { name: input.name, status: 'PENDING' },
     });
-    return toStoredScan(row);
+
+    if (repo) {
+      await this.linkScanRepository(row.id, repo.id).catch(() => undefined);
+    }
+    return toStoredScan(row, repo ?? undefined);
   }
 
   async linkScanRepository(scanId: string, repositoryId: string): Promise<void> {
-    await prisma.scanRepository.create({ data: { scanId, repositoryId } });
+    await prisma.scanRepository.upsert({
+      where: { scanId_repositoryId: { scanId, repositoryId } },
+      update: {},
+      create: { scanId, repositoryId },
+    });
   }
 
   async markScanRunning(scanId: string, startedAt: Date): Promise<void> {

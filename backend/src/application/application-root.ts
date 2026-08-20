@@ -53,6 +53,12 @@ import { embeddingConfig, knowledgeConfig } from '../config';
 import type { EventBus, AmassEventPublisher } from '../observability/domain/ports/event-bus';
 import { InMemoryEventBus } from '../observability/application/in-memory-event-bus';
 import { eventsConfig } from '../config';
+import type { ScoutService } from '../scout/domain/ports/scout-service';
+import { createScoutService } from '../scout/infrastructure/factory/scout-factory';
+import type { PlannerService } from '../planner/domain/ports/planner';
+import { createPlannerService } from '../planner/infrastructure/factory/plan-factory';
+import { PrismaPlanRepository } from '../planner/infrastructure/repository/prisma-plan-repository';
+import { AutonomousPipelineService } from './services/autonomous-pipeline.service';
 
 export interface ApplicationRootOptions {
   /** Shared Prisma client (injected by the bootstrap module). */
@@ -84,9 +90,12 @@ export interface ApplicationRootOptions {
 export interface ApplicationInfrastructure {
   readonly manager: SandboxManager;
   readonly runtime: RuntimeSandboxInfrastructure;
+  readonly scout: ScoutService;
+  readonly planner: PlannerService;
   readonly sniper: { readonly service: SniperService };
   readonly engineer: { readonly engineer: EngineerService };
   readonly critic: CriticInfrastructure;
+  readonly pipeline: AutonomousPipelineService;
   readonly rag: RagService;
   readonly registry: PromptRegistry;
   readonly llm: LLMProvider | null;
@@ -188,5 +197,19 @@ export function createApplicationInfrastructure(
     events: publisher,
   });
 
-  return { manager, runtime, sniper, engineer, critic, rag, registry, llm, executions, events: { bus, publisher } };
+  const scout = createScoutService({ events: publisher });
+  const planner = createPlannerService(new PrismaPlanRepository(), { events: publisher });
+  const pipeline = new AutonomousPipelineService({
+    manager,
+    runtime: runtime.service,
+    scout,
+    planner,
+    sniper: sniper.service,
+    engineer: engineer.engineer,
+    critic: critic.service,
+    events: publisher,
+    prisma: db,
+  });
+
+  return { manager, runtime, scout, planner, sniper, engineer, critic, pipeline, rag, registry, llm, executions, events: { bus, publisher } };
 }

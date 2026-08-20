@@ -50,11 +50,11 @@ export class PrismaSniperRepository implements SniperRepository {
   async loadFindings(scanId: string): Promise<readonly CorrelatedFinding[]> {
     const rows = await prisma.vulnerability.findMany({
       where: { scanId },
-      select: { id: true, vulnType: true, cweId: true, confidence: true, severity: true },
+      select: { id: true, vulnType: true, cweId: true, title: true, confidence: true, severity: true },
     });
     return rows.map((f) => ({
       id: f.id,
-      vulnType: f.vulnType ?? null,
+      vulnType: f.vulnType ?? f.title ?? null,
       cwe: f.cweId ?? null,
       confidence: f.confidence ?? 0,
       severity: f.severity,

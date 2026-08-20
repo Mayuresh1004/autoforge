@@ -70,6 +70,33 @@ describe('ScoutEndpointDiscoverer (live server)', () => {
     expect(urls.some((u) => u.endsWith('/health'))).toBe(false);
   });
 
+  it('rejects external URLs (e.g. npm-audit references) and accepts same-origin endpoints', async () => {
+    const pages = [
+      {
+        url: origin + '/sample',
+        statusCode: 200,
+        headers: {},
+        html: `
+          <a href="${origin}/internal-link">Internal</a>
+          <a href="https://docs.npmjs.com/cli/v6/commands/npm-audit">External NPM Audit</a>
+          <a href="https://www.owasp.org/index.php/Top_10">External OWASP</a>
+        `,
+      },
+    ];
+    const result = await discoverer.discover({
+      baseUrl: origin,
+      pages,
+      robots: { userAgents: [], allowed: [], disallowed: [], sitemaps: [] },
+      options: { timeoutMs: 1000, probeCommonPaths: false },
+    });
+    const urls = result.endpoints.map((e) => e.url);
+
+    expect(urls).toContain(origin + '/sample');
+    expect(urls).toContain(origin + '/internal-link');
+    expect(urls.some((u) => u.includes('docs.npmjs.com'))).toBe(false);
+    expect(urls.some((u) => u.includes('owasp.org'))).toBe(false);
+  });
+
   it('never throws on unreachable targets', async () => {
     const result = await discoverer.discover({
       baseUrl: 'http://127.0.0.1:1',
