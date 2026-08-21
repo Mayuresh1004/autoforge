@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { resolveRuntimeConfig } from './runtime-config-resolver';
+import { resolveRuntimeConfig, parseExposePort } from './runtime-config-resolver';
 import { UnsupportedRuntimeError } from '../../domain/errors/runtime-sandbox.errors';
 
 async function tempRepo(files: Readonly<Record<string, string>>): Promise<string> {
@@ -15,12 +15,20 @@ async function tempRepo(files: Readonly<Record<string, string>>): Promise<string
 }
 
 describe('resolveRuntimeConfig', () => {
-  it('Mode 1: uses the repository-provided Dockerfile', async () => {
-    const dir = await tempRepo({ Dockerfile: 'FROM node:20-alpine\nCMD ["node", "index.js"]\n', 'app.js': 'console.log(1)' });
+  it('Mode 1: uses the repository-provided Dockerfile and detects EXPOSE port', async () => {
+    const dir = await tempRepo({ Dockerfile: 'FROM node:24\nEXPOSE 3000\nCMD ["node", "index.js"]\n', 'app.js': 'console.log(1)' });
     const { config } = await resolveRuntimeConfig(dir);
     expect(config.strategy).toBe('DOCKERFILE');
+    expect(config.port).toBe(3000);
     expect(config.dockerfile?.path).toBe('Dockerfile');
     expect(config.generatedDockerfile).toBeUndefined();
+  });
+
+  it('parseExposePort: extracts last EXPOSE instruction correctly', () => {
+    expect(parseExposePort('FROM node:20\nEXPOSE 8080\n')).toBe(8080);
+    expect(parseExposePort('FROM node:20\nEXPOSE 3000/tcp\n')).toBe(3000);
+    expect(parseExposePort('FROM node:20\nEXPOSE 80\nFROM distroless\nEXPOSE 3000\n')).toBe(3000);
+    expect(parseExposePort('FROM node:20\n')).toBeNull();
   });
 
   it('Mode 1: an empty Dockerfile is rejected as unsupported', async () => {
@@ -29,8 +37,6 @@ describe('resolveRuntimeConfig', () => {
   });
 
   it('Mode 1 without a CMD: start command is derived from the repo stack (npm start)', async () => {
-    // NodeGoat-shaped: Dockerfile ships no CMD; the image default CMD would be
-    // the node REPL (exits immediately) — the resolver must derive `npm start`.
     const dir = await tempRepo({
       Dockerfile: 'FROM node:20-alpine\nWORKDIR /app\nCOPY . .\n',
       'package.json': JSON.stringify({ scripts: { start: 'node server.js' } }),
@@ -53,7 +59,7 @@ describe('resolveRuntimeConfig', () => {
 
   it('Mode 1 with a declared CMD keeps image-CMD behavior (command [])', async () => {
     const dir = await tempRepo({
-      Dockerfile: 'FROM node:20-alpine\nCMD [\"node\", \"index.js\"]\n',
+      Dockerfile: 'FROM node:20-alpine\nCMD ["node", "index.js"]\n',
       'package.json': JSON.stringify({ scripts: { start: 'node other.js' } }),
     });
     const { config } = await resolveRuntimeConfig(dir);
@@ -86,15 +92,82 @@ describe('resolveRuntimeConfig', () => {
     expect(config.strategy).toBe('PYTHON');
   });
 
-  it('Mode 2 node: package.json with start script', async () => {
+  it('Mode 2 node: simple npm repository', async () => {
     const dir = await tempRepo({ 'package.json': JSON.stringify({ scripts: { start: 'node index.js' } }) });
     const { config, generatedDockerfile } = await resolveRuntimeConfig(dir);
     expect(config.strategy).toBe('NODE');
     expect(config.port).toBe(3000);
-    expect(generatedDockerfile).toContain('npm install --omit=dev');
+    expect(generatedDockerfile).toContain('FROM node:20-alpine');
+    expect(generatedDockerfile).toContain('ENV HOST=0.0.0.0');
+    expect(generatedDockerfile).toContain('COPY . .');
+    expect(generatedDockerfile).toContain('npm install --no-audit --no-fund');
+    expect(generatedDockerfile).toContain('CMD ["npm", "start"]');
   });
 
-  it('node without start script → unsupported', async () => {
+  it('Mode 2 node: pnpm repository with pnpm-lock.yaml', async () => {
+    const dir = await tempRepo({
+      'pnpm-lock.yaml': 'lockfileVersion: 5.4\n',
+      'package.json': JSON.stringify({ scripts: { start: 'node index.js' } }),
+    });
+    const { config, generatedDockerfile } = await resolveRuntimeConfig(dir);
+    expect(config.strategy).toBe('NODE');
+    expect(generatedDockerfile).toContain('pnpm install');
+    expect(generatedDockerfile).toContain('CMD ["pnpm", "start"]');
+  });
+
+  it('Mode 2 node: yarn repository with yarn.lock', async () => {
+    const dir = await tempRepo({
+      'yarn.lock': '# yarn lockfile v1\n',
+      'package.json': JSON.stringify({ scripts: { start: 'node index.js' } }),
+    });
+    const { config, generatedDockerfile } = await resolveRuntimeConfig(dir);
+    expect(config.strategy).toBe('NODE');
+    expect(generatedDockerfile).toContain('yarn install');
+    expect(generatedDockerfile).toContain('CMD ["yarn", "start"]');
+  });
+
+  it('Mode 2 node: nested frontend/backend Node repository', async () => {
+    const dir = await tempRepo({
+      'frontend/package.json': JSON.stringify({ scripts: { dev: 'vite' } }),
+      'backend/package.json': JSON.stringify({ scripts: { start: 'node server.js' } }),
+    });
+    const { config, generatedDockerfile } = await resolveRuntimeConfig(dir);
+    expect(config.strategy).toBe('NODE');
+    expect(generatedDockerfile).toContain('RUN cd backend && npm install');
+    expect(generatedDockerfile).toContain('CMD ["npm", "start", "--prefix", "backend"]');
+  });
+
+  it('Mode 2 node: Node repository with engines.node "22 - 26"', async () => {
+    const dir = await tempRepo({
+      'package.json': JSON.stringify({ engines: { node: '22 - 26' }, scripts: { start: 'node index.js' } }),
+    });
+    const { config, generatedDockerfile } = await resolveRuntimeConfig(dir);
+    expect(config.strategy).toBe('NODE');
+    expect(generatedDockerfile).toContain('FROM node:22-alpine');
+  });
+
+  it('Mode 2 node: repository requiring npm run build', async () => {
+    const dir = await tempRepo({
+      'package.json': JSON.stringify({ scripts: { build: 'tsc', start: 'node build/app.js' } }),
+    });
+    const { config, generatedDockerfile } = await resolveRuntimeConfig(dir);
+    expect(config.strategy).toBe('NODE');
+    expect(generatedDockerfile).toContain('RUN npm run build');
+    expect(generatedDockerfile).toContain('CMD ["npm", "start"]');
+  });
+
+  it('Mode 2 node: repository whose start script uses PORT=8080', async () => {
+    const dir = await tempRepo({
+      'package.json': JSON.stringify({ scripts: { start: 'node server.js --port 8080' } }),
+    });
+    const { config, generatedDockerfile } = await resolveRuntimeConfig(dir);
+    expect(config.strategy).toBe('NODE');
+    expect(config.port).toBe(8080);
+    expect(generatedDockerfile).toContain('ENV PORT=8080');
+    expect(generatedDockerfile).toContain('EXPOSE 8080');
+  });
+
+  it('node without start/serve/dev script → unsupported', async () => {
     const dir = await tempRepo({ 'package.json': JSON.stringify({ name: 'x' }) });
     await expect(resolveRuntimeConfig(dir)).rejects.toBeInstanceOf(UnsupportedRuntimeError);
   });
@@ -126,5 +199,28 @@ describe('resolveRuntimeConfig', () => {
     expect(generatedDockerfile).toContain('requirements.txt');
     expect(generatedDockerfile).toContain('PYTHONPATH=');
     expect(generatedDockerfile).toContain('backend/app/main.py');
+  });
+
+  it('Mode 2 node: generic Next.js + TypeScript-config repository (next.config.ts) installs devDependencies before building', async () => {
+    const dir = await tempRepo({
+      'next.config.ts': 'import type { NextConfig } from "next"; const config: NextConfig = {}; export default config;',
+      'tsconfig.json': '{\n  "compilerOptions": { "module": "esnext" }\n}',
+      'package.json': JSON.stringify({
+        scripts: { build: 'next build', start: 'next start' },
+        dependencies: { next: '^14.0.0', react: '^18.0.0' },
+        devDependencies: { typescript: '^5.0.0', '@types/node': '^20.0.0' },
+      }),
+    });
+    const { config, generatedDockerfile } = await resolveRuntimeConfig(dir);
+    expect(config.strategy).toBe('NODE');
+    expect(generatedDockerfile).toBeDefined();
+
+    const installIdx = generatedDockerfile!.indexOf('npm install');
+    const buildIdx = generatedDockerfile!.indexOf('npm run build');
+    const nodeEnvIdx = generatedDockerfile!.indexOf('ENV NODE_ENV=production');
+
+    expect(installIdx).toBeGreaterThan(-1);
+    expect(buildIdx).toBeGreaterThan(installIdx);
+    expect(nodeEnvIdx).toBeGreaterThan(buildIdx);
   });
 });

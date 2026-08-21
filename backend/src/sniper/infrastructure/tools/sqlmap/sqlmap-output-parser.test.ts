@@ -52,4 +52,21 @@ describe('parseSqlMapOutput', () => {
     expect(out.vulnerable).toBe(true);
     expect(out.method).toBe('POST');
     expect(out.dbms).toBe('mariadb');
-  });});
+  });
+
+  it('parses HTTP 401/403 and login redirects as authRequired', () => {
+    const out401 = parseSqlMapOutput('[CRITICAL] http error code 401 (Unauthorized)', '');
+    expect(out401.authRequired).toBe(true);
+    expect(out401.toolError).toBe(false);
+    expect(out401.noInjection).toBe(false);
+
+    const out403 = parseSqlMapOutput('[WARNING] HTTP error code 403 (Forbidden)', '');
+    expect(out403.authRequired).toBe(true);
+    expect(out403.toolError).toBe(false);
+
+    const outRedirect = parseSqlMapOutput("[WARNING] got a 302 redirect to 'http://127.0.0.1:8080/login'", '');
+    expect(outRedirect.authRequired).toBe(true);
+    expect(outRedirect.toolError).toBe(false);
+    expect(outRedirect.noInjection).toBe(false);
+  });
+});

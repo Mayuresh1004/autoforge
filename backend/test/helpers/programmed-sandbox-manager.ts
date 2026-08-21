@@ -124,6 +124,22 @@ export class ProgrammedSandboxManager implements SandboxManager {
     }
     return this.networkProbeResult;
   }
+
+  async executeToolInNetwork(request: { networkId: string; argv: readonly string[]; timeoutMs: number; envAllowlist?: readonly string[]; envOverrides?: Readonly<Record<string, string>> }): Promise<ExecResult> {
+    let targetSandboxId = 'network_tool';
+    for (const sb of this.sandboxes.values()) {
+      if (sb.networkId === request.networkId) {
+        targetSandboxId = sb.id;
+        break;
+      }
+    }
+    return this.execute(targetSandboxId, {
+      argv: request.argv,
+      timeoutMs: request.timeoutMs,
+      envAllowlist: request.envAllowlist,
+      envOverrides: request.envOverrides,
+    });
+  }
 }
 
 export type { SandboxStatus, SandboxPatch };

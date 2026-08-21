@@ -278,14 +278,23 @@ export class SniperTargetRunner {
           message: `exploit confirmed for target "${targetId}"`,
           metadata: { vulnerabilityId: poc.vulnerabilityId ?? undefined, targetId, endpoint: resolvedUrl, check: type, result: final.outcome.status, counts: { attempts: final.attempts } },
         });
+      } else if (final.outcome.status === 'NOT_TESTED') {
+        this.emit(input.scanId, {
+          eventType: 'SNIPER_NOT_TESTED',
+          agentType: 'SNIPER',
+          phase: 'verification',
+          status: 'NOT_TESTED',
+          message: `target "${targetId}" not tested (${final.outcome.reason ?? 'unsupported candidate'})`,
+          metadata: { vulnerabilityId: poc.vulnerabilityId ?? undefined, targetId, endpoint: resolvedUrl, check: type, result: final.outcome.status, reason: final.outcome.reason, counts: { attempts: final.attempts } },
+        });
       } else {
         this.emit(input.scanId, {
           eventType: 'SNIPER_REJECTED',
           agentType: 'SNIPER',
           phase: 'verification',
-          status: 'REJECTED',
+          status: final.outcome.status,
           message: `target "${targetId}" not exploited (${final.outcome.reason ?? 'no confirmed finding'})`,
-          metadata: { vulnerabilityId: poc.vulnerabilityId ?? undefined, targetId, endpoint: resolvedUrl, check: type, result: final.outcome.status, counts: { attempts: final.attempts } },
+          metadata: { vulnerabilityId: poc.vulnerabilityId ?? undefined, targetId, endpoint: resolvedUrl, check: type, result: final.outcome.status, reason: final.outcome.reason, counts: { attempts: final.attempts } },
         });
       }
 
@@ -395,13 +404,14 @@ export class SniperTargetRunner {
           durationMs: 0,
         });
 
+    const isNotTested = status === 'NOT_TESTED';
     this.emit(input.scanId, {
-      eventType: 'SNIPER_REJECTED',
+      eventType: isNotTested ? 'SNIPER_NOT_TESTED' : 'SNIPER_REJECTED',
       agentType: 'SNIPER',
       phase: 'verification',
-      status: 'REJECTED',
-      message: `target "${targetId}" refused (${reason})`,
-      metadata: { vulnerabilityId: vulnId ?? undefined, targetId, endpoint: targetId, check: typeLabel, result: status, reason },
+      status: isNotTested ? 'NOT_TESTED' : (status as string),
+      message: `target "${targetId}" ${isNotTested ? 'not tested' : 'refused'} (${reason})`,
+      metadata: { vulnerabilityId: vulnId ?? undefined, targetId, endpoint: planned?.endpoint ?? targetId, check: typeLabel, result: status, reason },
     });
 
     return { targetId, exploit: poc };

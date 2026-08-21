@@ -48,6 +48,8 @@ export interface PlannedTarget {
   readonly breakdown: readonly ScoreFactor[];
   /** Structured hints guiding exploit verifiers (parameter names, upload fields, locations, auth context). */
   readonly verificationHints?: TargetVerificationHints;
+  readonly verificationStatus?: string;
+  readonly verificationReason?: string;
 }
 
 export interface AttackPlanSummary {

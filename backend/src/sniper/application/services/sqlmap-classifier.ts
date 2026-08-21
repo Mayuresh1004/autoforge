@@ -50,6 +50,16 @@ export function classifySqlMap(input: ClassifySqlMapInput): SqlMapClassification
     };
   }
 
+  if (parsed.authRequired) {
+    return {
+      status: 'NOT_TESTED',
+      reason:
+        'target endpoint returned an authentication error or login redirect (HTTP 401/403/login redirect); authentication is required but valid credentials were not provided',
+      retryable: false,
+      signals: baseSignals(input, false),
+    };
+  }
+
   // Connection-level problems are INCONCLUSIVE, not tool failures — the
   // endpoint exists but could not be reached; transient retry is useful.
   if (parsed.connectionError) {

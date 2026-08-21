@@ -97,4 +97,19 @@ describe('SqlInjectionVerifier', () => {
     const out = await new SqlInjectionVerifier({ summarizeBytes: 512 }).verify(target(), ctx(runtime));
     expect(out.toolSummary).not.toContain('topsecret');
     expect(out.toolSummary.length).toBeLessThanOrEqual(512);
-  });});
+  });
+
+  it('maps HTTP 401/403 or login redirect outputs to NOT_TESTED with an explicit auth reason', async () => {
+    const runtime = new FakeToolRuntime();
+    runtime.script(
+      execResult({
+        stdout: "[WARNING] got a 302 redirect to 'http://app:3000/login'\n[CRITICAL] all tested parameters do not appear to be injectable",
+        exitCode: 0,
+      })
+    );
+    const out = await new SqlInjectionVerifier().verify(target(), ctx(runtime));
+    expect(out.status).toBe('NOT_TESTED');
+    expect(out.retryable).toBe(false);
+    expect(out.reason).toContain('authentication');
+  });
+});

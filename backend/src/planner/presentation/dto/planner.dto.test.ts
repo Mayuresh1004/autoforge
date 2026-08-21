@@ -18,6 +18,8 @@ describe('planner.dto', () => {
           requiresAuthentication: false,
           estimatedRisk: 'HIGH',
           breakdown: [{ label: 'risk', points: 20 }],
+          verificationStatus: 'NOT_TESTED',
+          verificationReason: 'requires authentication',
         },
       ],
     } as any);
@@ -38,6 +40,8 @@ describe('planner.dto', () => {
           requiresAuthentication: false,
           estimatedRisk: 'HIGH',
           breakdown: [{ label: 'risk', points: 20 }],
+          verificationStatus: 'NOT_TESTED',
+          verificationReason: 'requires authentication',
         },
       ],
     });

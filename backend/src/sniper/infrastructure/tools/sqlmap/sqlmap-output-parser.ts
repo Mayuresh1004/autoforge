@@ -24,6 +24,8 @@ export interface ParsedSqlMapOutput {
   readonly noInjection: boolean;
   /** A runtime/connection-level problem prevented a verdict. */
   readonly connectionError: boolean;
+  /** Target endpoint required authentication or redirected to login. */
+  readonly authRequired: boolean;
   /** sqlmap failed before reaching a verdict (crash / abort). */
   readonly toolError: boolean;
   /** Whether sqlmap communicated with the target at all. */
@@ -38,7 +40,9 @@ const DBMS_RE =
 const NO_INJECTION_RE =
   /all tested parameters do not appear to be injectable|do not appear to be injectable/i;
 const CONNECTION_RE =
-  /connection refused|unable to connect|timed out|http error|connection reset|no connection/i;
+  /connection refused|unable to connect|timed out|connection reset|no connection/i;
+const AUTH_REQUIRED_RE =
+  /401\s+unauthorized|403\s+forbidden|http error code (?:401|403)|got a (?:301|302|303|307|308) redirect to ['"][^'"]*(?:login|signin|auth|sso)|redirecting to [^\s]*(?:login|signin|auth|sso)|target url content requires authentication|http authentication required|authentication is required/i;
 const TOOL_ERROR_RE =
   /\[CRITICAL\]|traceback|panic|segmentation fault|command not found|no such file/i;
 const VULNERABLE_RE = /sqlmap identified the following injection point\(s\)/i;
@@ -62,10 +66,12 @@ export function parseSqlMapOutput(stdout: string, stderr: string): ParsedSqlMapO
   const dbmsMatch = combined.match(DBMS_RE);
   const dbms = dbmsMatch ? dbmsMatch[1].toLowerCase() : null;
   const noInjection = NO_INJECTION_RE.test(stdout) && !vulnerable;
-  const connectionError = CONNECTION_RE.test(combined) && !vulnerable;
-  const toolError = (TOOL_ERROR_RE.test(combined) && !vulnerable) || /\[PANIC\]/.test(combined);
+  const authRequired = AUTH_REQUIRED_RE.test(combined) && !vulnerable;
+  const connectionError = CONNECTION_RE.test(combined) && !vulnerable && !authRequired;
+  const hasToolErrorText = TOOL_ERROR_RE.test(combined) || /\[PANIC\]/.test(combined);
+  const toolError = hasToolErrorText && !vulnerable && !authRequired && !connectionError;
   const reached =
-    parameterMatch !== null || vulnerable || noInjection || /HTTP\/[12]\.\d/.test(stdout);
+    parameterMatch !== null || vulnerable || noInjection || authRequired || /HTTP\/[12]\.\d/.test(stdout);
 
   return {
     vulnerable,
@@ -76,6 +82,7 @@ export function parseSqlMapOutput(stdout: string, stderr: string): ParsedSqlMapO
     dbms,
     noInjection,
     connectionError,
+    authRequired,
     toolError,
     reached,
   };

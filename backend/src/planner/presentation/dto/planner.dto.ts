@@ -18,6 +18,8 @@ export interface PlannerTargetResponse {
   readonly requiresAuthentication: boolean;
   readonly estimatedRisk: PlannedTarget['estimatedRisk'];
   readonly breakdown: readonly { readonly label: string; readonly points: number }[];
+  readonly verificationStatus: string;
+  readonly verificationReason?: string;
 }
 
 export interface PlanResponse {
@@ -43,6 +45,8 @@ export function toPlanResponse(plan: { id?: string; scanId?: string; targets: re
       requiresAuthentication: target.requiresAuthentication,
       estimatedRisk: target.estimatedRisk,
       breakdown: target.breakdown,
+      verificationStatus: target.verificationStatus ?? 'NOT_RUN',
+      verificationReason: target.verificationReason,
     })),
   };
 }

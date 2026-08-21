@@ -23,7 +23,7 @@ const ENABLED = process.env.SNIPER_E2E === '1' && dockerAvailable();
 
 const SCAN_ID = `scan_e2e_${Date.now()}`;
 const PG_NAME = 'amass-sniper-e2e-pg';
-const POSTGRES_URL = 'postgresql://amass:amass@127.0.0.1:5432/amass_test';
+let postgresUrl = '';
 const IMAGE = 'amass/sniper-e2e-sqlmap:latest';
 let appTmp: string | null = null;
 
@@ -54,7 +54,6 @@ async function pollReady(probe: () => boolean | Promise<boolean>, timeoutMs: num
 }
 
 const DOCKERFILE = `FROM python:3.11-slim
-RUN pip install --no-cache-dir sqlmap >/dev/null 2>&1
 COPY app.py /opt/app.py
 `;
 
@@ -103,9 +102,7 @@ describe.skipIf(!ENABLED)('Sniper Agent — Docker + PostgreSQL end-to-end', () 
   let plannedTargetId: string;
 
   beforeAll(async () => {
-    process.env.DATABASE_URL = POSTGRES_URL;
-
-    // 1. Ephemeral PostgreSQL (dedicated container, host port 5432).
+    // 1. Ephemeral PostgreSQL (dedicated container, dynamic host port).
     try {
       runDocker(['rm', '-f', PG_NAME]);
     } catch {
@@ -114,18 +111,33 @@ describe.skipIf(!ENABLED)('Sniper Agent — Docker + PostgreSQL end-to-end', () 
     runDocker([
       'run', '-d', '--rm', '--name', PG_NAME,
       '-e', 'POSTGRES_USER=amass', '-e', 'POSTGRES_PASSWORD=amass', '-e', 'POSTGRES_DB=amass_test',
-      '-p', '127.0.0.1:5432:5432', 'postgres:16-alpine',
+      '-p', '127.0.0.1:0:5432', 'postgres:16-alpine',
     ]);
+    const portOutput = runDocker(['port', PG_NAME, '5432']);
+    const hostPort = portOutput.trim().split(':').pop()?.trim();
+    if (!hostPort) {
+      throw new Error(`Failed to resolve dynamically allocated host port for ${PG_NAME}: ${portOutput}`);
+    }
+    postgresUrl = `postgresql://amass:amass@127.0.0.1:${hostPort}/amass_test`;
+    process.env.DATABASE_URL = postgresUrl;
+
     await pollReady(
       () => runDocker(['exec', PG_NAME, 'pg_isready', '-U', 'amass', '-d', 'amass_test']).includes('accepting'),
       60_000,
       'postgres ready'
     );
 
-    // 2. Apply migrations through the real migration layer.
+    // 2. Apply migrations through the real migration layer and ensure schema is fully synced.
     execFileSync('npx', ['prisma', 'migrate', 'deploy'], {
       cwd: path.join(__dirname, '..'),
-      env: { ...process.env, DATABASE_URL: POSTGRES_URL },
+      env: { ...process.env, DATABASE_URL: postgresUrl },
+      timeout: 180_000,
+      stdio: 'pipe',
+      encoding: 'utf8',
+    });
+    execFileSync('npx', ['prisma', 'db', 'push', '--accept-data-loss'], {
+      cwd: path.join(__dirname, '..'),
+      env: { ...process.env, DATABASE_URL: postgresUrl },
       timeout: 180_000,
       stdio: 'pipe',
       encoding: 'utf8',
@@ -241,6 +253,14 @@ describe.skipIf(!ENABLED)('Sniper Agent — Docker + PostgreSQL end-to-end', () 
   }, 600_000);
 
   it('confirms the SQL injection inside the sandbox and persists the PoC', async () => {
+    // 1. Verify that the target container does NOT contain sqlmap
+    const checkTarget = await manager.execute(sandboxId, {
+      argv: ['which', 'sqlmap'],
+      timeoutMs: 5_000,
+    });
+    expect(checkTarget.exitCode, 'target container must NOT contain sqlmap').not.toBe(0);
+
+    // 2. Run Sniper service (which uses independent security-tool container via executeToolInNetwork)
     const report = await service.run({
       scanId: SCAN_ID,
       sandboxId,

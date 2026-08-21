@@ -14,9 +14,11 @@ import type {
   BuildImageResult,
   CreateSandboxInput,
   NetworkHealthProbeRequest,
+  SandboxBackend,
+  SandboxHealth,
   SandboxManager,
   SandboxManagerOptions,
-  SandboxHealth,
+  ToolNetworkExecRequest,
 } from '../../domain/ports/sandbox-manager';
 import type { HealthProbeResult } from '../../domain/value-objects/runtime-config';
 
@@ -251,6 +253,10 @@ export class SandboxManagerService implements SandboxManager {
 
   async probeNetworkHealth(request: NetworkHealthProbeRequest): Promise<HealthProbeResult> {
     return this.backend.probeNetworkHealth(request);
+  }
+
+  async executeToolInNetwork(request: ToolNetworkExecRequest): Promise<ExecResult> {
+    return this.backend.executeToolInNetwork(request);
   }
 
   // -- internals -------------------------------------------------------------

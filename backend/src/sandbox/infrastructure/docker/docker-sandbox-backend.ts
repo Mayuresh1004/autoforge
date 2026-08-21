@@ -16,16 +16,20 @@ import type {
   BuildImageResult,
   NetworkHealthProbeRequest,
   SandboxBackend,
+  ToolNetworkExecRequest,
 } from '../../domain/ports/sandbox-manager';
 import type { HealthProbeResult } from '../../domain/value-objects/runtime-config';
 import {
   buildCreateCommand,
   buildImageCommand,
   buildProbeCommand,
+  buildToolCommand,
   defaultDockerRunner,
   type DockerRunner,
 } from './docker-cli';
 import { logger } from '../../../config/logger';
+
+const DEFAULT_SECURITY_TOOLS_IMAGE = 'amass/security-tools:local';
 
 const MOUNT = '/workspace';
 /**
@@ -229,10 +233,11 @@ export class DockerSandboxBackend implements SandboxBackend {
     });
     const out = await this.runner(args, request.timeoutMs ?? 300_000);
     if (out.exitCode !== 0) {
-      const tail = out.stderr.trim().split('\n').slice(-30).join('\n');
-      throw new SandboxImageBuildError('docker build failed', tail);
+      const fullOutput = [out.stdout, out.stderr].filter(Boolean).join('\n').trim();
+      const buildOutput = fullOutput.split('\n').slice(-100).join('\n') || out.stderr || out.stdout || 'no build output';
+      const detail = `command 'docker ${args.join(' ')}' failed with exit code ${out.exitCode ?? 'unknown'}`;
+      throw new SandboxImageBuildError(detail, buildOutput);
     }
-    // `-q` prints the image id on stdout; fall back to the name.
     return { imageId: out.stdout.trim() || request.imageName, imageName: request.imageName };
   }
 
@@ -247,15 +252,17 @@ export class DockerSandboxBackend implements SandboxBackend {
     const out = await this.runner([
       'inspect',
       '-f',
-      '{{.State.Running}}|{{.State.Status}}|{{range $k, $v := .NetworkSettings.Networks}}{{$v.IPAddress}} {{end}}',
+      '{{.State.Running}}|{{.State.Status}}|{{.State.ExitCode}}|{{range $k, $v := .NetworkSettings.Networks}}{{$v.IPAddress}} {{end}}',
       containerId,
     ]);
     if (out.exitCode !== 0) return null;
-    const [running, status, ips] = out.stdout.trim().split('|');
+    const [running, status, rawExitCode, ips] = out.stdout.trim().split('|');
     const ipAddress = (ips ?? '').split(/\s+/).find((ip) => ip.length > 0);
+    const exitCodeNum = Number(rawExitCode);
     return {
       running: running === 'true',
       status: status || 'unknown',
+      exitCode: Number.isInteger(exitCodeNum) ? exitCodeNum : undefined,
       ipAddress: ipAddress ?? undefined,
     };
   }
@@ -309,6 +316,90 @@ export class DockerSandboxBackend implements SandboxBackend {
       latencyMs,
       detail: `probe container failed: ${stderrTail || out.stdout.trim().slice(0, 200) || 'unknown error'}`,
     };
+  }
+
+  /**
+   * Execute a security tool (e.g. sqlmap) in an isolated sidecar container
+   * attached ONLY to the supplied sandbox Docker network.
+   */
+  async executeToolInNetwork(request: ToolNetworkExecRequest): Promise<ExecResult> {
+    const imageName = DEFAULT_SECURITY_TOOLS_IMAGE;
+    const inspectRes = await this.runner(['image', 'inspect', imageName]);
+
+    if (inspectRes.exitCode !== 0) {
+      await this.ensureSecurityToolsImage().catch((err) => {
+        logger.error({ err, imageName }, 'docker.executeToolInNetwork: failed to ensure security tools image');
+      });
+      const recheck = await this.runner(['image', 'inspect', imageName]);
+      if (recheck.exitCode !== 0) {
+        return {
+          stdout: '',
+          stderr: `Infrastructure Error: Required security-tool image '${imageName}' is unavailable and could not be provisioned. Cannot execute '${request.argv[0]}'.`,
+          exitCode: 127,
+          timedOut: false,
+        };
+      }
+    }
+
+    // Resolve target container IP on networkId if request contains 127.0.0.1 or localhost
+    let argv = [...request.argv];
+    const hasLocalhost = argv.some((arg) => /127\.0\.0\.1|localhost/i.test(arg));
+    if (hasLocalhost && request.networkId) {
+      const psOut = await this.runner(['ps', '-q', '--filter', `network=${request.networkId}`, '--filter', 'label=amass.manager=1']);
+      const containerIds = psOut.stdout.split('\n').map((s) => s.trim()).filter((s) => s.length > 0);
+      let targetIp: string | undefined;
+      for (const cid of containerIds) {
+        const info = await this.inspect(cid);
+        if (info && info.running && info.ipAddress) {
+          targetIp = info.ipAddress;
+          break;
+        }
+      }
+      if (targetIp) {
+        argv = argv.map((arg) =>
+          arg.replace(/http:\/\/(127\.0\.0\.1|localhost)(:\d+)?/gi, (_match, _host, port) => {
+            return `http://${targetIp}${port ?? ''}`;
+          })
+        );
+      }
+    }
+
+    const env: Record<string, string> = {};
+    if (request.envAllowlist) {
+      for (const key of request.envAllowlist) {
+        if (process.env[key] !== undefined) env[key] = process.env[key]!;
+      }
+    }
+    if (request.envOverrides) {
+      Object.assign(env, request.envOverrides);
+    }
+
+    const args = buildToolCommand({
+      image: imageName,
+      networkId: request.networkId,
+      argv,
+      env: Object.keys(env).length > 0 ? env : undefined,
+    });
+
+    const out = await this.runner(args, request.timeoutMs);
+    return {
+      stdout: out.stdout,
+      stderr: out.stderr,
+      exitCode: out.exitCode,
+      timedOut: out.timedOut,
+    };
+  }
+
+  private async ensureSecurityToolsImage(): Promise<void> {
+    const imageName = DEFAULT_SECURITY_TOOLS_IMAGE;
+    const dockerfilePath = path.join(process.cwd(), 'docker', 'Dockerfile.security-tools');
+    try {
+      await fs.access(dockerfilePath);
+    } catch {
+      return;
+    }
+    const buildArgs = ['build', '-t', imageName, '-f', dockerfilePath, process.cwd()];
+    await this.runner(buildArgs, 300_000);
   }
 
   async sweep(): Promise<number> {

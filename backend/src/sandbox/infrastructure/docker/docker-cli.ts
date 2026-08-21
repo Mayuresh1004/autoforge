@@ -78,9 +78,12 @@ export function buildCreateCommand(
     networkValue,
   ];
 
-  // Hardened profile (capability + privilege drop, read-only rootfs).
-  command.push('--read-only', '--tmpfs', '/tmp:rw,exec,nodev,nosuid');
+  // Hardened profile (capability + privilege drop).
+  command.push('--tmpfs', '/tmp:rw,exec,nodev,nosuid');
   command.push('--cap-drop', 'ALL', '--security-opt', 'no-new-privileges:true');
+  if (spec.mountRepository !== false) {
+    command.push('--read-only');
+  }
   if (typeof spec.uid === 'number') command.push('--user', String(spec.uid));
   if (spec.memoryLimit) command.push('--memory', spec.memoryLimit);
   if (spec.cpus) command.push('--cpus', String(spec.cpus));
@@ -145,7 +148,7 @@ export function buildImageCommand(request: {
   readonly imageName: string;
   readonly labels?: Readonly<Record<string, string>>;
 }): string[] {
-  const args = ['build', '-q'];
+  const args = ['build'];
   for (const [key, value] of Object.entries(request.labels ?? {})) {
     args.push('--label', `${key}=${value}`);
   }
@@ -221,6 +224,43 @@ export function buildProbeCommand(request: {
     request.path,
     String(request.timeoutMs),
   ];
+}
+
+/**
+ * Pure builder for a throwaway, hardened security-tool container attached ONLY
+ * to the supplied sandbox Docker network. Leaves target application containers
+ * 100% untouched. Never publishes host ports, never mounts host volumes.
+ */
+export function buildToolCommand(request: {
+  readonly image: string;
+  readonly networkId: string;
+  readonly argv: readonly string[];
+  readonly env?: Readonly<Record<string, string>>;
+}): string[] {
+  const args = [
+    'run',
+    '--rm',
+    '--label',
+    'amass.manager=1',
+    '--network',
+    request.networkId,
+    '--cap-drop',
+    'ALL',
+    '--security-opt',
+    'no-new-privileges:true',
+    '--read-only',
+    '--tmpfs',
+    '/tmp:rw,exec,nodev,nosuid',
+    '--pids-limit',
+    '256',
+  ];
+  if (request.env) {
+    for (const [key, value] of Object.entries(request.env)) {
+      args.push('--env', `${key}=${value}`);
+    }
+  }
+  args.push(request.image, ...request.argv);
+  return args;
 }
 
 export { networkArg as dockerNetworkArg };

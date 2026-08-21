@@ -132,7 +132,23 @@ export class PrismaPlanRepository implements PlanRepository {
       include: { targets: { orderBy: { priority: 'desc' } } },
     });
     if (!row) return null;
-    return this.map(row);
+
+    const exploits = await prisma.exploit.findMany({
+      where: { scanId: row.scanId },
+      select: { targetId: true, status: true, statusReason: true, errorMessage: true, toolSummary: true },
+    });
+
+    const exploitMap = new Map<string, { status: string; reason?: string }>();
+    exploits.forEach((e) => {
+      if (e.targetId) {
+        exploitMap.set(e.targetId, {
+          status: e.status,
+          reason: e.statusReason ?? e.errorMessage ?? e.toolSummary ?? undefined,
+        });
+      }
+    });
+
+    return this.map(row, exploitMap);
   }
 
   async getPlanForScan(scanId: string): Promise<AttackPlan | null> {
@@ -142,10 +158,26 @@ export class PrismaPlanRepository implements PlanRepository {
       include: { targets: { orderBy: { priority: 'desc' } } },
     });
     if (!row) return null;
-    return this.map(row);
+
+    const exploits = await prisma.exploit.findMany({
+      where: { scanId },
+      select: { targetId: true, status: true, statusReason: true, errorMessage: true, toolSummary: true },
+    });
+
+    const exploitMap = new Map<string, { status: string; reason?: string }>();
+    exploits.forEach((e) => {
+      if (e.targetId) {
+        exploitMap.set(e.targetId, {
+          status: e.status,
+          reason: e.statusReason ?? e.errorMessage ?? e.toolSummary ?? undefined,
+        });
+      }
+    });
+
+    return this.map(row, exploitMap);
   }
 
-  private map(row: PlanRow): AttackPlan {
+  private map(row: PlanRow, exploitMap?: Map<string, { status: string; reason?: string }>): AttackPlan {
     return {
       id: row.id,
       scanId: row.scanId,
@@ -153,12 +185,12 @@ export class PrismaPlanRepository implements PlanRepository {
       coveredSurfaces: row.coveredSurfaces,
       coveredFindings: row.coveredFindings,
       summary: (row.summary ?? { targets: 0, critical: 0, high: 0, medium: 0, low: 0 }) as AttackPlan['summary'],
-      targets: row.targets.map(mapTarget),
+      targets: row.targets.map((t) => mapTarget(t, exploitMap?.get(t.targetId))),
     };
   }
 }
 
-function mapTarget(t: RawTargetRow): PlannedTarget {
+function mapTarget(t: RawTargetRow, exploit?: { status: string; reason?: string }): PlannedTarget {
   return {
     targetId: t.targetId,
     vulnerabilityId: t.vulnerabilityId ?? undefined,
@@ -172,6 +204,8 @@ function mapTarget(t: RawTargetRow): PlannedTarget {
     estimatedRisk: t.estimatedRisk as PlannedTarget['estimatedRisk'],
     breakdown: (t.breakdown ?? []) as unknown as ScoreFactor[],
     verificationHints: (t.verificationHints ?? undefined) as unknown as PlannedTarget['verificationHints'],
+    verificationStatus: exploit?.status ?? 'NOT_RUN',
+    verificationReason: exploit?.reason,
   };
 }
 

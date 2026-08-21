@@ -116,7 +116,7 @@ const envSchema = z.object({
   SANDBOX_TIMEOUT: z.coerce.number().min(60_000).max(24 * 3600_000).default(1_800_000),
   SANDBOX_BUILD_TIMEOUT: z.coerce.number().min(30_000).default(300_000),
   SANDBOX_START_TIMEOUT: z.coerce.number().min(10_000).default(60_000),
-  SANDBOX_HEALTH_TIMEOUT: z.coerce.number().min(1_000).default(30_000),
+  SANDBOX_HEALTH_TIMEOUT: z.coerce.number().min(1_000).default(120_000),
   SANDBOX_MAX_CONCURRENT: z.coerce.number().int().min(1).max(64).default(3),
   /** Localhost-only host port publishing is disabled unless explicitly enabled. */
   SANDBOX_ALLOW_HOST_EXPOSE: z.enum(['true', 'false']).default('false'),

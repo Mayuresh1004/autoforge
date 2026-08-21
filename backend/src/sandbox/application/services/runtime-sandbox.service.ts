@@ -162,11 +162,33 @@ export class DefaultRuntimeSandboxService implements RuntimeSandboxService {
       //    are checked from a probe container INSIDE their internal network
       //    (the backend process cannot reach an `--internal` Docker IP).
       sandbox = await patchSandbox(this.deps.store, sandbox, { status: 'HEALTH_CHECKING' });
+      const healthStartTime = Date.now();
       const probe = await probeWithRetries(
-        buildHealthProbe(this.provisioning, sandbox, resolved.config.healthPath)
+        (singleTimeoutMs) =>
+          buildHealthProbe(this.provisioning, sandbox, resolved.config.healthPath, singleTimeoutMs)(),
+        {
+          totalTimeoutMs: this.deps.config.healthTimeoutMs,
+          pollIntervalMs: 1_000,
+          singleProbeTimeoutMs: 5_000,
+          sandbox,
+          deps: this.provisioning,
+        }
       );
       if (!probe.reachable) {
-        throw new Error(`application health check failed: ${probe.detail ?? 'unreachable'}`);
+        const elapsedMs = Date.now() - healthStartTime;
+        const targetHost = sandbox.exposedPort ? '127.0.0.1' : (sandbox.internalHost ?? 'unknown');
+        const targetPort = sandbox.exposedPort ?? sandbox.internalPort ?? 0;
+
+        let containerDiagnostics = '';
+        if (sandbox.sandboxId) {
+          const info = await this.deps.manager.inspectRuntimeContainer(sandbox.sandboxId).catch(() => null);
+          if (info) {
+            containerDiagnostics = ` [status: ${info.status}, running: ${info.running}${info.exitCode !== undefined ? `, exitCode: ${info.exitCode}` : ''}]`;
+          }
+        }
+
+        const diagnosticDetail = `application health check failed after ${elapsedMs}ms: ${probe.detail ?? 'unreachable'} (target ${targetHost}:${targetPort})${containerDiagnostics}`;
+        throw new Error(diagnosticDetail);
       }
 
       sandbox = await patchSandbox(this.deps.store, sandbox, { status: 'READY' });

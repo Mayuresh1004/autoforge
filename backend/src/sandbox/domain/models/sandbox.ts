@@ -69,6 +69,7 @@ export interface SandboxSpec {
 export interface SandboxContainerInfo {
   readonly running: boolean;
   readonly status: string;
+  readonly exitCode?: number;
   readonly ipAddress?: string;
   /** Allocated host port when published (localhost-bound). */
   readonly hostPort?: number;

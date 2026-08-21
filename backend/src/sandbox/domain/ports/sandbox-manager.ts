@@ -131,6 +131,16 @@ export interface SandboxManager {
   inspectRuntimeContainer(containerId: string): Promise<SandboxContainerInfo | null>;
   /** App-liveness probe from INSIDE the sandbox network (isolated runtime sandboxes). */
   probeNetworkHealth(request: NetworkHealthProbeRequest): Promise<HealthProbeResult>;
+  /** Execute a security tool in a sidecar container attached to the sandbox's network. */
+  executeToolInNetwork(request: ToolNetworkExecRequest): Promise<ExecResult>;
+}
+
+export interface ToolNetworkExecRequest {
+  readonly networkId: string;
+  readonly argv: readonly string[];
+  readonly timeoutMs: number;
+  readonly envAllowlist?: readonly string[];
+  readonly envOverrides?: Readonly<Record<string, string>>;
 }
 
 /**
@@ -162,6 +172,8 @@ export interface SandboxBackend {
   inspect(containerId: string): Promise<SandboxContainerInfo | null>;
   /** App-liveness probe from INSIDE a Docker network (runtime sandboxes). */
   probeNetworkHealth(request: NetworkHealthProbeRequest): Promise<HealthProbeResult>;
+  /** Execute a tool in an isolated sidecar container on the given sandbox network. */
+  executeToolInNetwork(request: ToolNetworkExecRequest): Promise<ExecResult>;
 }
 
 export interface SandboxStore {

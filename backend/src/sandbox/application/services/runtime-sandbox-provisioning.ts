@@ -16,9 +16,6 @@ import { buildRuntimeContainer } from './runtime-env-builder';
  * re-probing. Kept separate from the service so both stay < 300 lines.
  */
 
-const HEALTH_PROBE_RETRIES = 4;
-const HEALTH_PROBE_BACKOFF_MS = 750;
-
 export interface RuntimeProvisionDeps {
   readonly manager: SandboxManager;
   readonly prober: RuntimeHealthProber;
@@ -45,10 +42,6 @@ export function buildProvisionRequest(
   input: { hostExpose?: boolean; env?: Readonly<Record<string, string>> },
   config: RuntimeSandboxConfig
 ): CreateSandboxInput {
-  // Fail fast: an EXPLICIT hostExpose request must never be silently dropped
-  // (that would leave probes pointed at an unreachable internal IP). The
-  // service also guards before any provisioning side effect; this is the
-  // defense-in-depth for direct callers.
   if (input.hostExpose === true && !config.allowHostExpose) {
     throw new HostExposureDeniedError();
   }
@@ -56,7 +49,6 @@ export function buildProvisionRequest(
   return {
     scanId: sandbox.scanId,
     type: 'runtime',
-    // The image carries the payload — repositoryPath is only an identifier.
     repositoryPath: sandbox.workspacePath ?? sandbox.id,
     image: sandbox.imageName ?? '',
     egress: 'internal',
@@ -65,10 +57,6 @@ export function buildProvisionRequest(
     pidsLimit: config.limits.pids,
     mountRepository: false,
     env: buildRuntimeContainer({ port: runtime.port, extra: input.env }),
-    // The runtime config's command governs: [] = image default CMD (Mode 1
-    // Dockerfiles WITH a CMD, Mode 2 generated images), non-empty = explicit
-    // argv (Mode 1 Dockerfiles WITHOUT a CMD derive a stack-aware start
-    // command — e.g. NodeGoat's `npm start`).
     appCommand: runtime.command.length > 0 ? runtime.command : [],
     ...(hostExpose ? { hostPublishLocalhost: { containerPort: runtime.port } } : {}),
   };
@@ -120,51 +108,102 @@ export function probeTarget(sandbox: RuntimeSandbox): { host: string; port: numb
 export function buildHealthProbe(
   deps: RuntimeProvisionDeps,
   sandbox: RuntimeSandbox,
-  path: string
-): () => Promise<HealthProbeResult> {
+  path: string,
+  timeoutMsOverride?: number
+): (overrideTimeoutMs?: number) => Promise<HealthProbeResult> {
   const target = probeTarget(sandbox);
-  if (sandbox.exposedPort) {
-    return () =>
-      deps.prober.probe({
+  return (overrideTimeoutMs?: number) => {
+    const timeoutMs = overrideTimeoutMs ?? timeoutMsOverride ?? Math.min(5_000, deps.config.healthTimeoutMs);
+    if (sandbox.exposedPort) {
+      return deps.prober.probe({
         host: target.host,
         port: target.port,
         path,
-        timeoutMs: deps.config.healthTimeoutMs,
+        timeoutMs,
       });
-  }
-  if (!sandbox.networkId) {
-    throw new Error(`isolated sandbox ${sandbox.id} has no network for an in-network health probe`);
-  }
-  return () =>
-    deps.manager.probeNetworkHealth({
+    }
+    if (!sandbox.networkId) {
+      throw new Error(`isolated sandbox ${sandbox.id} has no network for an in-network health probe`);
+    }
+    return deps.manager.probeNetworkHealth({
       networkId: sandbox.networkId as string,
       host: target.host,
       port: target.port,
       path,
-      timeoutMs: deps.config.healthTimeoutMs,
+      timeoutMs,
       image: deps.config.probeImage,
     });
+  };
+}
+
+export interface ProbeRetriesOptions {
+  /** Overall readiness deadline in milliseconds (default: 30_000ms). */
+  readonly totalTimeoutMs?: number;
+  /** Poll interval between retries in milliseconds (default: 1_000ms). */
+  readonly pollIntervalMs?: number;
+  /** Timeout per individual probe attempt in milliseconds (default: 5_000ms). */
+  readonly singleProbeTimeoutMs?: number;
+  /** Optional sandbox entity for container state checking. */
+  readonly sandbox?: RuntimeSandbox;
+  /** Optional provision deps (manager/prober/config) for inspecting container or logs. */
+  readonly deps?: RuntimeProvisionDeps;
 }
 
 /**
- * Bounded readiness re-probing: up to HEALTH_PROBE_RETRIES attempts with a
- * short sleep between them (a container can report running before the app
- * binds its port). Never unbounded — the config timeout caps each attempt.
+ * Bounded readiness re-probing: retries periodically until totalTimeoutMs
+ * (default: 30s) deadline is reached. ECONNREFUSED during application startup is
+ * treated as "not ready yet" and retried. If the container process exits or
+ * stops early, re-probing terminates immediately with container diagnostic info.
  */
 export async function probeWithRetries(
-  probe: () => Promise<HealthProbeResult>
+  probe: (singleTimeoutMs?: number) => Promise<HealthProbeResult>,
+  options: ProbeRetriesOptions = {}
 ): Promise<HealthProbeResult> {
+  const totalTimeoutMs = options.totalTimeoutMs ?? options.deps?.config.healthTimeoutMs ?? 30_000;
+  const pollIntervalMs = options.pollIntervalMs ?? 1_000;
+  const singleProbeTimeoutMs = options.singleProbeTimeoutMs ?? 5_000;
+  const startTime = Date.now();
+  const deadline = startTime + totalTimeoutMs;
+
   let last: HealthProbeResult = {
     reachable: false,
     latencyMs: 0,
     detail: 'unreachable',
   };
-  for (let attempt = 0; attempt <= HEALTH_PROBE_RETRIES; attempt += 1) {
-    last = await probe();
-    if (last.reachable) return last;
-    if (attempt < HEALTH_PROBE_RETRIES) {
-      await new Promise((resolve) => setTimeout(resolve, HEALTH_PROBE_BACKOFF_MS));
+
+  while (Date.now() < deadline) {
+    if (options.sandbox?.sandboxId && options.deps?.manager) {
+      const info = await options.deps.manager
+        .inspectRuntimeContainer(options.sandbox.sandboxId)
+        .catch(() => null);
+      if (info && !info.running) {
+        const exitDetail =
+          info.exitCode !== undefined && info.exitCode !== null
+            ? `container exited with code ${info.exitCode} (status: ${info.status || 'exited'})`
+            : `container is no longer running (status: ${info.status || 'stopped'})`;
+        return {
+          reachable: false,
+          latencyMs: Date.now() - startTime,
+          detail: exitDetail,
+        };
+      }
+    }
+
+    const remainingMs = deadline - Date.now();
+    const probeTimeout = Math.min(singleProbeTimeoutMs, Math.max(1_000, remainingMs));
+
+    last = await probe(probeTimeout);
+    if (last.reachable) {
+      return last;
+    }
+
+    const nextSleep = Math.min(pollIntervalMs, Math.max(0, deadline - Date.now()));
+    if (nextSleep > 0 && Date.now() + nextSleep < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, nextSleep));
+    } else {
+      break;
     }
   }
+
   return last;
 }

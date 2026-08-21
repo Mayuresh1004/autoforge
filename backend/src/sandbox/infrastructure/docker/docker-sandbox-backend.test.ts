@@ -4,6 +4,7 @@ import path from 'node:path';
 import { tmpdir } from 'node:os';
 import type { SandboxSpec } from '../../domain/models/sandbox';
 import { DockerSandboxBackend } from './docker-sandbox-backend';
+import { SandboxImageBuildError } from '../../domain/errors/sandbox-runtime.errors';
 import { buildCreateCommand, buildImageCommand, buildProbeCommand, type DockerRunner, type CliOutput } from './docker-cli';
 
 function fakeRunner(record: string[][]): DockerRunner {
@@ -314,6 +315,25 @@ describe('DockerSandboxBackend (fake docker runner)', () => {
     });
     expect(result.reachable).toBe(false);
     expect(result.detail).toContain('Unable to find image');
+  });
+
+  it('buildImage surfaces command, exit code, and complete stderr/stdout on build failure', async () => {
+    const runner: DockerRunner = async () => ({
+      stdout: 'Step 1/3 : FROM node:22-alpine\nStep 2/3 : COPY . .\n',
+      stderr: 'sh: cd: can\'t cd to frontend: No such file or directory\nnpm ERR! code 2',
+      exitCode: 2,
+      timedOut: false,
+    });
+    const backend = new DockerSandboxBackend(runner);
+    const err = await backend
+      .buildImage({ contextPath: '/tmp', imageName: 'fail-test' })
+      .catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(SandboxImageBuildError);
+    const buildErr = err as any;
+    expect(buildErr.message).toContain('failed with exit code 2');
+    expect(buildErr.buildOutput).toContain("can't cd to frontend");
+    expect(buildErr.buildOutput).toContain('Step 1/3');
   });
 });
 

@@ -13,6 +13,7 @@ import type {
   BuildImageResult,
   NetworkHealthProbeRequest,
   SandboxBackend,
+  ToolNetworkExecRequest,
 } from '../domain/ports/sandbox-manager';
 import type { HealthProbeResult } from '../domain/value-objects/runtime-config';
 import { ProcessSandboxRuntime } from './process-sandbox';
@@ -150,6 +151,26 @@ export class ProcessSandboxBackend implements SandboxBackend {
     // No Docker network exists in process mode — in-network probing is
     // meaningless here; the runtime sandbox lifecycle is Docker-only.
     throw new SandboxRuntimeUnsupportedError('probeNetworkHealth');
+  }
+
+  async executeToolInNetwork(request: ToolNetworkExecRequest): Promise<ExecResult> {
+    const dir = this.workspaceRoot;
+    const output = await this.runtime.run({
+      argv: request.argv,
+      cwd: dir,
+      timeoutMs: request.timeoutMs,
+      maxBufferBytes: this.maxBufferBytes,
+      envAllowlist: request.envAllowlist,
+      envOverrides: request.envOverrides,
+      network: 'none',
+    });
+    this.pushLogs('process_tool', output.stdout, output.stderr);
+    return {
+      stdout: output.stdout,
+      stderr: output.stderr,
+      exitCode: output.exitCode,
+      timedOut: output.timedOut,
+    };
   }
 
   // -- internals -------------------------------------------------------------

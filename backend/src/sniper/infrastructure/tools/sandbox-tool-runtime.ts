@@ -15,6 +15,32 @@ export class SandboxToolRuntime implements ToolRuntime {
   ) {}
 
   async execute(request: ToolExecRequest): Promise<ToolExecResult> {
+    const sandbox = await this.manager.getSandbox(this.sandboxId).catch(() => null);
+
+    if (sandbox?.networkId) {
+      let argv = [...request.argv];
+      if (sandbox.ipAddress) {
+        argv = argv.map((arg) =>
+          arg.replace(/http:\/\/(127\.0\.0\.1|localhost)(:\d+)?/gi, (_match, _host, port) => {
+            return `http://${sandbox.ipAddress}${port ?? ''}`;
+          })
+        );
+      }
+      const toolResult = await this.manager.executeToolInNetwork({
+        networkId: sandbox.networkId,
+        argv,
+        timeoutMs: request.timeoutMs,
+        envAllowlist: request.envAllowlist,
+        envOverrides: request.envOverrides,
+      });
+      return {
+        stdout: toolResult.stdout ?? '',
+        stderr: toolResult.stderr ?? '',
+        exitCode: toolResult.exitCode,
+        timedOut: toolResult.timedOut,
+      };
+    }
+
     const result = await this.manager.execute(this.sandboxId, {
       argv: [...request.argv],
       timeoutMs: request.timeoutMs,

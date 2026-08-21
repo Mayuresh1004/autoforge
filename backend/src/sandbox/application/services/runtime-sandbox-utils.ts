@@ -29,9 +29,9 @@ export function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/** Scan ids become docker-safe name/image components (bounded length). */
+/** Scan ids become docker-safe name/image components (lowercase alphanumeric, bounded length). */
 export function sanitizeKey(value: string): string {
-  return value.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 12);
+  return value.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 12);
 }
 
 /** Host-exposed sandboxes advertise 127.0.0.1; internal ones use the IP. */

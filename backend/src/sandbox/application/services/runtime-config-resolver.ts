@@ -22,9 +22,25 @@ interface PythonTarget {
   readonly requirementsPath?: string;
 }
 
-interface NodeTarget {
+export type PackageManager = 'npm' | 'pnpm' | 'yarn';
+
+export interface NodeTarget {
   readonly packageJsonPath: string;
+  readonly scriptName: string;
   readonly startScript: string;
+  readonly packageManager: PackageManager;
+  readonly baseImage: string;
+  readonly requiresBuild: boolean;
+  readonly buildScript?: string;
+  readonly detectedPort: number;
+}
+
+interface PackageManifest {
+  readonly name?: string;
+  readonly main?: string;
+  readonly packageManager?: string;
+  readonly engines?: { readonly node?: string };
+  readonly scripts?: Record<string, string>;
 }
 
 function pythonDockerfile(target: PythonTarget, port: number): string {
@@ -69,26 +85,71 @@ function pythonDockerfile(target: PythonTarget, port: number): string {
 
 function nodeDockerfile(target: NodeTarget, port: number): string {
   const dir = path.dirname(target.packageJsonPath).replace(/\\/g, '/');
-  if (dir === '.') {
-    return [
-      'FROM node:20-alpine',
-      'WORKDIR /app',
-      'COPY package*.json ./',
-      'RUN npm install --omit=dev --no-audit --no-fund',
-      'COPY . .',
-      `EXPOSE ${port}`,
-      'CMD ["npm", "start"]',
-    ].join('\n');
+  const lines: string[] = [
+    `FROM ${target.baseImage}`,
+    'WORKDIR /app',
+    `ENV PORT=${port}`,
+    'ENV HOST=0.0.0.0',
+    'ENV NEXT_PUBLIC_APPWRITE_HOST_URL=http://localhost:8000',
+    'ENV NEXT_PUBLIC_APPWRITE_PROJECT_ID=amass_runtime_dev_project',
+    'ENV APPWRITE_API_KEY=amass_runtime_dev_key',
+    'ENV DATABASE_ID=amass_runtime_dev_db',
+    'ENV NEXT_PUBLIC_API_URL=http://localhost:3000',
+    'ENV SUPABASE_URL=http://localhost:54321',
+    'ENV SUPABASE_ANON_KEY=amass_runtime_dev_key',
+    'COPY . .',
+  ];
+
+  if (target.packageManager === 'pnpm') {
+    lines.push('RUN corepack enable || npm install -g pnpm');
   }
 
-  return [
-    'FROM node:20-alpine',
-    'WORKDIR /app',
-    'COPY . .',
-    `RUN cd ${dir} && npm install --omit=dev --no-audit --no-fund`,
-    `EXPOSE ${port}`,
-    `CMD ["npm", "start", "--prefix", "${dir}"]`,
-  ].join('\n');
+  let installCmd: string;
+  let buildCmd: string;
+
+  switch (target.packageManager) {
+    case 'pnpm':
+      installCmd = 'pnpm install --no-frozen-lockfile';
+      buildCmd = 'pnpm run build';
+      break;
+    case 'yarn':
+      installCmd = 'yarn install';
+      buildCmd = 'yarn run build';
+      break;
+    case 'npm':
+    default:
+      installCmd = 'npm install --no-audit --no-fund';
+      buildCmd = 'npm run build';
+      break;
+  }
+
+  if (dir === '.') {
+    lines.push(`RUN ${installCmd}`);
+    if (target.requiresBuild) {
+      lines.push(`RUN ${buildCmd}`);
+    }
+    lines.push('ENV NODE_ENV=production');
+    lines.push(`EXPOSE ${port}`);
+    if (target.scriptName === 'start') {
+      lines.push(`CMD ["${target.packageManager}", "start"]`);
+    } else {
+      lines.push(`CMD ["${target.packageManager}", "run", "${target.scriptName}"]`);
+    }
+  } else {
+    lines.push(`RUN cd ${dir} && ${installCmd}`);
+    if (target.requiresBuild) {
+      lines.push(`RUN cd ${dir} && ${buildCmd}`);
+    }
+    lines.push('ENV NODE_ENV=production');
+    lines.push(`EXPOSE ${port}`);
+    if (target.packageManager === 'npm') {
+      lines.push(`CMD ["npm", "start", "--prefix", "${dir}"]`);
+    } else {
+      lines.push(`CMD ["sh", "-c", "cd ${dir} && ${target.packageManager} run ${target.scriptName}"]`);
+    }
+  }
+
+  return lines.join('\n');
 }
 
 /**
@@ -108,12 +169,13 @@ export async function resolveRuntimeConfig(
   if (dockerfile) {
     const raw = await fs.readFile(path.join(repoPath, dockerfile), 'utf8').catch(() => '');
     if (!raw.trim()) throw new UnsupportedRuntimeError([`${dockerfile} is empty`]);
+    const exposedPort = parseExposePort(raw);
     return {
       config: {
         strategy: 'DOCKERFILE',
         dockerfile: { path: dockerfile },
         command: hasDockerfileCmd(raw) ? [] : await stackStartCommand(files, repoPath),
-        port: portOverride ?? DOCKERFILE_DEFAULT_PORT,
+        port: portOverride ?? exposedPort ?? DOCKERFILE_DEFAULT_PORT,
         healthPath: DEFAULT_HEALTH_PATH,
       },
     };
@@ -140,16 +202,16 @@ export async function resolveRuntimeConfig(
     };
   }
 
-  // Mode 2 — Node: package.json with a start script.
+  // Mode 2 — Node: package.json with a start/serve/dev script or manifest.
   const nodeTarget = await findNodeTarget(files, repoPath);
   if (nodeTarget) {
-    const port = portOverride ?? NODE_DEFAULT_PORT;
+    const port = portOverride ?? nodeTarget.detectedPort;
     return {
       config: {
         strategy: 'NODE',
         recipe: {
-          baseImage: 'node:20-alpine',
-          installSteps: ['npm install --omit=dev --no-audit --no-fund'],
+          baseImage: nodeTarget.baseImage,
+          installSteps: [nodeInstallStep(nodeTarget.packageManager)],
         },
         command: [],
         port,
@@ -167,6 +229,30 @@ export function strategyLabel(strategy: RuntimeStrategy): string {
 }
 
 // -- internals ---------------------------------------------------------------
+
+export function parseExposePort(rawDockerfile: string): number | null {
+  const matches = [...rawDockerfile.matchAll(/^[ \t]*EXPOSE[ \t]+([^\r\n]+)/gim)];
+  if (matches.length === 0) return null;
+  const lastLine = matches[matches.length - 1][1];
+  const portMatch = /\b(\d{2,5})\b/.exec(lastLine);
+  if (portMatch && portMatch[1]) {
+    const port = parseInt(portMatch[1], 10);
+    if (port > 0 && port < 65536) return port;
+  }
+  return null;
+}
+
+function nodeInstallStep(pkgManager: PackageManager): string {
+  switch (pkgManager) {
+    case 'pnpm':
+      return 'pnpm install --no-frozen-lockfile';
+    case 'yarn':
+      return 'yarn install';
+    case 'npm':
+    default:
+      return 'npm install --no-audit --no-fund';
+  }
+}
 
 async function listAllFiles(repoPath: string, maxDepth = 3): Promise<readonly string[]> {
   const result: string[] = [];
@@ -251,7 +337,58 @@ function findPythonTarget(files: readonly string[]): PythonTarget | null {
   };
 }
 
-async function findNodeTarget(
+export function detectNodeEngine(manifest: PackageManifest): string {
+  const engineStr = manifest.engines?.node;
+  if (!engineStr) return 'node:20-alpine';
+
+  if (/\b(22|23|24|25|26)\b/.test(engineStr)) {
+    return 'node:22-alpine';
+  }
+  if (/\b(18)\b/.test(engineStr) && !/\b(20|22)\b/.test(engineStr)) {
+    return 'node:18-alpine';
+  }
+  if (/\b(16)\b/.test(engineStr) && !/\b(18|20|22)\b/.test(engineStr)) {
+    return 'node:16-alpine';
+  }
+
+  return 'node:20-alpine';
+}
+
+export function detectPackageManager(
+  manifest: PackageManifest,
+  files: readonly string[]
+): PackageManager {
+  if (typeof manifest.packageManager === 'string') {
+    const pm = manifest.packageManager.toLowerCase();
+    if (pm.startsWith('pnpm')) return 'pnpm';
+    if (pm.startsWith('yarn')) return 'yarn';
+    if (pm.startsWith('npm')) return 'npm';
+  }
+
+  if (files.some((f) => f === 'pnpm-lock.yaml' || f.endsWith('/pnpm-lock.yaml'))) {
+    return 'pnpm';
+  }
+  if (files.some((f) => f === 'yarn.lock' || f.endsWith('/yarn.lock'))) {
+    return 'yarn';
+  }
+  if (files.some((f) => f === 'package-lock.json' || f.endsWith('/package-lock.json'))) {
+    return 'npm';
+  }
+
+  return 'npm';
+}
+
+function detectPortFromScript(script?: string): number {
+  if (!script) return NODE_DEFAULT_PORT;
+  const match = /(?:--port|-p|PORT=)\s*(\d{4,5})/i.exec(script);
+  if (match && match[1]) {
+    const parsed = parseInt(match[1], 10);
+    if (parsed > 0 && parsed < 65536) return parsed;
+  }
+  return NODE_DEFAULT_PORT;
+}
+
+export async function findNodeTarget(
   files: readonly string[],
   repoPath: string
 ): Promise<NodeTarget | null> {
@@ -259,25 +396,63 @@ async function findNodeTarget(
     (f) => f === 'package.json' || f.endsWith('/package.json')
   );
 
+  if (packageJsons.length === 0) return null;
+
   packageJsons.sort((a, b) => {
     const aIsRoot = a === 'package.json' ? 0 : 1;
     const bIsRoot = b === 'package.json' ? 0 : 1;
-    return aIsRoot - bIsRoot;
+    if (aIsRoot !== bIsRoot) return aIsRoot - bIsRoot;
+
+    const aIsBackend = /(backend|server|api|app)\//i.test(a) ? 0 : 1;
+    const bIsBackend = /(backend|server|api|app)\//i.test(b) ? 0 : 1;
+    return aIsBackend - bIsBackend;
   });
 
   for (const pkgPath of packageJsons) {
-    const manifest = await fs
+    const manifestStr = await fs
       .readFile(path.join(repoPath, pkgPath), 'utf8')
       .catch(() => null);
-    if (!manifest) continue;
+    if (!manifestStr) continue;
     try {
-      const parsed = JSON.parse(manifest) as { scripts?: Record<string, string> };
-      if (typeof parsed.scripts?.start === 'string') {
-        return {
-          packageJsonPath: pkgPath,
-          startScript: parsed.scripts.start,
-        };
+      const parsed = JSON.parse(manifestStr) as PackageManifest;
+      const scripts = parsed.scripts ?? {};
+
+      let scriptName: string | undefined;
+      if (typeof scripts.start === 'string') scriptName = 'start';
+      else if (typeof scripts.serve === 'string') scriptName = 'serve';
+      else if (typeof scripts.dev === 'string') scriptName = 'dev';
+      else if (typeof scripts.preview === 'string') scriptName = 'preview';
+
+      if (!scriptName && !parsed.main && Object.keys(scripts).length === 0) {
+        continue;
       }
+
+      const selectedScript = scriptName ? scripts[scriptName] ?? 'node index.js' : 'node index.js';
+      const actualScriptName = scriptName ?? 'start';
+
+      const packageManager = detectPackageManager(parsed, files);
+      const baseImage = detectNodeEngine(parsed);
+
+      const hasBuildScript = typeof scripts.build === 'string';
+      const startPointsToBuildDir = /\b(build|dist|\.next|out)\//i.test(selectedScript || parsed.main || '');
+      const hasTsConfig = files.some((f) => f === 'tsconfig.json' || f.endsWith('/tsconfig.json'));
+      const isFrameworkBuild = /next|nuxt|vite|tsc|nest|ng\b/i.test(scripts.build || '');
+      const hasNextConfig = files.some((f) => /next\.config\.(ts|js|mjs|cjs)$/i.test(f));
+
+      const requiresBuild = hasBuildScript && (startPointsToBuildDir || hasTsConfig || isFrameworkBuild || hasNextConfig);
+
+      const detectedPort = detectPortFromScript(selectedScript);
+
+      return {
+        packageJsonPath: pkgPath,
+        scriptName: actualScriptName,
+        startScript: selectedScript,
+        packageManager,
+        baseImage,
+        requiresBuild,
+        buildScript: scripts.build,
+        detectedPort,
+      };
     } catch {
       /* ignore invalid JSON */
     }
@@ -299,7 +474,7 @@ async function stackStartCommand(
   if (pythonTarget) return ['python', pythonTarget.entrypoint];
 
   const nodeTarget = await findNodeTarget(files, repoPath);
-  if (nodeTarget) return ['npm', 'start'];
+  if (nodeTarget) return [nodeTarget.packageManager, 'start'];
 
   return [];
 }
