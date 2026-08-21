@@ -567,6 +567,7 @@ model PlannedTarget {
   scanId                    String
   /// Synthesized planner id, distinct from this row's primary key.
   targetId                  String
+  vulnerabilityId           String?
   endpoint                  String
   method                    String   @default("GET")
   /// Candidate vulnerability hypotheses the planner raised.
@@ -579,11 +580,14 @@ model PlannedTarget {
   estimatedRisk             String   @default("LOW")
   /// Transparent score accounting (label + points per factor).
   breakdown                 Json?
+  /// Target verification hints (parameter names, upload fields, locations, auth context).
+  verificationHints         Json?
   createdAt                 DateTime @default(now())
 
   plan AttackPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
 
   @@index([planId])
   @@index([scanId])
+  @@index([vulnerabilityId])
   @@map("planned_attack_targets")
 }

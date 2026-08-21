@@ -185,4 +185,120 @@ describe('AutonomousPipelineService (Incremental Lifecycle)', () => {
 
     expect(mockRuntimeService.destroy).toHaveBeenCalledWith('sbx_test_123');
   });
+
+  it('fails pipeline, emits SCAN_FAILED, skips downstream stages, and cleans up sandbox when Planner fails', async () => {
+    const eventsEmitted: AmassEventInput[] = [];
+    const eventsPublisher: AmassEventPublisher = {
+      publish: (e) => {
+        eventsEmitted.push(e);
+      },
+    };
+
+    const mockRuntimeSandbox: RuntimeSandbox = {
+      id: 'sbx_fail_123',
+      scanId: 'scan_fail_123',
+      status: 'READY',
+      sandboxId: 'container_fail_123',
+      targetUrl: 'http://localhost:8080',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    const mockRuntimeService: RuntimeSandboxService = {
+      limits: { maxMemoryMb: 512, maxCpuCores: 1, maxPids: 100 },
+      create: vi.fn().mockResolvedValue(mockRuntimeSandbox),
+      get: vi.fn().mockResolvedValue(mockRuntimeSandbox),
+      healthCheck: vi.fn().mockResolvedValue({ ok: true, status: 'READY', checkedAt: new Date().toISOString() }),
+      destroy: vi.fn().mockResolvedValue(mockRuntimeSandbox),
+      expire: vi.fn().mockResolvedValue(mockRuntimeSandbox),
+      cleanupExpired: vi.fn().mockResolvedValue(0),
+    };
+
+    const mockScoutService: ScoutService = {
+      run: vi.fn().mockResolvedValue({
+        scanId: 'scan_fail_123',
+        scoutScanId: 'scout_123',
+        targetUrl: 'http://localhost:8080',
+        status: 'COMPLETED',
+        attackSurface: [],
+        summary: { endpoints: 0, ports: 0, services: 0, forms: 0, adminPanels: 0, graphql: false, websockets: 0, technologies: 0 },
+        health: { reachable: true },
+        technologies: [],
+        ports: [],
+        services: [],
+        errors: [],
+      }),
+      getScoutScan: vi.fn(),
+      listScoutScans: vi.fn(),
+    };
+
+    const mockPlannerService: PlannerService = {
+      generate: vi.fn().mockRejectedValue(new Error('Prisma error P2022: The column vulnerabilityId does not exist')),
+      plan: vi.fn(),
+      getPlan: vi.fn(),
+      getPlanForScan: vi.fn(),
+    };
+
+    const mockSniperService: SniperService = {
+      run: vi.fn(),
+      getExploit: vi.fn(),
+      getExploitResults: vi.fn(),
+      listExploitsForTarget: vi.fn(),
+    };
+
+    const mockEngineerService: EngineerService = {
+      run: vi.fn(),
+      getRun: vi.fn(),
+    };
+
+    const mockCriticService: CriticService = {
+      run: vi.fn(),
+      getRun: vi.fn(),
+    };
+
+    const mockPrisma: any = {
+      scan: {
+        update: vi.fn().mockResolvedValue({ id: 'scan_fail_123', status: 'FAILED' }),
+      },
+    };
+
+    const pipeline = new AutonomousPipelineService({
+      manager: {} as any,
+      runtime: mockRuntimeService,
+      scout: mockScoutService,
+      planner: mockPlannerService,
+      sniper: mockSniperService,
+      engineer: mockEngineerService,
+      critic: mockCriticService,
+      events: eventsPublisher,
+      prisma: mockPrisma,
+    });
+
+    await expect(
+      pipeline.runPipeline({
+        scanId: 'scan_fail_123',
+        repositoryUrl: 'https://github.com/SagarJadhav007/RepoMind.git',
+      })
+    ).rejects.toThrow('Prisma error P2022');
+
+    // A. Downstream stages not executed
+    expect(mockSniperService.run).not.toHaveBeenCalled();
+    expect(mockEngineerService.run).not.toHaveBeenCalled();
+    expect(mockCriticService.run).not.toHaveBeenCalled();
+
+    // B. SCAN_FAILED event emitted
+    const failedEvent = eventsEmitted.find((e) => e.eventType === 'SCAN_FAILED');
+    expect(failedEvent).toBeDefined();
+    expect(failedEvent?.scanId).toBe('scan_fail_123');
+    expect(failedEvent?.status).toBe('FAILED');
+
+    // C. Database scan record marked FAILED
+    expect(mockPrisma.scan.update).toHaveBeenCalledWith({
+      where: { id: 'scan_fail_123' },
+      data: expect.objectContaining({ status: 'FAILED' }),
+    });
+
+    // D. Sandbox cleanup still executed
+    expect(mockRuntimeService.destroy).toHaveBeenCalledWith('sbx_fail_123');
+  });
 });

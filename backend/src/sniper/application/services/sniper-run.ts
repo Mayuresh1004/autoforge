@@ -42,6 +42,7 @@ export interface SniperRunDeps {
   readonly config: SniperConfig;
   /** Phase 9 observability publisher (optional). */
   readonly events?: AmassEventPublisher;
+  readonly rag?: import('../../../knowledge/application/services/rag.service').RagService;
 }
 
 export class SniperTargetRunner {
@@ -83,13 +84,54 @@ export class SniperTargetRunner {
         input.baseUrl
       );
 
-      // 4. First supported candidate vulnerability wins.
-      const type = this.pickSupportedType(planned.candidateVulnerabilities);
-      if (!type) {
-        const label = planned.candidateVulnerabilities[0] ?? 'unknown';
-        return this.refusalRecord(input, targetId, startedAt, 'NOT_TESTED', label,
-          `unsupported candidate vulnerability (${label})`);
+      // 4. Candidate vulnerability resolution and verifier selection.
+      const candidateInfo = this.pickCandidateVulnerability(planned.candidateVulnerabilities);
+      const type = candidateInfo.type;
+      const verifier = candidateInfo.verifier;
+
+      if (!type || type === 'UNKNOWN' || !verifier) {
+        const canonicalType = type ?? 'UNKNOWN';
+        const rawLabel = candidateInfo.label;
+        const reason = type && type !== 'UNKNOWN'
+          ? `unsupported vulnerability type (${type})`
+          : `unsupported candidate vulnerability (${rawLabel})`;
+
+        logger.info(
+          {
+            scanId: input.scanId,
+            targetId,
+            originalCandidate: rawLabel,
+            normalizedType: canonicalType,
+            verifier: 'NONE',
+            status: 'NOT_TESTED',
+            reason,
+          },
+          'sniper.target: unsupported vulnerability type'
+        );
+
+        return this.refusalRecord(
+          input,
+          targetId,
+          startedAt,
+          'NOT_TESTED',
+          canonicalType,
+          reason,
+          findings,
+          planned
+        );
       }
+
+      logger.info(
+        {
+          scanId: input.scanId,
+          targetId,
+          originalCandidate: candidateInfo.label,
+          normalizedType: type,
+          verifier: verifier.id,
+          status: 'SUPPORTED',
+        },
+        'sniper.target: verifier selected'
+      );
 
       // 4b. Observability: target selected with the chosen vulnerability type.
       this.emit(input.scanId, {
@@ -98,18 +140,12 @@ export class SniperTargetRunner {
         phase: 'verification',
         status: 'IN_PROGRESS',
         message: `selected ${targetId} (${type})`,
-        metadata: { targetId, endpoint: resolvedUrl, vulnerabilityId: planned.candidateVulnerabilities[0] ?? undefined, check: type },
+        metadata: { targetId, endpoint: resolvedUrl, vulnerabilityId: planned.vulnerabilityId ?? undefined, check: type },
       });
 
       // 5. Auth: only explicitly-provided credentials; otherwise NOT_TESTED.
       if (planned.requiresAuthentication && !input.credentials) {
         throw new AuthenticationUnavailableError(targetId);
-      }
-
-      // Verifier must exist for the chosen type (future types register here).
-      const verifier = this.deps.verifiers.getVerifier(type);
-      if (!verifier) {
-        throw new UnsupportedVulnerabilityTypeError(targetId, type, 'sql-injection');
       }
 
       const maxAttempts = Math.max(
@@ -127,7 +163,7 @@ export class SniperTargetRunner {
         ? await this.deps.repository.saveExploit({
             scanId: input.scanId,
             targetId,
-            vulnerabilityId: correlateFindingId(findings, type),
+            vulnerabilityId: correlateFindingId(planned, findings, type),
             type,
             status: 'TESTING',
             confidence: null,
@@ -147,7 +183,7 @@ export class SniperTargetRunner {
             id: `in-memory:${input.scanId}:${targetId}`,
             scanId: input.scanId,
             targetId,
-            vulnerabilityId: correlateFindingId(findings, type),
+            vulnerabilityId: correlateFindingId(planned, findings, type),
             type,
             status: 'TESTING',
             confidence: null,
@@ -172,8 +208,9 @@ export class SniperTargetRunner {
         type,
         requiresAuthentication: planned.requiresAuthentication,
         credentials: input.credentials,
+        verificationHints: planned.verificationHints,
       };
-      const context = buildContext(input, target, runtime, findings, timeoutMs);
+      const context = buildContext(input, target, runtime, findings, timeoutMs, this.deps.rag);
 
       // 6-7. Attempt loop (bounded; retry only transient failures).
       const final = await this.attemptLoop.run({
@@ -193,7 +230,7 @@ export class SniperTargetRunner {
         ? await this.deps.repository.saveExploit({
             scanId: input.scanId,
             targetId,
-            vulnerabilityId: correlateFindingId(findings, type),
+            vulnerabilityId: correlateFindingId(planned, findings, type),
             type,
             status: final.outcome.status,
             confidence: final.outcome.confidence.score,
@@ -214,7 +251,7 @@ export class SniperTargetRunner {
             id: `in-memory:${input.scanId}:${targetId}`,
             scanId: input.scanId,
             targetId,
-            vulnerabilityId: correlateFindingId(findings, type),
+            vulnerabilityId: correlateFindingId(planned, findings, type),
             type,
             status: final.outcome.status,
             confidence: final.outcome.confidence.score,
@@ -239,7 +276,7 @@ export class SniperTargetRunner {
           phase: 'verification',
           status: 'CONFIRMED',
           message: `exploit confirmed for target "${targetId}"`,
-          metadata: { targetId, endpoint: resolvedUrl, check: type, result: final.outcome.status, counts: { attempts: final.attempts } },
+          metadata: { vulnerabilityId: poc.vulnerabilityId ?? undefined, targetId, endpoint: resolvedUrl, check: type, result: final.outcome.status, counts: { attempts: final.attempts } },
         });
       } else {
         this.emit(input.scanId, {
@@ -248,7 +285,7 @@ export class SniperTargetRunner {
           phase: 'verification',
           status: 'REJECTED',
           message: `target "${targetId}" not exploited (${final.outcome.reason ?? 'no confirmed finding'})`,
-          metadata: { targetId, endpoint: resolvedUrl, check: type, result: final.outcome.status, counts: { attempts: final.attempts } },
+          metadata: { vulnerabilityId: poc.vulnerabilityId ?? undefined, targetId, endpoint: resolvedUrl, check: type, result: final.outcome.status, counts: { attempts: final.attempts } },
         });
       }
 
@@ -277,19 +314,31 @@ export class SniperTargetRunner {
         input,
         targetId,
         startedAt,
-        statusFor(error),
+        'NOT_TESTED',
         label,
-        messageOf(error)
+        messageOf(error),
+        findings
       );
     }
   }
 
-  private pickSupportedType(candidates: readonly string[]): VulnerabilityType | null {
+  private pickCandidateVulnerability(candidates: readonly string[]): {
+    label: string;
+    type: VulnerabilityType | null;
+    verifier: import('../../domain/ports/vulnerability-verifier').VulnerabilityVerifier | null;
+  } {
     for (const label of candidates) {
       const type = resolveVulnerabilityType(label);
-      if (type && this.deps.verifiers.supports(type)) return type;
+      if (type && type !== 'UNKNOWN') {
+        const verifier = this.deps.verifiers.getVerifier(type);
+        if (verifier) {
+          return { label, type, verifier };
+        }
+      }
     }
-    return null;
+    const firstLabel = candidates[0] ?? 'unknown';
+    const firstType = resolveVulnerabilityType(firstLabel);
+    return { label: firstLabel, type: firstType, verifier: null };
   }
 
   private async refusalRecord(
@@ -298,20 +347,23 @@ export class SniperTargetRunner {
     startedAt: Date,
     status: VerificationStatus,
     typeLabel: string,
-    reason: string
+    reason: string,
+    findings: readonly CorrelatedFinding[] = [],
+    planned: PlannedTargetSnapshot | null = null
   ): Promise<TargetRunOutcome> {
+    const vulnId = correlateFindingId(planned, findings, typeLabel as VulnerabilityType);
     const persist = input.options?.persist !== false;
     const poc = persist
       ? await this.deps.repository.saveExploit({
           scanId: input.scanId,
           targetId,
-          vulnerabilityId: null,
+          vulnerabilityId: vulnId,
           type: typeLabel as VulnerabilityType,
           status,
           confidence: null,
           confidenceBreakdown: null,
-          endpoint: targetId,
-          method: 'GET',
+          endpoint: planned?.endpoint ?? targetId,
+          method: planned?.method ?? 'GET',
           parameter: null,
           tool: null,
           reason,
@@ -325,13 +377,13 @@ export class SniperTargetRunner {
           id: `in-memory:${input.scanId}:${targetId}`,
           scanId: input.scanId,
           targetId,
-          vulnerabilityId: null,
+          vulnerabilityId: vulnId,
           type: typeLabel as VulnerabilityType,
           status,
           confidence: null,
           confidenceBreakdown: null,
-          endpoint: targetId,
-          method: 'GET',
+          endpoint: planned?.endpoint ?? targetId,
+          method: planned?.method ?? 'GET',
           parameter: null,
           verifier: '-',
           tool: null,
@@ -342,6 +394,16 @@ export class SniperTargetRunner {
           completedAt: new Date(),
           durationMs: 0,
         });
+
+    this.emit(input.scanId, {
+      eventType: 'SNIPER_REJECTED',
+      agentType: 'SNIPER',
+      phase: 'verification',
+      status: 'REJECTED',
+      message: `target "${targetId}" refused (${reason})`,
+      metadata: { vulnerabilityId: vulnId ?? undefined, targetId, endpoint: targetId, check: typeLabel, result: status, reason },
+    });
+
     return { targetId, exploit: poc };
   }
 }
@@ -400,7 +462,8 @@ function buildContext(
   target: VerificationTarget,
   runtime: ToolRuntime,
   findings: readonly CorrelatedFinding[],
-  timeoutMs: number
+  timeoutMs: number,
+  rag?: import('../../../knowledge/application/services/rag.service').RagService
 ): VerificationContext {
   return {
     scanId: input.scanId,
@@ -410,6 +473,7 @@ function buildContext(
     runtime,
     staticCorrelation: correlationFor(findings, target.type),
     timeoutMs,
+    rag,
   };
 }
 
@@ -439,10 +503,12 @@ function bestFindingFor(
 }
 
 function correlateFindingId(
+  planned: PlannedTargetSnapshot | null,
   findings: readonly CorrelatedFinding[],
   type: VulnerabilityType
 ): string | null {
-  return bestFindingFor(findings, type)?.id ?? null;
+  if (planned?.vulnerabilityId) return planned.vulnerabilityId;
+  return bestFindingFor(findings, type)?.id ?? (findings.length > 0 ? findings[0].id : null);
 }
 
 function statusFor(error: unknown): VerificationStatus {
@@ -450,11 +516,21 @@ function statusFor(error: unknown): VerificationStatus {
 }
 
 function isRefusal(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const name = (error as Error).name || (error.constructor && error.constructor.name) || '';
+  const refusalNames = new Set([
+    'TargetNotFoundError',
+    'SandboxMismatchError',
+    'CrossOriginTargetError',
+    'UnsupportedVulnerabilityTypeError',
+    'AuthenticationUnavailableError',
+  ]);
+  if (refusalNames.has(name)) return true;
   return (
     error instanceof TargetNotFoundError ||
+    error instanceof SandboxMismatchError ||
     error instanceof CrossOriginTargetError ||
-    error instanceof AuthenticationUnavailableError ||
     error instanceof UnsupportedVulnerabilityTypeError ||
-    error instanceof SandboxMismatchError
+    error instanceof AuthenticationUnavailableError
   );
 }

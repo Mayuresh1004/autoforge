@@ -95,6 +95,10 @@ export interface VerificationTarget {
   readonly requiresAuthentication: boolean;
   /** Safe to use only when explicitly supplied by the sandbox/test config. */
   readonly credentials?: SandboxCredentials;
+  /** Secondary session/credentials for multi-tenant cross-user verification (User B). */
+  readonly attackerCredentials?: SandboxCredentials;
+  /** Structured verification hints from Planner (parameter names, upload fields, locations). */
+  readonly verificationHints?: import('../../../planner/domain/models/plan').TargetVerificationHints;
 }
 
 /** Credentials allowed for verification. ONLY explicitly-provided values —
@@ -121,6 +125,7 @@ export interface VerificationContext {
     readonly finding?: CorrelatedFinding;
   };
   readonly timeoutMs: number;
+  readonly rag?: import('../../../knowledge/application/services/rag.service').RagService;
 }
 
 /** The verifier's deterministic verdict. */

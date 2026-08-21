@@ -171,7 +171,7 @@ export class AutonomousPipelineService {
       return plan;
     } catch (err) {
       logger.error({ scanId, err }, 'autonomous_pipeline:stage3_planner:error');
-      return null;
+      throw err;
     }
   }
 

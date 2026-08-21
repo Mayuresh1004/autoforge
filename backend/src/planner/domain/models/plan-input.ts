@@ -4,6 +4,8 @@
  */
 
 export interface StaticVulnInput {
+  readonly id?: string;
+  readonly vulnerabilityId?: string;
   readonly type: string;
   /** CRITICAL | HIGH | MEDIUM | LOW | INFO */
   readonly severity: string;

@@ -66,13 +66,17 @@ export function PlanPanel({ plan, sandboxStatus }: PlanPanelProps) {
                 </div>
 
                 <div className="flex items-center justify-between text-[11px] text-zinc-400 font-mono pt-1">
-                  <span>Priority Score: <strong className="text-amber-400">{target.priorityScore}</strong></span>
-                  <span className="text-zinc-500">Target ID: {target.targetId}</span>
+                  <span>Priority Score: <strong className="text-amber-400">{target.priorityScore ?? target.priority}</strong></span>
+                  <div className="flex items-center gap-2 text-zinc-500">
+                    {target.findingId && <span className="text-sky-400 font-semibold">Finding: {target.findingId}</span>}
+                    <span>Target ID: {target.targetId}</span>
+                  </div>
                 </div>
 
-                {target.rationale && (
+                {(target.reason || target.rationale) && (
                   <p className="text-[11px] text-zinc-300 leading-relaxed font-sans pt-1">
-                    {target.rationale}
+                    <strong className="text-zinc-400 font-mono text-[10px]">Reason: </strong>
+                    {target.reason || target.rationale}
                   </p>
                 )}
               </div>

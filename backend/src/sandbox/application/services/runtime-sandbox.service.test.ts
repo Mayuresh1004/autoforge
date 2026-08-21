@@ -131,7 +131,8 @@ describe('DefaultRuntimeSandboxService (headless, no Docker)', () => {
 
     expect(workspace.lastRepoPath).toBeTruthy();
     const generated = await fs.readFile(path.join(workspace.lastRepoPath!, 'Dockerfile'), 'utf8');
-    expect(generated).toContain('pip install --no-cache-dir -r requirements.txt');
+    expect(generated).toContain('pip install');
+    expect(generated).toContain('requirements.txt');
     expect(generated).toContain('CMD ["python", "app.py"]');
   });
 

@@ -36,17 +36,29 @@ export function FindingCard({ finding, isSelected = false, onSelect }: FindingCa
           <Badge variant="success" size="sm" className="text-[10px]">
             ✓ CRITIC VERIFIED
           </Badge>
-        ) : finding.status === 'PATCHED' ? (
-          <Badge variant="info" size="sm" className="text-[10px]">
-            🛠️ PATCHED
+        ) : finding.status === 'CRITIC_REJECTED' ? (
+          <Badge variant="danger" size="sm" className="text-[10px]">
+            ❌ CRITIC REJECTED
+          </Badge>
+        ) : finding.status === 'PATCHED' || finding.status === 'PATCH_GENERATED' ? (
+          <Badge variant="purple" size="sm" className="text-[10px]">
+            🛠️ PATCH GENERATED
           </Badge>
         ) : finding.status === 'REMEDIATION' ? (
           <Badge variant="warning" size="sm" className="text-[10px]">
             ⚡ REMEDIATION
           </Badge>
-        ) : finding.isConfirmed || finding.status === 'EXPLOIT_CONFIRMED' ? (
+        ) : finding.isConfirmed || finding.status === 'EXPLOIT_CONFIRMED' || finding.status === 'CONFIRMED' ? (
           <Badge variant="danger" size="sm" className="text-[10px]">
-            🎯 EXPLOIT CONFIRMED
+            🎯 CONFIRMED
+          </Badge>
+        ) : finding.status === 'NOT_CONFIRMED' || finding.status === 'EXPLOIT_REJECTED' ? (
+          <Badge variant="outline" size="sm" className="text-[10px] text-zinc-400">
+            ⚪ NOT CONFIRMED
+          </Badge>
+        ) : finding.status === 'NOT_TESTED' ? (
+          <Badge variant="outline" size="sm" className="text-[10px] text-amber-400/90 border-amber-500/30">
+            ⏸️ NOT TESTED
           </Badge>
         ) : finding.status === 'VERIFYING' ? (
           <Badge variant="warning" size="sm" className="text-[10px] animate-pulse">

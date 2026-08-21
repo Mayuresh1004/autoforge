@@ -6,6 +6,22 @@ import { summarizeTargets } from '../../application/ranking/plan-engine';
 
 const FRAMEWORKS = ['Express', 'Next.js', 'Spring Boot', 'Django', 'Rails', 'Laravel', 'Flask'];
 
+export function isExternalDocUrl(url: string): boolean {
+  if (!url) return false;
+  const lower = url.toLowerCase();
+  return (
+    lower.includes('docs.npmjs.com') ||
+    lower.includes('owasp.org') ||
+    lower.includes('github.com/advisories') ||
+    lower.includes('nvd.nist.gov') ||
+    lower.includes('cve.mitre.org') ||
+    lower.includes('cve.org') ||
+    lower.includes('npmjs.com/advisories') ||
+    lower.includes('snyk.io') ||
+    lower.includes('vulncode-db.com')
+  );
+}
+
 /** Reads the planner's inputs from the existing scan/scout/vulnerability tables
  * and persists the generated plan. Read-mostly; nothing executes. */
 export class PrismaPlanRepository implements PlanRepository {
@@ -17,6 +33,8 @@ export class PrismaPlanRepository implements PlanRepository {
   async loadStaticFindings(scanId: string): Promise<readonly StaticVulnInput[]> {
     const rows = await prisma.vulnerability.findMany({ where: { scanId } });
     return rows.map((f) => ({
+      id: f.id,
+      vulnerabilityId: f.id,
       type: f.vulnType ?? f.scanner ?? 'unknown',
       severity: f.severity,
       cwe: f.cweId,
@@ -33,15 +51,17 @@ export class PrismaPlanRepository implements PlanRepository {
       include: { surfaces: { orderBy: { createdAt: 'asc' } } },
     });
     if (!latest) return [];
-    return latest.surfaces.map((s) => ({
-      url: s.url,
-      method: s.method,
-      parameters: (s.parameters ?? []) as string[],
-      authentication: s.authentication,
-      risk: s.risk,
-      source: s.source,
-      statusCode: s.statusCode,
-    }));
+    return latest.surfaces
+      .filter((s) => !isExternalDocUrl(s.url))
+      .map((s) => ({
+        url: s.url,
+        method: s.method,
+        parameters: (s.parameters ?? []) as string[],
+        authentication: s.authentication,
+        risk: s.risk,
+        source: s.source,
+        statusCode: s.statusCode,
+      }));
   }
 
   async loadProfile(scanId: string): Promise<ProfileInput> {
@@ -67,8 +87,6 @@ export class PrismaPlanRepository implements PlanRepository {
     };
   }
 
-
-
   async savePlan(payload: PlannedPlanPayload): Promise<AttackPlan> {
     const { scanId, plan } = payload;
     const created = await prisma.attackPlan.create({
@@ -81,6 +99,7 @@ export class PrismaPlanRepository implements PlanRepository {
           create: plan.targets.map((t) => ({
             scanId,
             targetId: t.targetId,
+            vulnerabilityId: t.vulnerabilityId ?? null,
             endpoint: t.endpoint,
             method: t.method,
             candidateVulnerabilities: t.candidateVulnerabilities as unknown as string[],
@@ -90,6 +109,7 @@ export class PrismaPlanRepository implements PlanRepository {
             requiresAuthentication: t.requiresAuthentication,
             estimatedRisk: t.estimatedRisk,
             breakdown: t.breakdown as unknown as Array<{ label: string; points: number }>,
+            verificationHints: (t.verificationHints ?? null) as unknown as object,
           })),
         },
       },
@@ -141,6 +161,7 @@ export class PrismaPlanRepository implements PlanRepository {
 function mapTarget(t: RawTargetRow): PlannedTarget {
   return {
     targetId: t.targetId,
+    vulnerabilityId: t.vulnerabilityId ?? undefined,
     endpoint: t.endpoint,
     method: t.method,
     candidateVulnerabilities: (t.candidateVulnerabilities ?? []) as unknown as string[],
@@ -150,11 +171,13 @@ function mapTarget(t: RawTargetRow): PlannedTarget {
     requiresAuthentication: t.requiresAuthentication,
     estimatedRisk: t.estimatedRisk as PlannedTarget['estimatedRisk'],
     breakdown: (t.breakdown ?? []) as unknown as ScoreFactor[],
+    verificationHints: (t.verificationHints ?? undefined) as unknown as PlannedTarget['verificationHints'],
   };
 }
 
 type RawTargetRow = {
   targetId: string;
+  vulnerabilityId?: string | null;
   endpoint: string;
   method: string;
   candidateVulnerabilities: unknown;

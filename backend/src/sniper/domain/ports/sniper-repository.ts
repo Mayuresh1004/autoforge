@@ -15,6 +15,7 @@ export interface PlannedTargetSnapshot {
   /** Planner-synthesized target id (planned_attack_targets.targetId). */
   readonly targetId: string;
   readonly scanId: string;
+  readonly vulnerabilityId?: string | null;
   readonly endpoint: string;
   readonly method: string;
   readonly candidateVulnerabilities: readonly string[];
@@ -23,6 +24,7 @@ export interface PlannedTargetSnapshot {
   readonly reason: string;
   readonly requiresAuthentication: boolean;
   readonly estimatedRisk: string;
+  readonly verificationHints?: import('../../../planner/domain/models/plan').TargetVerificationHints;
 }
 
 /** Payload to persist (or update) the final exploit record for a target. */

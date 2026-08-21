@@ -108,21 +108,43 @@ export class TargetScorer {
   candidates(features: TargetFeatures, summary: StaticSummary): readonly string[] {
     const out: string[] = [];
     const inputDriven = features.hasParameters || features.hasQuery;
-    if (features.isDbRelated && inputDriven) out.push('SQL Injection');
-    if (inputDriven && summary.categories.includes('SQL Injection')) out.push('SQL Injection');
-    if (features.isDbRelated && inputDriven && !out.includes('SQL Injection')) {
-      out.push('Injection (generic)');
+
+    // 1. Static scanner findings correlation
+    for (const cat of summary.categories) {
+      if (cat === 'SQL Injection' && (inputDriven || features.isDbRelated || features.isApi)) {
+        out.push('SQL Injection');
+      }
+      if (cat === 'Cross-Site Scripting' && (inputDriven || features.isSearch || features.isApi)) {
+        out.push('Cross-Site Scripting');
+      }
+      if (cat === 'Insecure File Upload' && (features.isUpload || features.isApi)) {
+        out.push('Insecure File Upload');
+      }
+      if (cat === 'Server-Side Request Forgery' && (inputDriven || features.isApi)) {
+        out.push('Server-Side Request Forgery');
+      }
+      if ((cat === 'Authentication Bypass' || cat === 'Broken Access Control') && (features.authentication || features.isLogin || features.isApi)) {
+        out.push('Broken Access Control');
+      }
     }
-    if ((features.isApi || features.isLogin || features.authentication) && inputDriven) {
-      out.push('Authentication Bypass');
+
+    // 2. Surface heuristic indicators
+    if (features.isUpload) {
+      out.push('Insecure File Upload');
     }
-    if (features.authentication && features.hasParameters) out.push('Broken Access Control');
-    if (features.isUpload) out.push('Insecure File Upload');
-    if (features.isUpload && features.hasParameters) out.push('Path Traversal');
-    if (features.hasQuery && features.isApi) out.push('Cross-Site Scripting');
-    if (summary.categories.includes('Server-Side Request Forgery') && features.isApi) {
+    if (features.isDbRelated && inputDriven) {
+      out.push('SQL Injection');
+    }
+    if (features.isSearch || (features.hasQuery && features.isApi)) {
+      out.push('Cross-Site Scripting');
+    }
+    if (features.authentication && (features.hasParameters || features.url.includes(':') || features.url.includes('{'))) {
+      out.push('Broken Access Control');
+    }
+    if (features.hasQuery && /url|target|redirect|fetch/i.test(features.url)) {
       out.push('Server-Side Request Forgery');
     }
+
     return [...new Set(out)].slice(0, 4);
   }
 

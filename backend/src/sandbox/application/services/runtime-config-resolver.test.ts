@@ -72,8 +72,12 @@ describe('resolveRuntimeConfig', () => {
     expect(config.strategy).toBe('PYTHON');
     expect(config.port).toBe(8000);
     expect(config.recipe?.baseImage).toContain('python');
-    expect(generatedDockerfile).toContain('pip install --no-cache-dir -r requirements.txt');
-    expect(generatedDockerfile).toContain('CMD [\"python\", \"app.py\"]');
+    expect(generatedDockerfile).toContain('pip install');
+    expect(generatedDockerfile).toContain('requirements.txt');
+    expect(generatedDockerfile).toContain('ENV GITHUB_WEBHOOK_SECRET=amass_runtime_dev_secret');
+    expect(generatedDockerfile).toContain('ENV SUPABASE_URL=http://localhost:54321');
+    expect(generatedDockerfile).toContain('ENV REDIS_URL=redis://localhost:6379');
+    expect(generatedDockerfile).toContain('CMD ["python", "app.py"]');
   });
 
   it('Mode 2 python: pyproject without entrypoint defaults to app.py', async () => {
@@ -106,5 +110,21 @@ describe('resolveRuntimeConfig', () => {
     expect((await resolveRuntimeConfig(py, 9001)).config.port).toBe(9001);
     const df = await tempRepo({ Dockerfile: 'FROM scratch\nCOPY . .\n' });
     expect((await resolveRuntimeConfig(df, 9001)).config.port).toBe(9001);
+  });
+
+  it('Mode 2 python monorepo: detects nested backend requirements and main.py (RepoMind layout)', async () => {
+    const dir = await tempRepo({
+      'README.md': '# RepoMind\n',
+      'backend/requirements.txt': 'fastapi==0.127.0\nuvicorn==0.40.0\n',
+      'backend/app/main.py': 'from fastapi import FastAPI\napp = FastAPI()\n@app.get("/health")\ndef health(): return {"status": "ok"}\n',
+      'frontend/package.json': JSON.stringify({ name: 'frontend', scripts: { dev: 'vite' } }),
+    });
+    const { config, generatedDockerfile } = await resolveRuntimeConfig(dir);
+    expect(config.strategy).toBe('PYTHON');
+    expect(config.port).toBe(8000);
+    expect(generatedDockerfile).toContain('pip install');
+    expect(generatedDockerfile).toContain('requirements.txt');
+    expect(generatedDockerfile).toContain('PYTHONPATH=');
+    expect(generatedDockerfile).toContain('backend/app/main.py');
   });
 });

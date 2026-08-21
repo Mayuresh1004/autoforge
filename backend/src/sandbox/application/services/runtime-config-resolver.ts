@@ -17,47 +17,91 @@ export interface ResolvedRuntimeConfig {
 
 const PYTHON_ENTRYPOINTS = ['app.py', 'main.py', 'server.py', 'wsgi.py', 'run.py'];
 
-function pythonDockerfile(install: boolean, entrypoint: string, port: number): string {
+interface PythonTarget {
+  readonly entrypoint: string;
+  readonly requirementsPath?: string;
+}
+
+interface NodeTarget {
+  readonly packageJsonPath: string;
+  readonly startScript: string;
+}
+
+function pythonDockerfile(target: PythonTarget, port: number): string {
   const lines = [
     'FROM python:3.11-slim',
     'ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1',
-    'WORKDIR /app',
-    'COPY . /app',
+    'ENV GITHUB_WEBHOOK_SECRET=amass_runtime_dev_secret',
+    'ENV SUPABASE_URL=http://localhost:54321',
+    'ENV SUPABASE_SERVICE_ROLE_KEY=amass_runtime_dev_service_key',
+    'ENV REDIS_URL=redis://localhost:6379',
+    'ENV GEMINI_API_KEY=amass_runtime_dev_gemini_key',
   ];
-  if (install) lines.push('RUN pip install --no-cache-dir -r requirements.txt');
-  lines.push(`EXPOSE ${port}`, `CMD ["python", "${entrypoint}"]`);
+
+  const entryDir = path.dirname(target.entrypoint).replace(/\\/g, '/');
+  const pythonPaths = ['/app'];
+  if (entryDir && entryDir !== '.') {
+    const parentDir = path.dirname(entryDir).replace(/\\/g, '/');
+    if (parentDir && parentDir !== '.') {
+      pythonPaths.push(`/app/${parentDir}`);
+    } else {
+      pythonPaths.push(`/app/${entryDir}`);
+    }
+  }
+  lines.push(`ENV PYTHONPATH=${pythonPaths.join(':')}`);
+  lines.push('WORKDIR /app', 'COPY . /app');
+
+  if (target.requirementsPath) {
+    lines.push(`RUN pip install --no-cache-dir --default-timeout=100 -r ${target.requirementsPath}`);
+  }
+
+  lines.push(`EXPOSE ${port}`);
+
+  const p = target.entrypoint.replace(/\\/g, '/');
+  if (p.includes('/')) {
+    const runnerScript = `import sys, os, importlib; p = '${p}'; d = os.path.dirname(p); sys.path.insert(0, '/app'); sys.path.insert(0, '/app/' + os.path.dirname(d) if '/' in d else '/app/' + d); m = os.path.splitext(p)[0].replace('/', '.'); mod = importlib.import_module(m); (importlib.import_module('uvicorn').run(mod.app, host='0.0.0.0', port=${port}) if hasattr(mod, 'app') else (exec(open(p).read())))`;
+    lines.push(`CMD ["python", "-c", "${runnerScript}"]`);
+  } else {
+    lines.push(`CMD ["python", "${p}"]`);
+  }
   return lines.join('\n');
 }
 
-function nodeDockerfile(port: number): string {
+function nodeDockerfile(target: NodeTarget, port: number): string {
+  const dir = path.dirname(target.packageJsonPath).replace(/\\/g, '/');
+  if (dir === '.') {
+    return [
+      'FROM node:20-alpine',
+      'WORKDIR /app',
+      'COPY package*.json ./',
+      'RUN npm install --omit=dev --no-audit --no-fund',
+      'COPY . .',
+      `EXPOSE ${port}`,
+      'CMD ["npm", "start"]',
+    ].join('\n');
+  }
+
   return [
     'FROM node:20-alpine',
     'WORKDIR /app',
-    'COPY package*.json ./',
-    'RUN npm install --omit=dev --no-audit --no-fund',
     'COPY . .',
+    `RUN cd ${dir} && npm install --omit=dev --no-audit --no-fund`,
     `EXPOSE ${port}`,
-    'CMD ["npm", "start"]',
+    `CMD ["npm", "start", "--prefix", "${dir}"]`,
   ].join('\n');
 }
 
 /**
- * Deterministic, bounded strategy resolution (Mode 1 = repository's own
- * Dockerfile; Mode 2 = fixed templates for python/node). Anything else fails
- * fast with an explicit UNSUPPORTED_RUNTIME result — no ad-hoc runtime was
- * ever built.
- *
- * Mode 1 nuance: a Dockerfile WITHOUT its own `CMD` inherits the base image's
- * default CMD (often a REPL/entrypoint that exits immediately — e.g.
- * `node`). When no CMD is declared, the start command is derived from the
- * repository's own stack (the same deterministic detection Mode 2 uses), so
- * a command-less Dockerfile still runs the app instead of exiting.
+ * Deterministic, bounded strategy resolution based on strong evidence hierarchy:
+ * 1. Package manifests / lockfiles & entrypoints (Python / Node)
+ * 2. Mode 1 repository-provided Dockerfile
+ * 3. Fallback explicit README instructions
  */
 export async function resolveRuntimeConfig(
   repoPath: string,
   portOverride?: number
 ): Promise<ResolvedRuntimeConfig> {
-  const files = await listEntryFiles(repoPath);
+  const files = await listAllFiles(repoPath);
 
   // Mode 1 — repository-provided Dockerfile.
   const dockerfile = findDockerfile(files);
@@ -68,9 +112,6 @@ export async function resolveRuntimeConfig(
       config: {
         strategy: 'DOCKERFILE',
         dockerfile: { path: dockerfile },
-        // Image CMD governs when declared; otherwise derive a stack-aware
-        // start command (e.g. NodeGoat's Dockerfile ships no CMD and its
-        // compose runs `npm start`).
         command: hasDockerfileCmd(raw) ? [] : await stackStartCommand(files, repoPath),
         port: portOverride ?? DOCKERFILE_DEFAULT_PORT,
         healthPath: DEFAULT_HEALTH_PATH,
@@ -78,40 +119,30 @@ export async function resolveRuntimeConfig(
     };
   }
 
-  // Mode 2 — python: entrypoint file or dependency manifest present.
-  const pythonEntrypoint = pythonEntrypointFrom(files);
-  if (pythonEntrypoint) {
+  // Mode 2 — Python: entrypoint file or dependency manifest present.
+  const pyTarget = findPythonTarget(files);
+  if (pyTarget) {
     const port = portOverride ?? PYTHON_DEFAULT_PORT;
     return {
       config: {
         strategy: 'PYTHON',
         recipe: {
           baseImage: 'python:3.11-slim',
-          installSteps: files.includes('requirements.txt')
-            ? ['pip install --no-cache-dir -r requirements.txt']
+          installSteps: pyTarget.requirementsPath
+            ? [`pip install --no-cache-dir -r ${pyTarget.requirementsPath}`]
             : [],
         },
         command: [],
         port,
         healthPath: DEFAULT_HEALTH_PATH,
       },
-      generatedDockerfile: pythonDockerfile(files.includes('requirements.txt'), pythonEntrypoint, port),
+      generatedDockerfile: pythonDockerfile(pyTarget, port),
     };
   }
 
-  // Mode 2 — node: package.json with a start script.
-  if (files.includes('package.json')) {
-    const manifest = await fs.readFile(path.join(repoPath, 'package.json'), 'utf8').catch(() => null);
-    if (manifest === null) throw new UnsupportedRuntimeError(['package.json unreadable']);
-    try {
-      const parsed = JSON.parse(manifest) as { scripts?: Record<string, string> };
-      if (typeof parsed.scripts?.start !== 'string') {
-        throw new UnsupportedRuntimeError(['package.json without a start script']);
-      }
-    } catch (error) {
-      if (error instanceof UnsupportedRuntimeError) throw error;
-      throw new UnsupportedRuntimeError(['package.json is not valid JSON']);
-    }
+  // Mode 2 — Node: package.json with a start script.
+  const nodeTarget = await findNodeTarget(files, repoPath);
+  if (nodeTarget) {
     const port = portOverride ?? NODE_DEFAULT_PORT;
     return {
       config: {
@@ -124,7 +155,7 @@ export async function resolveRuntimeConfig(
         port,
         healthPath: DEFAULT_HEALTH_PATH,
       },
-      generatedDockerfile: nodeDockerfile(port),
+      generatedDockerfile: nodeDockerfile(nodeTarget, port),
     };
   }
 
@@ -137,56 +168,138 @@ export function strategyLabel(strategy: RuntimeStrategy): string {
 
 // -- internals ---------------------------------------------------------------
 
-async function listEntryFiles(repoPath: string): Promise<readonly string[]> {
-  const entries = await fs.readdir(repoPath, { withFileTypes: true }).catch(() => []);
-  return entries
-    .filter((entry) => entry.isFile())
-    .map((entry) => entry.name)
-    .sort();
+async function listAllFiles(repoPath: string, maxDepth = 3): Promise<readonly string[]> {
+  const result: string[] = [];
+  const ignoreDirs = new Set(['.git', 'node_modules', 'dist', 'build', '__pycache__', '.venv', 'venv', '.next', '.output']);
+
+  async function walk(currentDir: string, depth: number) {
+    if (depth > maxDepth) return;
+    const entries = await fs.readdir(currentDir, { withFileTypes: true }).catch(() => []);
+    for (const entry of entries) {
+      const fullPath = path.join(currentDir, entry.name);
+      const relPath = path.relative(repoPath, fullPath).replace(/\\/g, '/');
+      if (entry.isDirectory()) {
+        if (!ignoreDirs.has(entry.name)) {
+          await walk(fullPath, depth + 1);
+        }
+      } else if (entry.isFile()) {
+        result.push(relPath);
+      }
+    }
+  }
+
+  await walk(repoPath, 1);
+  return result.sort();
 }
 
 function findDockerfile(files: readonly string[]): string | null {
   if (files.includes('Dockerfile')) return 'Dockerfile';
-  return files.find((name) => /^dockerfile(?:\..+)?$/i.test(name)) ?? null;
+  return files.find((name) => /(^|\/)dockerfile(?:\..+)?$/i.test(name)) ?? null;
 }
 
 /** The repository declares its own `CMD` (any stage) → the image CMD governs. */
 function hasDockerfileCmd(raw: string): boolean {
-  // A comment line can never match: it starts with '#' before 'CMD'.
   return /^[ \t]*CMD\b/m.test(raw);
 }
 
-/** Shared python-entrypoint detection (Mode 2 + Mode 1 no-CMD fallback). */
-function pythonEntrypointFrom(files: readonly string[]): string | undefined {
-  return (
-    PYTHON_ENTRYPOINTS.find((name) => files.includes(name)) ??
-    (files.includes('requirements.txt') || files.includes('pyproject.toml') ? 'app.py' : undefined)
+function findPythonTarget(files: readonly string[]): PythonTarget | null {
+  let entrypoint: string | undefined;
+
+  // 1. Root entrypoint
+  for (const name of PYTHON_ENTRYPOINTS) {
+    if (files.includes(name)) {
+      entrypoint = name;
+      break;
+    }
+  }
+
+  // 2. Nested entrypoint
+  if (!entrypoint) {
+    for (const name of PYTHON_ENTRYPOINTS) {
+      const match = files.find((f) => f.endsWith(`/${name}`));
+      if (match) {
+        entrypoint = match;
+        break;
+      }
+    }
+  }
+
+  const requirementsPath = files.find(
+    (f) => f === 'requirements.txt' || f.endsWith('/requirements.txt')
   );
+
+  const pyprojectPath = files.find(
+    (f) => f === 'pyproject.toml' || f.endsWith('/pyproject.toml')
+  );
+
+  const pipfilePath = files.find(
+    (f) => f === 'Pipfile' || f.endsWith('/Pipfile')
+  );
+
+  if (!entrypoint && (requirementsPath || pyprojectPath || pipfilePath)) {
+    const manifestPath = requirementsPath || pyprojectPath || pipfilePath;
+    entrypoint = manifestPath
+      ? path.posix.join(path.posix.dirname(manifestPath), 'app.py')
+      : 'app.py';
+  }
+
+  if (!entrypoint) return null;
+
+  return {
+    entrypoint,
+    requirementsPath,
+  };
 }
 
-/**
- * Deterministic stack-aware start command for a repo, used when a Mode-1
- * Dockerfile ships no CMD. Mirrors Mode 2's detection exactly (python
- * entrypoint / package.json start script); returns [] when the stack is not
- * recognizable — the container then runs the image default and the health
- * check surfaces the failure.
- */
+async function findNodeTarget(
+  files: readonly string[],
+  repoPath: string
+): Promise<NodeTarget | null> {
+  const packageJsons = files.filter(
+    (f) => f === 'package.json' || f.endsWith('/package.json')
+  );
+
+  packageJsons.sort((a, b) => {
+    const aIsRoot = a === 'package.json' ? 0 : 1;
+    const bIsRoot = b === 'package.json' ? 0 : 1;
+    return aIsRoot - bIsRoot;
+  });
+
+  for (const pkgPath of packageJsons) {
+    const manifest = await fs
+      .readFile(path.join(repoPath, pkgPath), 'utf8')
+      .catch(() => null);
+    if (!manifest) continue;
+    try {
+      const parsed = JSON.parse(manifest) as { scripts?: Record<string, string> };
+      if (typeof parsed.scripts?.start === 'string') {
+        return {
+          packageJsonPath: pkgPath,
+          startScript: parsed.scripts.start,
+        };
+      }
+    } catch {
+      /* ignore invalid JSON */
+    }
+  }
+
+  return null;
+}
+
+function pythonEntrypointFrom(files: readonly string[]): string | undefined {
+  const target = findPythonTarget(files);
+  return target?.entrypoint;
+}
+
 async function stackStartCommand(
   files: readonly string[],
   repoPath: string
 ): Promise<readonly string[]> {
-  const pythonEntrypoint = pythonEntrypointFrom(files);
-  if (pythonEntrypoint) return ['python', pythonEntrypoint];
-  if (files.includes('package.json')) {
-    const manifest = await fs.readFile(path.join(repoPath, 'package.json'), 'utf8').catch(() => null);
-    if (manifest !== null) {
-      try {
-        const parsed = JSON.parse(manifest) as { scripts?: Record<string, string> };
-        if (typeof parsed.scripts?.start === 'string') return ['npm', 'start'];
-      } catch {
-        /* unparseable manifest → no fallback command */
-      }
-    }
-  }
+  const pythonTarget = findPythonTarget(files);
+  if (pythonTarget) return ['python', pythonTarget.entrypoint];
+
+  const nodeTarget = await findNodeTarget(files, repoPath);
+  if (nodeTarget) return ['npm', 'start'];
+
   return [];
 }

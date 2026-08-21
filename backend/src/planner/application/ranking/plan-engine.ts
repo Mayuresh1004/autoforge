@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import type { AttackPlan, AttackPlanSummary, PlannedTarget } from '../../domain/models/plan';
 import type { PlanRequest } from '../../domain/models/plan-input';
-import { extractFeatures, summarizeFindings } from '../scoring/feature-extractor';
+import { categorizeFinding, extractFeatures, summarizeFindings } from '../scoring/feature-extractor';
 import { TargetScorer, compareTargets } from '../scoring/target-scorer';
+import { isExternalDocUrl } from '../../infrastructure/repository/prisma-plan-repository';
 
 /**
  * Rank Engine: turns the plan request into a persisted-ready AttackPlan.
@@ -15,12 +16,28 @@ export class PlanEngine {
   build(planId: string, request: PlanRequest): AttackPlan {
     const staticSummary = summarizeFindings(request.staticFindings);
 
-    const targets: PlannedTarget[] = request.attackSurface.map((surface) => {
+    const validSurfaces = request.attackSurface.filter((surface) => !isExternalDocUrl(surface.url));
+
+    const targets: PlannedTarget[] = validSurfaces.map((surface) => {
       const features = extractFeatures(surface, request.profile);
       const scored = this.scorer.score(features, staticSummary);
       const targetId = randomUUID();
+
+      const matchingFinding = request.staticFindings.find((f) => {
+        const categories = categorizeFinding(f);
+        return scored.candidateVulnerabilities.some(
+          (c) =>
+            categories.includes(c) ||
+            c.toLowerCase().includes((f.type || '').toLowerCase()) ||
+            (f.cwe && c.includes(f.cwe))
+        );
+      });
+
+      const verificationHints = deriveVerificationHints(surface, scored.candidateVulnerabilities, matchingFinding);
+
       return {
         targetId,
+        vulnerabilityId: matchingFinding?.vulnerabilityId ?? matchingFinding?.id,
         endpoint: surface.url,
         method: features.method,
         candidateVulnerabilities: scored.candidateVulnerabilities,
@@ -30,6 +47,7 @@ export class PlanEngine {
         requiresAuthentication: features.authentication,
         estimatedRisk: scored.estimatedRisk,
         breakdown: scored.breakdown,
+        verificationHints,
       };
     });
 
@@ -39,7 +57,7 @@ export class PlanEngine {
       id: planId,
       scanId: request.scanId,
       createdAt: new Date().toISOString(),
-      coveredSurfaces: request.attackSurface.length,
+      coveredSurfaces: validSurfaces.length,
       coveredFindings: request.staticFindings.length,
       summary: summarizeTargets(targets),
       targets,
@@ -64,4 +82,52 @@ export function summarizeTargets(targets: readonly PlannedTarget[]): AttackPlanS
 /** Generate a fresh plan id (collision-resistant). */
 export function newPlanId(): string {
   return `plan_${randomUUID().slice(0, 12)}`;
+}
+
+export function deriveVerificationHints(
+  surface: SurfaceInput,
+  candidateVulnerabilities: readonly string[],
+  _matchingFinding?: StaticVulnInput
+): import('../../domain/models/plan').TargetVerificationHints {
+  let paramName: string | undefined = surface.parameters?.[0];
+  let paramLocation: import('../../domain/models/plan').ParameterLocation | undefined = undefined;
+  let uploadField: string | undefined = undefined;
+  let resourceIdentifier: string | undefined = undefined;
+
+  try {
+    const urlObj = new URL(surface.url);
+    const searchKeys = Array.from(urlObj.searchParams.keys());
+    if (searchKeys.length > 0) {
+      paramName = paramName ?? searchKeys[0];
+      paramLocation = 'query';
+    }
+  } catch {
+    // Ignore invalid URL formatting
+  }
+
+  const pathMatch = surface.url.match(/[:{]([a-zA-Z0-9_]+)}?/);
+  if (pathMatch) {
+    resourceIdentifier = pathMatch[1];
+    if (!paramName) {
+      paramName = pathMatch[1];
+      paramLocation = 'path';
+    }
+  }
+
+  const isFileUpload = candidateVulnerabilities.some((c) => /file|upload|cwe-434/i.test(c));
+  if (isFileUpload || surface.url.toLowerCase().includes('upload')) {
+    uploadField = surface.parameters?.[0] ?? 'file';
+  }
+
+  if (!paramLocation) {
+    const method = surface.method.toUpperCase();
+    paramLocation = method === 'POST' || method === 'PUT' ? 'body' : 'query';
+  }
+
+  return {
+    parameterName: paramName,
+    parameterLocation: paramLocation,
+    uploadField,
+    resourceIdentifier,
+  };
 }

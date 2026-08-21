@@ -10,11 +10,28 @@ export interface ScoreFactor {
   readonly points: number;
 }
 
+export type ParameterLocation = 'query' | 'path' | 'body' | 'form' | 'header' | 'cookie';
+
+export interface TargetAuthorizationContext {
+  readonly ownerCredentialRef?: string;
+  readonly attackerCredentialRef?: string;
+}
+
+export interface TargetVerificationHints {
+  readonly parameterName?: string;
+  readonly parameterLocation?: ParameterLocation;
+  readonly uploadField?: string;
+  readonly contentType?: string;
+  readonly resourceIdentifier?: string;
+  readonly authorizationContext?: TargetAuthorizationContext;
+}
+
 /** One prioritized attack-surface target in the plan. The Planner only
  * *ranks* it — it never executes, and every box is explained by `breakdown`,
  * so there are no black-box decisions. */
 export interface PlannedTarget {
   readonly targetId: string;
+  readonly vulnerabilityId?: string;
   readonly endpoint: string;
   readonly method: string;
   /** Risk hypotheses to test first (never claims to be conclusive). */
@@ -29,6 +46,8 @@ export interface PlannedTarget {
   readonly estimatedRisk: EstimatedRisk;
   /** Transparent score accounting: name + points of each contributing factor. */
   readonly breakdown: readonly ScoreFactor[];
+  /** Structured hints guiding exploit verifiers (parameter names, upload fields, locations, auth context). */
+  readonly verificationHints?: TargetVerificationHints;
 }
 
 export interface AttackPlanSummary {

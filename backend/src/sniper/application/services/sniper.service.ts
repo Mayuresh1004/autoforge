@@ -27,6 +27,7 @@ export interface SniperServiceDeps {
   readonly config: SniperConfig;
   /** Phase 9 observability publisher (default: silent). */
   readonly events?: AmassEventPublisher;
+  readonly rag?: import('../../../knowledge/application/services/rag.service').RagService;
 }
 
 /**
@@ -78,6 +79,7 @@ export class DefaultSniperService implements SniperService {
       verifiers: this.deps.verifiers,
       config: this.deps.config,
       events: this.deps.events,
+      rag: this.deps.rag,
     });
 
     const outcomes = await executor.runAll(

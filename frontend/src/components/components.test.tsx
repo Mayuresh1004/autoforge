@@ -67,7 +67,7 @@ describe('Frontend UI Components', () => {
     render(<FindingCard finding={mockFinding} />);
     expect(screen.getByText('CRITICAL')).toBeInTheDocument();
     expect(screen.getByText('SQL Injection in /api/login')).toBeInTheDocument();
-    expect(screen.getByText('🎯 EXPLOIT CONFIRMED')).toBeInTheDocument();
+    expect(screen.getByText('🎯 CONFIRMED')).toBeInTheDocument();
   });
 
   it('renders PatchView with diff content', () => {

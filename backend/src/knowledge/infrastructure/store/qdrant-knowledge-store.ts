@@ -111,8 +111,8 @@ function asSeverity(value: unknown): KnowledgeSeverity | null {
   return typeof value === 'string' ? (choices[value] ?? null) : null;
 }
 
-function asEnum(value: unknown): 'nvd' {
-  return value === 'nvd' ? 'nvd' : 'nvd';
+function asEnum(value: unknown): import('../../domain/models/knowledge-document').KnowledgeSourceType {
+  return value === 'amass-kb' ? 'amass-kb' : 'nvd';
 }
 
 function asNullableString(value: unknown): string | null {

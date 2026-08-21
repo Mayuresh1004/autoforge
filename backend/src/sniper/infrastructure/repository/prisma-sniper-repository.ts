@@ -36,6 +36,7 @@ export class PrismaSniperRepository implements SniperRepository {
       id: row.id,
       targetId: row.targetId,
       scanId: row.scanId,
+      vulnerabilityId: row.vulnerabilityId ?? null,
       endpoint: row.endpoint,
       method: row.method,
       candidateVulnerabilities: (row.candidateVulnerabilities ?? []) as unknown as string[],
@@ -44,6 +45,7 @@ export class PrismaSniperRepository implements SniperRepository {
       reason: row.reason,
       requiresAuthentication: row.requiresAuthentication,
       estimatedRisk: row.estimatedRisk,
+      verificationHints: (row.verificationHints ?? undefined) as unknown as import('../../../planner/domain/models/plan').TargetVerificationHints,
     };
   }
 

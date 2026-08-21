@@ -20,6 +20,11 @@ export const ALLOWED_KEYS: readonly string[] = [
   // Sibling database on the sandbox's internal network (same pattern as
   // PGHOST): the app container reaches it over Docker DNS, never externally.
   'MONGODB_URI',
+  'GITHUB_WEBHOOK_SECRET',
+  'SUPABASE_URL',
+  'SUPABASE_SERVICE_ROLE_KEY',
+  'REDIS_URL',
+  'GEMINI_API_KEY',
 ] as const;
 
 export interface BuildEnv {

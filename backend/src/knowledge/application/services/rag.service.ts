@@ -93,7 +93,8 @@ export class RagService {
   }): Promise<RagResultDocument> {
     const payload = hit.payload ?? null;
     const cveId = payload?.cveId ?? null;
-    const record = cveId ? await this.deps.contentRepository.findByCveId(cveId) : null;
+    const record = (await this.deps.contentRepository.findByCveId(hit.id))
+      ?? (cveId ? await this.deps.contentRepository.findByCveId(cveId) : null);
     return {
       id: hit.id,
       externalId: cveId ?? hit.id,

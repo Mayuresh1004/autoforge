@@ -5,6 +5,7 @@
 import { api } from '../api/client';
 import type { AMASSDataProvider, StartScanOptions } from './types';
 import type { AmassEvent } from '../types/amass-events';
+import { AMASS_EVENT_TYPES } from '../types/amass-events';
 import type { ApiResponse, ScanModel, FindingModel, ScanStatistics, PlanModel } from '../types/api-types';
 
 const API_BASE_URL = (import.meta.env.VITE_API_URL as string | undefined)?.replace(/\/$/, '') ?? 'http://localhost:3001';
@@ -36,10 +37,10 @@ export class RealDataProvider implements AMASSDataProvider {
   subscribeEvents(scanId: string, onEvent: (event: AmassEvent) => void): () => void {
     if (!scanId) return () => {};
 
-    const url = `${API_BASE_URL}/api/scans/${scanId}/events`;
-    const eventSource = new EventSource(url);
+    const url = `${API_BASE_URL}/api/scans/${encodeURIComponent(scanId)}/events`;
+    const eventSource = new EventSource(url, { withCredentials: true });
 
-    eventSource.onmessage = (e) => {
+    const handleMsg = (e: MessageEvent) => {
       try {
         const parsed = JSON.parse(e.data) as AmassEvent;
         onEvent(parsed);
@@ -47,6 +48,11 @@ export class RealDataProvider implements AMASSDataProvider {
         console.error('Failed to parse SSE event message', err);
       }
     };
+
+    for (const eventType of AMASS_EVENT_TYPES) {
+      eventSource.addEventListener(eventType, handleMsg as EventListener);
+    }
+    eventSource.onmessage = handleMsg;
 
     return () => {
       eventSource.close();

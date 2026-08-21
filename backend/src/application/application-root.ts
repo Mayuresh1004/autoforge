@@ -144,13 +144,6 @@ export function createApplicationInfrastructure(
   // Runtime sandbox lifecycle — the single shared manager.
   const runtime = createRuntimeSandboxInfrastructure({ ...options.runtime, manager, db, events: publisher });
 
-  // Sniper agent — the single shared manager.
-  const sniper = createSniperInfrastructure({
-    manager,
-    repository: options.sniperRepository,
-    events: publisher,
-  });
-
   // Shared cross-agent ports (single instances, not per-route).
   const registry =
     options.registry ?? new FileSystemPromptRegistry(resolvePromptsRoot(promptsConfig.root));
@@ -166,6 +159,14 @@ export function createApplicationInfrastructure(
       { embedding: embeddingConfig, nvd: knowledgeConfig.nvd, qdrant: knowledgeConfig.qdrant },
       db
     ).rag;
+
+  // Sniper agent — the single shared manager.
+  const sniper = createSniperInfrastructure({
+    manager,
+    repository: options.sniperRepository,
+    events: publisher,
+    rag,
+  });
 
   const engineerConfig = options.engineerConfig ?? defaultEngineerConfig;
   const criticConfig = options.criticConfig ?? defaultCriticConfig;

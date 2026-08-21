@@ -9,7 +9,7 @@
  * prompts.
  */
 
-export type KnowledgeSourceType = 'nvd';
+export type KnowledgeSourceType = 'nvd' | 'amass-kb';
 
 export type KnowledgeSeverity = 'INFO' | 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
 
