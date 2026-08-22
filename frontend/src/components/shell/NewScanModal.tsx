@@ -2,15 +2,16 @@ import React, { useState } from 'react';
 import { Dialog } from '../ui/Dialog';
 import { Button } from '../ui/Button';
 import { getAMASSDataProvider } from '../../providers';
-import type { ScanModel } from '../../types/api-types';
+import type { ApiResponse, ScanModel } from '../../types/api-types';
 
 export interface NewScanModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onScanCreated: (scan: ScanModel) => void;
+  onScanCreated?: (scan: ScanModel) => void;
+  onStartScan?: (options: { repositoryUrl: string }) => Promise<ApiResponse<ScanModel>>;
 }
 
-export function NewScanModal({ isOpen, onClose, onScanCreated }: NewScanModalProps) {
+export function NewScanModal({ isOpen, onClose, onScanCreated, onStartScan }: NewScanModalProps) {
   const [targetUrl, setTargetUrl] = useState('https://github.com/Mayuresh1004/AskBit');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -28,13 +29,12 @@ export function NewScanModal({ isOpen, onClose, onScanCreated }: NewScanModalPro
 
     try {
       const provider = getAMASSDataProvider();
-
-      const res = await provider.startScan({
-        repositoryUrl: finalUrl,
-      });
+      const res = onStartScan
+        ? await onStartScan({ repositoryUrl: finalUrl })
+        : await provider.startScan({ repositoryUrl: finalUrl });
 
       if (res.success && res.data) {
-        onScanCreated(res.data);
+        if (onScanCreated) onScanCreated(res.data);
         onClose();
       } else {
         setError(res.error?.message ?? 'Failed to trigger scan');

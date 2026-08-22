@@ -57,6 +57,8 @@ const envSchema = z.object({
 
   AGENTS_URL: z.string().default('http://localhost:8000'),
 
+  GITHUB_TOKEN: z.string().optional(),
+
   ANALYZER_WORKSPACE_DIR: z.string().optional(),
   ANALYZER_CLONE_TIMEOUT_MS: z.coerce.number().default(120_000),
   ANALYZER_MAX_REPO_BYTES: z.coerce.number().default(2_147_483_648),
@@ -525,4 +527,8 @@ export const staticScannerConfig: StaticScannerConfig = {
       extraArgs: scannerArgsParser(config.SCANNER_PIP_AUDIT_ARGS),
     },
   },
+};
+
+export const githubConfig = {
+  token: config.GITHUB_TOKEN,
 };

@@ -112,4 +112,38 @@ describe('SqlInjectionVerifier', () => {
     expect(out.retryable).toBe(false);
     expect(out.reason).toContain('authentication');
   });
+
+  it('maps no parameter(s) found output to NOT_TESTED with retryable=false', async () => {
+    const runtime = new FakeToolRuntime();
+    runtime.script(
+      execResult({
+        stdout: "[WARNING] you've provided target URL without any GET parameters\n[CRITICAL] no parameter(s) found for testing",
+        exitCode: 1,
+      })
+    );
+    const out = await new SqlInjectionVerifier().verify(target(), ctx(runtime));
+    expect(out.status).toBe('NOT_TESTED');
+    expect(out.retryable).toBe(false);
+    expect(out.reason).toContain('no GET query parameters or POST body parameters');
+  });
+
+  it('derives POST body from target verification hints and passes it to the tool runtime', async () => {
+    const runtime = new FakeToolRuntime();
+    runtime.script(execResult({ stdout: SQLMAP_VULNERABLE }));
+    const postTarget: VerificationTarget = {
+      type: SQL_INJECTION,
+      endpoint: 'http://app:3000/api/vote',
+      method: 'POST',
+      verificationHints: {
+        parameters: ['answerId', 'vote'],
+        parameterName: 'answerId',
+      },
+    };
+    await new SqlInjectionVerifier().verify(postTarget, ctx(runtime));
+
+    expect(runtime.calls).toHaveLength(1);
+    const callArgv = runtime.calls[0].argv;
+    expect(callArgv).toContain('--data');
+    expect(callArgv[callArgv.indexOf('--data') + 1]).toBe('answerId=1&vote=1');
+  });
 });

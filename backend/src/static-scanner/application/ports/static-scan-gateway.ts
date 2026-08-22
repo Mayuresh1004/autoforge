@@ -13,6 +13,7 @@ import { summarize } from '../../domain/models/scan';
  * methods read persisted results. The controller depends only on this port.
  */
 export interface StaticScanGateway {
+  startStaticScan?(repositoryUrl: string): Promise<{ scanId: string; status: string }>;
   runStaticScan(repositoryUrl: string): Promise<ScanResult>;
   getScanOverview(scanId: string): Promise<ScanOverview | null>;
   getScanFindings(scanId: string): Promise<readonly StoredFinding[] | null>;

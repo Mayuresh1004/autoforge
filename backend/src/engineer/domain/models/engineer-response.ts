@@ -28,6 +28,10 @@ export interface EngineerResponse {
   readonly filePath: string | null;
   /** Unified diff (GENERATED only). Empty for REJECTED. */
   readonly diff: string | null;
+  /** Original vulnerable code snippet (optional in domain response, used during diff construction). */
+  readonly originalCode?: string | null;
+  /** Fixed replacement code snippet (optional in domain response, used during diff construction). */
+  readonly patchedCode?: string | null;
   /** Why the patch mitigates the vulnerability (REQUIRED). */
   readonly explanation: string;
   /** Short remediation strategy label (advisory). */

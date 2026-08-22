@@ -17,6 +17,7 @@
 import type { EngineerBounds, EngineerResponse } from '../../domain/models/engineer-response';
 import { DEFAULT_ENGINEER_BOUNDS, isEngineerPatchStatus } from '../../domain/models/engineer-response';
 import { isSupportedCodeFile, normalizeRepoPath } from '../../domain/models/repo-path';
+import { buildUnifiedDiff } from './diff-builder';
 
 export interface EngineerValidationExpectation {
   readonly vulnerabilityId: string;
@@ -60,6 +61,44 @@ export function validateEngineerResponse(
     };
   }
 
+  const assumptionsRaw = Array.isArray(record.assumptions)
+    ? record.assumptions.filter((a): a is string => typeof a === 'string')
+    : [];
+  if (assumptionsRaw.length > bounds.maxAssumptions) {
+    return { ok: false, failures: [`assumptions exceeds ${bounds.maxAssumptions} items`] };
+  }
+  const assumptions = assumptionsRaw.slice(0, bounds.maxAssumptions).map((a) => a.slice(0, 300));
+
+  if (status === 'REJECTED') {
+    const reason = typeof record.reason === 'string' ? record.reason.trim() : (typeof record.explanation === 'string' ? record.explanation.trim() : '');
+    if (reason.length === 0) {
+      return { ok: false, failures: ['REJECTED responses require a non-empty reason'] };
+    }
+    if (record.filePath != null || record.diff != null) {
+      return { ok: false, failures: ['REJECTED responses must not include filePath/diff'] };
+    }
+    const explanation = typeof record.explanation === 'string' && record.explanation.trim().length > 0
+      ? record.explanation.trim()
+      : reason;
+    const remediation = typeof record.remediation === 'string' && record.remediation.trim().length > 0
+      ? record.remediation.trim()
+      : 'parameterized query';
+
+    return {
+      ok: true,
+      response: {
+        vulnerabilityId,
+        status: 'REJECTED',
+        filePath: null,
+        diff: null,
+        explanation,
+        remediation,
+        assumptions,
+        reason: reason.slice(0, 1_000),
+      },
+    };
+  }
+
   const explanation = typeof record.explanation === 'string' ? record.explanation : '';
   if (explanation.trim().length === 0) {
     return { ok: false, failures: ['explanation is required'] };
@@ -71,41 +110,14 @@ export function validateEngineerResponse(
   if (remediation.length === 0) {
     return { ok: false, failures: ['remediation is required (e.g. parameterized query)'] };
   }
-  const assumptionsRaw = Array.isArray(record.assumptions)
-    ? record.assumptions.filter((a): a is string => typeof a === 'string')
-    : [];
-  if (assumptionsRaw.length > bounds.maxAssumptions) {
-    return { ok: false, failures: [`assumptions exceeds ${bounds.maxAssumptions} items`] };
-  }
-  const assumptions = assumptionsRaw.slice(0, bounds.maxAssumptions).map((a) => a.slice(0, 300));
-
-  if (status === 'REJECTED') {
-    const reason = typeof record.reason === 'string' ? record.reason.trim() : '';
-    if (reason.length === 0) {
-      return { ok: false, failures: ['REJECTED responses require a non-empty reason'] };
-    }
-    if (record.filePath != null || record.diff != null) {
-      return { ok: false, failures: ['REJECTED responses must not include filePath/diff'] };
-    }
-    return {
-      ok: true,
-      response: {
-        vulnerabilityId,
-        status: 'REJECTED',
-        filePath: null,
-        diff: null,
-        explanation: explanation.trim(),
-        remediation,
-        assumptions,
-        reason: reason.slice(0, 1_000),
-      },
-    };
-  }
 
   // ---- GENERATED ----------------------------------------------------------
   const filePathRaw = typeof record.filePath === 'string' ? record.filePath : null;
   const filePath = filePathRaw ? normalizeRepoPath(filePathRaw) : null;
-  const diff = typeof record.diff === 'string' ? record.diff.trim() : '';
+  
+  const originalCode = typeof record.originalCode === 'string' ? record.originalCode : null;
+  const patchedCode = typeof record.patchedCode === 'string' ? record.patchedCode : null;
+  let diff = typeof record.diff === 'string' ? record.diff.trim() : '';
 
   const failures: string[] = [];
   if (!filePathRaw) {
@@ -119,6 +131,18 @@ export function validateEngineerResponse(
   const expectedFile = expected.filePath ? normalizeRepoPath(expected.filePath) : null;
   if (expectedFile && filePath && filePath !== expectedFile) {
     failures.push(`filePath ${filePath} does not match the finding target ${expectedFile}`);
+  }
+
+  if (originalCode !== null && patchedCode !== null && filePath) {
+    if (originalCode.trim().length === 0 || patchedCode.trim().length === 0) {
+      failures.push('originalCode and patchedCode must be non-empty strings');
+    } else if (originalCode === patchedCode) {
+      failures.push('originalCode and patchedCode are identical (no changes made)');
+    } else {
+      diff = buildUnifiedDiff(filePath, originalCode, patchedCode);
+    }
+  } else if (!diff) {
+    failures.push('originalCode and patchedCode are required for GENERATED');
   }
 
   if (diff.length === 0) {
@@ -142,6 +166,8 @@ export function validateEngineerResponse(
       status: 'GENERATED',
       filePath,
       diff,
+      originalCode,
+      patchedCode,
       explanation: explanation.trim(),
       remediation,
       assumptions,

@@ -113,7 +113,10 @@ export class PrismaScanRepository implements ScanRepository {
   ): Promise<{ scan: StoredScan; findings: readonly StoredFinding[] } | null> {
     const scan = await this.getScan(scanId);
     if (!scan) return null;
-    const rows = await prisma.vulnerability.findMany({ where: { scanId } });
+    const rows = await prisma.vulnerability.findMany({
+      where: { scanId },
+      include: { patches: { orderBy: { createdAt: 'desc' }, take: 1 } },
+    });
     return { scan, findings: rows.map(toStoredFinding) };
   }
 }
@@ -170,6 +173,7 @@ function toStoredFinding(row: {
   vulnType: string | null;
   title: string;
   severity: Severity;
+  status?: string | null;
   confidence: number | null;
   filePath: string | null;
   lineNumber: number | null;
@@ -180,13 +184,22 @@ function toStoredFinding(row: {
   message: string | null;
   description: string | null;
   createdAt: Date;
+  patches?: Array<{
+    id: string;
+    filePath: string | null;
+    diffContent: string | null;
+    explanation: string | null;
+    status: string;
+  }>;
 }): StoredFinding {
+  const latestPatch = row.patches && row.patches.length > 0 ? row.patches[0] : null;
   return {
     id: row.id,
     scanId: row.scanId,
     scanner: row.scanner ?? 'unknown',
     type: row.vulnType ?? row.title ?? 'unknown',
     severity: row.severity ?? 'INFO',
+    status: row.status ?? 'DETECTED',
     confidence: row.confidence ?? 0.5,
     file: row.filePath,
     line: row.lineNumber,
@@ -196,6 +209,15 @@ function toStoredFinding(row: {
     references: toReferences(row.references),
     evidence: row.evidence,
     createdAt: row.createdAt ?? new Date(),
+    patch: latestPatch
+      ? {
+          id: latestPatch.id,
+          filePath: latestPatch.filePath,
+          diffContent: latestPatch.diffContent,
+          explanation: latestPatch.explanation,
+          status: latestPatch.status,
+        }
+      : null,
   };
 }
 

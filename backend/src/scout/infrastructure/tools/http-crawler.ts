@@ -1,6 +1,6 @@
 import type { ScoutToolRuntime } from '../../domain/ports/scout-tool-runtime';
 import type { CrawledPage, Crawler, CrawlOptions, CrawlResult } from '../../domain/ports/crawler';
-import { extractHrefs, isStaticAssetUrl } from './html';
+import { extractHrefs, extractScriptUrls, isStaticAssetUrl } from './html';
 
 /**
  * Same-origin breadth-first crawler. Respects maxPages / maxDepth, stays on
@@ -41,7 +41,12 @@ export class HttpCrawler implements Crawler {
         });
         if (next.depth >= options.maxDepth) continue;
 
-        for (const href of extractHrefs(probe.body)) {
+        const candidateUrls = [
+          ...extractHrefs(probe.body),
+          ...extractScriptUrls(probe.body),
+        ];
+
+        for (const href of candidateUrls) {
           let resolved: URL;
           try {
             resolved = new URL(href, next.url);

@@ -47,9 +47,15 @@ export function normalizeRepoPath(raw: string): string {
   return cleaned;
 }
 
-/** Acceptable to read/patch as source code (extension + lockfile blacklist). */
+const DENIED_DIRECTORIES = new Set([
+  'dist', 'build', '.next', '.nuxt', '.output', 'target', 'coverage', '.cache', 'out', 'vendor',
+]);
+
+/** Acceptable to read/patch as source code (extension + lockfile + build artifact blacklist). */
 export function isSupportedCodeFile(path: string): boolean {
   if (DENIED_FILE_NAMES.has(path)) return false;
+  const segments = path.split('/');
+  if (segments.some((s) => DENIED_DIRECTORIES.has(s.toLowerCase()))) return false;
   const lower = path.toLowerCase();
   if (DENIED_EXTENSIONS.has(lower.slice(lower.lastIndexOf('.') + 1))) return false;
   const dot = path.lastIndexOf('.');

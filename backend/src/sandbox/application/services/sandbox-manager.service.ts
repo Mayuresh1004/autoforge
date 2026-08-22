@@ -98,7 +98,22 @@ export class SandboxManagerService implements SandboxManager {
 
       return await this.require(id);
     } catch (error) {
-      logger.error({ id, error }, 'sandbox.create failed');
+      const e = error as any;
+      logger.error(
+        {
+          id,
+          err: {
+            name: e?.name,
+            message: e?.message,
+            stack: e?.stack,
+            code: e?.code,
+            cause: e?.cause,
+            stderr: e?.stderr,
+            stdout: e?.stdout,
+          },
+        },
+        'sandbox.create failed'
+      );
       await this.destroy(id).catch(() => undefined);
       throw error;
     }

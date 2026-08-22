@@ -110,15 +110,89 @@ export class DefaultEngineerService implements EngineerService {
         message: `engineer drafting patch for ${targetVulnerabilityId ?? 'finding'}`,
         metadata: { vulnerabilityId: targetVulnerabilityId ?? undefined },
       });
-      const prepared = await prepareEngineerRun(this.deps, input);
+      const prepared = await prepareEngineerRun(this.deps, input, (evt) => this.emit(scanId, evt));
       targetVulnerabilityId = prepared.finding.vulnerabilityId;
+
+      if (!prepared.source) {
+        const failureReason = prepared.resolution?.evidenceSummary ?? 'Source code file context is unavailable and patch cannot be safely generated';
+        const response: EngineerResponse = {
+          vulnerabilityId: prepared.finding.vulnerabilityId,
+          status: 'REJECTED',
+          filePath: null,
+          diff: null,
+          explanation: failureReason,
+          remediation: 'parameterized query',
+          assumptions: [],
+          reason: failureReason,
+        };
+
+        const outcome = await persistEngineerOutcome(this.deps, this.gate, {
+          response,
+          finding: prepared.finding,
+          sourceLines: 0,
+          ragDocs: prepared.rag.docs.length,
+        });
+
+        const execution = await recordEngineerExecution(this.deps, {
+          scanId,
+          finding: prepared.finding,
+          loom: 'REJECTED',
+          model: 'none',
+          outcome,
+          ragDocs: prepared.rag.docs.length,
+          startedAt: startedAt.toISOString(),
+        });
+
+        this.emit(scanId, {
+          eventType: 'ENGINEER_REJECTED',
+          agentType: 'ENGINEER',
+          phase: 'remediation',
+          status: 'REJECTED',
+          message: failureReason,
+          metadata: {
+            vulnerabilityId: prepared.finding.vulnerabilityId,
+            targetId: prepared.finding.exploitTargetId ?? undefined,
+            reason: failureReason,
+            resolutionMethod: prepared.resolution?.resolutionMethod ?? undefined,
+            status: 'REJECTED',
+            hasDiff: false,
+            counts: { ragDocs: prepared.rag.docs.length },
+          },
+        });
+
+        return {
+          executionId: execution.id,
+          vulnerabilityId: prepared.finding.vulnerabilityId,
+          patchId: null,
+          status: 'REJECTED',
+          summary: {
+            sourceLines: 0,
+            ragDocs: prepared.rag.docs.length,
+            reviewPassed: false,
+            model: 'none',
+            diffChars: 0,
+            reason: failureReason,
+          },
+        };
+      }
+
+      const sourceLines = prepared.source.lines.length;
       this.emit(scanId, {
         eventType: 'ENGINEER_SOURCE_READ',
         agentType: 'ENGINEER',
         phase: 'remediation',
         status: 'SUCCEEDED',
         message: `read source ${prepared.finding.filePath} (${prepared.source.lines.length} lines)`,
-        metadata: { filePath: prepared.finding.filePath ?? undefined, lineStart: prepared.source.offset, lineEnd: prepared.source.offset + prepared.source.lines.length - 1, counts: { sourceLines: prepared.source.lines.length } },
+        metadata: {
+          filePath: prepared.finding.filePath ?? undefined,
+          resolutionMethod: prepared.resolution?.resolutionMethod ?? (prepared.finding.filePath ? 'DIRECT_FILE' : undefined),
+          candidateCount: prepared.resolution?.candidateCount ?? (prepared.finding.filePath ? 1 : 0),
+          confidence: prepared.resolution?.confidence ?? (prepared.finding.filePath ? 1.0 : 0),
+          evidenceSummary: prepared.resolution?.evidenceSummary ?? undefined,
+          lineStart: prepared.source.offset,
+          lineEnd: prepared.source.offset + prepared.source.lines.length - 1,
+          counts: { sourceLines },
+        },
       });
 
       const assembly = await assembleEngineerRequest(this.deps.registry, {
@@ -158,18 +232,19 @@ export class DefaultEngineerService implements EngineerService {
         { vulnerabilityId: prepared.finding.vulnerabilityId, filePath: prepared.finding.filePath },
         this.bounds,
       );
+
       if (!validated.ok) {
         throw new InvalidEngineerResponseError('model response failed structural validation', {
           failures: validated.failures,
           model: llmResponse.model,
         });
       }
-      const response: EngineerResponse = validated.response;
+      const response = validated.response;
 
       const outcome = await persistEngineerOutcome(this.deps, this.gate, {
         response,
         finding: prepared.finding,
-        sourceLines: prepared.source.lines.length,
+        sourceLines,
         ragDocs: prepared.rag.docs.length,
       });
 
@@ -183,14 +258,48 @@ export class DefaultEngineerService implements EngineerService {
         startedAt: startedAt.toISOString(),
       });
 
-      this.emit(scanId, {
-        eventType: outcome.patch ? 'ENGINEER_PATCH_GENERATED' : 'ENGINEER_REJECTED',
-        agentType: 'ENGINEER',
-        phase: 'remediation',
-        status: outcome.patch ? 'SUCCEEDED' : 'REJECTED',
-        message: outcome.patch ? `patch generated: ${outcome.patch.id}` : 'no patch generated',
-        metadata: { vulnerabilityId: prepared.finding.vulnerabilityId, patchId: outcome.patch?.id ?? undefined, result: outcome.status, counts: { ragDocs: prepared.rag.docs.length } },
-      });
+      const isGenerated = outcome.status === 'GENERATED' && outcome.patch && Boolean(outcome.patch.diffContent);
+
+      if (isGenerated) {
+        this.emit(scanId, {
+          eventType: 'ENGINEER_PATCH_GENERATED',
+          agentType: 'ENGINEER',
+          phase: 'remediation',
+          status: 'SUCCEEDED',
+          message: `patch generated: ${outcome.patch!.id}`,
+          metadata: {
+            patchId: outcome.patch!.id,
+            vulnerabilityId: prepared.finding.vulnerabilityId,
+            targetId: prepared.finding.exploitTargetId ?? undefined,
+            filePath: outcome.patch!.filePath ?? undefined,
+            explanation: outcome.patch!.explanation ?? undefined,
+            diffContent: outcome.patch!.diffContent!,
+            resolutionMethod: prepared.resolution?.resolutionMethod ?? (prepared.finding.filePath ? 'DIRECT_FILE' : undefined),
+            confidence: prepared.resolution?.confidence ?? 1.0,
+            status: 'GENERATED',
+            hasDiff: true,
+            counts: { ragDocs: prepared.rag.docs.length },
+          },
+        });
+      } else {
+        const rejectionReason = outcome.reason ?? response.reason ?? 'Source code file context is unavailable and patch cannot be safely generated';
+        this.emit(scanId, {
+          eventType: 'ENGINEER_REJECTED',
+          agentType: 'ENGINEER',
+          phase: 'remediation',
+          status: 'REJECTED',
+          message: rejectionReason,
+          metadata: {
+            vulnerabilityId: prepared.finding.vulnerabilityId,
+            targetId: prepared.finding.exploitTargetId ?? undefined,
+            reason: rejectionReason,
+            resolutionMethod: prepared.resolution?.resolutionMethod ?? undefined,
+            status: 'REJECTED',
+            hasDiff: false,
+            counts: { ragDocs: prepared.rag.docs.length },
+          },
+        });
+      }
 
       return {
         executionId: execution.id,
@@ -198,7 +307,7 @@ export class DefaultEngineerService implements EngineerService {
         patchId: outcome.patch ? outcome.patch.id : null,
         status: outcome.status,
         summary: {
-          sourceLines: prepared.source.lines.length,
+          sourceLines: prepared.source ? prepared.source.lines.length : 0,
           ragDocs: prepared.rag.docs.length,
           reviewPassed: outcome.reviewPassed,
           model: llmResponse.model,

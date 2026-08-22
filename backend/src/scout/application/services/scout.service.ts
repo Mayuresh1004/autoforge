@@ -66,6 +66,33 @@ export class DefaultScoutService implements ScoutService {
       const attackSurface = r.prioritize(discovery.endpoints, technologies);
       const summary = this.buildSummary(attackSurface, discovery, ports.length, services.length, technologies.length);
 
+      let htmlEndpoints = 0;
+      let javascriptEndpoints = 0;
+      let openapiEndpoints = 0;
+      let heuristicEndpoints = 0;
+      let parameterizedEndpoints = 0;
+
+      for (const entry of attackSurface) {
+        if (entry.parameters.length > 0) parameterizedEndpoints++;
+        if (entry.source === 'docs') openapiEndpoints++;
+        else if (entry.source === 'api') javascriptEndpoints++;
+        else if (entry.source === 'link' || entry.source === 'form' || entry.source === 'crawler') htmlEndpoints++;
+        else if (entry.source === 'common-path' || entry.source === 'robots') heuristicEndpoints++;
+      }
+
+      logger.info(
+        {
+          scanId: input.scanId,
+          htmlEndpoints,
+          javascriptEndpoints,
+          openapiEndpoints,
+          heuristicEndpoints,
+          uniqueEndpoints: attackSurface.length,
+          parameterizedEndpoints,
+        },
+        'SCOUT_DISCOVERY_SUMMARY'
+      );
+
       await this.deps.repository.persist(scoutScan.id, {
         attackSurface,
         technologies,

@@ -24,6 +24,7 @@ export interface TargetVerificationHints {
   readonly contentType?: string;
   readonly resourceIdentifier?: string;
   readonly authorizationContext?: TargetAuthorizationContext;
+  readonly parameters?: readonly string[];
 }
 
 /** One prioritized attack-surface target in the plan. The Planner only

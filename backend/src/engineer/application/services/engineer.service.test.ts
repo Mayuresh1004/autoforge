@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { DefaultEngineerService } from './engineer.service';
 import type { EngineerService } from './engineer.service';
 import { MemoryAgentExecutionRepository } from '../../../../test/helpers/memory-agent-execution-repository';
@@ -30,6 +30,7 @@ function buildEngineer(overrides: {
   llmError?: Error;
   ragError?: string;
   noSandbox?: boolean;
+  files?: Record<string, string>;
 } = {}): {
   engineer: EngineerService;
   patches: MemoryEngineerPatchRepository;
@@ -41,7 +42,7 @@ function buildEngineer(overrides: {
     overrides.findings ?? [confirmedFinding()],
   );
   const patchesRepository = new MemoryEngineerPatchRepository();
-  const sourceReader = new StubEngineerSourceReader({
+  const sourceReader = new StubEngineerSourceReader(overrides.files ?? {
     'src/app.py': ['def expensive_search(query):', '  conn = get_conn()', '  stmt = f"SELECT * FROM users WHERE name = {q}"', '  return conn.execute(stmt)'].join('\n'),
   });
   const rag = new StubRagService([]);
@@ -224,6 +225,60 @@ describe('engineer.service', () => {
     expect(detail?.agentType).toBe('ENGINEER');
     expect(detail?.outputMetadata).toBeDefined();
     expect(detail?.status).toBe('COMPLETED');
+  });
+
+  it('handles dynamic confirmed finding with no matching source by returning REJECTED status without calling LLM', async () => {
+    const dynamicFinding = confirmedFinding({
+      vulnerabilityId: 'dyn-vuln-1',
+      filePath: null,
+      lineNumber: null,
+      endpoint: 'http://172.23.0.2:3000/api/nonexistent?id=',
+      method: 'GET',
+      parameter: 'id',
+    });
+    const deps = buildEngineer({ findings: [dynamicFinding] });
+    const llmSpy = vi.spyOn(deps.llm, 'generate');
+    const result = await deps.engineer.run({ scanId: 'scan-1', vulnerabilityId: 'dyn-vuln-1' });
+    expect(result.status).toBe('REJECTED');
+    expect(result.summary.sourceLines).toBe(0);
+    expect(llmSpy).not.toHaveBeenCalled();
+    const patch = deps.patches.all()[0];
+    expect(patch.status).toBe('REJECTED');
+    expect(patch.diffContent).toBeNull();
+  });
+
+  it('remediates dynamic confirmed SQL injection finding by resolving target file dynamically', async () => {
+    const dynamicFinding = confirmedFinding({
+      vulnerabilityId: 'dyn-sql-1',
+      filePath: null,
+      lineNumber: null,
+      endpoint: 'http://172.23.0.2:3000/api/products/search?q=',
+      method: 'GET',
+      parameter: 'q',
+    });
+    const files = {
+      'src/routes/products.ts': `router.get('/api/products/search', (req, res) => { const q = req.query.q; db.query("SELECT * FROM products WHERE name = '" + q + "'"); });`,
+    };
+    const deps = buildEngineer({ findings: [dynamicFinding], files });
+    deps.llm.setText(JSON.stringify({
+      vulnerabilityId: 'dyn-sql-1',
+      status: 'GENERATED',
+      filePath: 'src/routes/products.ts',
+      originalCode: 'db.query("SELECT * FROM products WHERE name = \'" + q + "\'");',
+      patchedCode: 'db.query("SELECT * FROM products WHERE name = ?", [q]);',
+      explanation: 'Parameterized query search',
+      remediation: 'parameterized query',
+      assumptions: [],
+    }));
+
+    const result = await deps.engineer.run({ scanId: 'scan-1', vulnerabilityId: 'dyn-sql-1' });
+    expect(result.status).toBe('GENERATED');
+    expect(result.patchId).toBeTruthy();
+    const patch = deps.patches.all()[0];
+    expect(patch.status).toBe('GENERATED');
+    expect(patch.filePath).toBe('src/routes/products.ts');
+    expect(patch.diffContent).toContain('--- a/src/routes/products.ts');
+    expect(patch.diffContent).toContain('+db.query("SELECT * FROM products WHERE name = ?", [q]);');
   });
 });
 

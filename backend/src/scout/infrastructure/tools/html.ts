@@ -72,14 +72,40 @@ export function extractWebsocketHints(html: string): readonly string[] {
   return hints;
 }
 
-const STATIC_EXT_RE =
-  /\.(png|jpe?g|gif|svg|webp|ico|css|js|woff2?|ttf|map|pdf|zip|gz|mp[34]|webm)$/i;
+/** Extract `<script src="...">` and `<link rel="modulepreload|preload" href="...">` URLs from HTML. */
+export function extractScriptUrls(html: string): readonly string[] {
+  const out: string[] = [];
+  const re = /<(?:script|link)[^>]*\b(?:src|href)\s*=\s*["']([^"']+\.(?:js|mjs|jsx|ts|tsx)(?:\?[^"']*)?)["']/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(html)) !== null) {
+    const src = m[1].trim();
+    if (src.length > 0 && !src.startsWith('javascript:')) {
+      out.push(src);
+    }
+  }
+  return out;
+}
 
-/** True for file assets that are not browsable pages. */
+const STATIC_MEDIA_EXT_RE =
+  /\.(png|jpe?g|gif|svg|webp|ico|css|woff2?|ttf|map|pdf|zip|gz|mp[34]|webm)$/i;
+
+const JS_EXT_RE = /\.(js|mjs|jsx|ts|tsx)(\?.*)?$/i;
+
+/** True for media/styling assets that are not browsable pages or JS scripts. */
 export function isStaticAssetUrl(url: string): boolean {
   try {
     const pathname = new URL(url).pathname;
-    return STATIC_EXT_RE.test(pathname);
+    return STATIC_MEDIA_EXT_RE.test(pathname);
+  } catch {
+    return false;
+  }
+}
+
+/** True for JavaScript source code files (.js, .mjs, etc.). */
+export function isJsScriptUrl(url: string): boolean {
+  try {
+    const pathname = new URL(url).pathname;
+    return JS_EXT_RE.test(pathname);
   } catch {
     return false;
   }

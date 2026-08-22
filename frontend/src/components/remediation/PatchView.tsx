@@ -28,16 +28,20 @@ export function PatchView({ patches, activeFinding, onSelectFindingId }: PatchVi
       ? 'success'
       : activePatch?.status === 'APPLIED'
         ? 'info'
-        : 'purple';
+        : activePatch?.status === 'REJECTED'
+          ? 'danger'
+          : 'purple';
 
   const patchStatusLabel =
     activePatch?.status === 'APPROVED' || activePatch?.status === 'CRITIC_VERIFIED'
       ? '✓ CRITIC VERIFIED'
       : activePatch?.status === 'APPLIED'
         ? '⚙️ PATCH APPLIED'
-        : activePatch?.status === 'GENERATED'
-          ? '🛠️ PATCH GENERATED'
-          : activePatch?.status || 'GENERATED';
+        : activePatch?.status === 'REJECTED'
+          ? '❌ PATCH REJECTED'
+          : activePatch?.status === 'GENERATED' || activePatch?.status === 'PATCH_GENERATED'
+            ? '🛠️ PATCH GENERATED'
+            : activePatch?.status || 'PATCH GENERATED';
 
   return (
     <Card>
@@ -67,8 +71,12 @@ export function PatchView({ patches, activeFinding, onSelectFindingId }: PatchVi
             4. PATCH GENERATED
           </span>
           <span className="text-zinc-600">→</span>
-          <span className={`rounded px-2 py-0.5 border font-bold ${activePatch?.status === 'CRITIC_VERIFIED' ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/50' : 'bg-zinc-900 text-zinc-400 border-zinc-800'}`}>
+          <span className={`rounded px-2 py-0.5 border font-bold ${activePatch?.status === 'CRITIC_VERIFIED' || activePatch?.status === 'APPROVED' ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/50' : 'bg-zinc-900 text-zinc-400 border-zinc-800'}`}>
             5. CRITIC VERIFIED
+          </span>
+          <span className="text-zinc-600">→</span>
+          <span className={`rounded px-2 py-0.5 border font-bold ${activePatch?.prUrl || activePatch?.prNumber ? 'bg-sky-500/20 text-sky-300 border-sky-500/50' : 'bg-zinc-900 text-zinc-400 border-zinc-800'}`}>
+            6. PR CREATED
           </span>
         </div>
       </div>
@@ -107,12 +115,14 @@ export function PatchView({ patches, activeFinding, onSelectFindingId }: PatchVi
                       <span className="font-bold text-sky-400">[ {shortId} ]</span>
                       <span
                         className={`text-[9px] px-1.5 py-0.2 rounded border font-bold ${
-                          p.status === 'CRITIC_VERIFIED'
+                          p.status === 'CRITIC_VERIFIED' || p.status === 'APPROVED'
                             ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30'
-                            : 'bg-purple-500/20 text-purple-300 border-purple-500/30'
+                            : p.status === 'REJECTED'
+                              ? 'bg-rose-500/20 text-rose-400 border-rose-500/30'
+                              : 'bg-purple-500/20 text-purple-300 border-purple-500/30'
                         }`}
                       >
-                        {p.status === 'CRITIC_VERIFIED' ? 'APPROVED' : 'GENERATED'}
+                        {p.status === 'CRITIC_VERIFIED' || p.status === 'APPROVED' ? 'APPROVED' : p.status === 'REJECTED' ? 'REJECTED' : 'GENERATED'}
                       </span>
                     </div>
                     <div className="font-mono text-[10px] text-zinc-300 truncate">
@@ -130,7 +140,9 @@ export function PatchView({ patches, activeFinding, onSelectFindingId }: PatchVi
               <div className="flex items-center justify-between font-mono text-xs border-b border-zinc-800/80 pb-2">
                 <div>
                   <span className="text-zinc-500 block text-[10px] uppercase font-semibold">Target File</span>
-                  <span className="text-emerald-400 font-semibold text-sm">{activePatch.filePath}</span>
+                  <span className="text-emerald-400 font-semibold text-sm">
+                    {activePatch.filePath ? activePatch.filePath : 'File Path Unavailable'}
+                  </span>
                 </div>
                 <Badge variant={patchStatusVariant} size="md">
                   {patchStatusLabel}
@@ -138,25 +150,67 @@ export function PatchView({ patches, activeFinding, onSelectFindingId }: PatchVi
               </div>
 
               {activePatch.explanation && (
-                <div className="rounded-lg border border-sky-500/30 bg-sky-500/10 p-3 text-xs text-zinc-200">
-                  <span className="font-semibold text-sky-400 block mb-1 font-mono">
-                    RAG Context & Remediation Rationale:
+                <div className={`rounded-lg border p-3 text-xs ${activePatch.status === 'REJECTED' ? 'border-rose-500/30 bg-rose-500/10 text-rose-200' : 'border-sky-500/30 bg-sky-500/10 text-zinc-200'}`}>
+                  <span className={`font-semibold block mb-1 font-mono ${activePatch.status === 'REJECTED' ? 'text-rose-400' : 'text-sky-400'}`}>
+                    {activePatch.status === 'REJECTED' ? 'Rejection Reason:' : 'RAG Context & Remediation Rationale:'}
                   </span>
                   <p className="leading-relaxed text-zinc-300">{activePatch.explanation}</p>
                 </div>
               )}
 
-              <div>
-                <div className="flex items-center justify-between mb-1.5 font-mono">
-                  <span className="text-[10px] font-semibold text-zinc-400 uppercase tracking-wider">
-                    Patch Diff Preview
-                  </span>
-                  <span className="text-[10px] text-zinc-500">
-                    Patch ID: {activePatch.patchId}
-                  </span>
+              {(activePatch.prUrl || activePatch.prNumber || activePatch.prError) && (
+                <div className={`rounded-lg border p-3 text-xs font-mono space-y-1.5 ${activePatch.prError ? 'border-amber-500/40 bg-amber-500/10 text-amber-200' : 'border-emerald-500/40 bg-emerald-500/10 text-emerald-100'}`}>
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold uppercase tracking-wider text-[11px] flex items-center gap-1.5">
+                      {activePatch.prError ? '⚠️ Remediation Delivery Warning' : '🚀 GitHub Pull Request Created'}
+                    </span>
+                    {activePatch.prStatus && (
+                      <span className="px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 text-[9px] font-bold">
+                        {activePatch.prStatus}
+                      </span>
+                    )}
+                  </div>
+
+                  {activePatch.prUrl ? (
+                    <div className="text-xs">
+                      <a
+                        href={activePatch.prUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-sky-400 hover:text-sky-300 underline font-semibold flex items-center gap-1"
+                      >
+                        View Pull Request #{activePatch.prNumber} ↗
+                      </a>
+                    </div>
+                  ) : null}
+
+                  {activePatch.prBranch && (
+                    <div className="text-[10px] text-zinc-400">
+                      Branch: <span className="text-zinc-200">{activePatch.prBranch}</span>
+                    </div>
+                  )}
+
+                  {activePatch.prError && (
+                    <div className="text-[11px] text-amber-300">
+                      Delivery error: {activePatch.prError}
+                    </div>
+                  )}
                 </div>
-                <CodeBlock code={activePatch.diffContent} language="diff" />
-              </div>
+              )}
+
+              {activePatch.diffContent ? (
+                <div>
+                  <div className="flex items-center justify-between mb-1.5 font-mono">
+                    <span className="text-[10px] font-semibold text-zinc-400 uppercase tracking-wider">
+                      Patch Diff Preview
+                    </span>
+                    <span className="text-[10px] text-zinc-500">
+                      Patch ID: {activePatch.patchId}
+                    </span>
+                  </div>
+                  <CodeBlock code={activePatch.diffContent} language="diff" />
+                </div>
+              ) : null}
             </div>
           )}
         </div>

@@ -1,0 +1,10 @@
+FROM python:3.11-alpine
+
+LABEL amass.security_tools=1
+
+RUN apk add --no-cache curl bind-tools netcat-openbsd \
+    && pip install --no-cache-dir sqlmap
+
+WORKDIR /tmp
+USER 10001:10001
+ENTRYPOINT []

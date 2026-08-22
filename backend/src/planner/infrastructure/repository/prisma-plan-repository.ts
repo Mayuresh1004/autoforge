@@ -221,6 +221,7 @@ type RawTargetRow = {
   requiresAuthentication: boolean;
   estimatedRisk: string;
   breakdown: unknown;
+  verificationHints?: unknown;
 };
 
 type PlanRow = {

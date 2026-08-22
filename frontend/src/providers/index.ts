@@ -15,26 +15,18 @@ import { demoDataProvider } from './DemoDataProvider';
 
 export class SmartAMASSDataProvider implements AMASSDataProvider {
   private activeScanProviders: Map<string, AMASSDataProvider> = new Map();
-  private currentProvider: AMASSDataProvider = demoDataProvider;
+  private currentProvider: AMASSDataProvider = realDataProvider;
 
   get isDemoMode(): boolean {
     return this.currentProvider.isDemoMode;
   }
 
   async startScan(options: StartScanOptions): Promise<ApiResponse<ScanModel>> {
-    const url = (options.repositoryUrl || '').toLowerCase();
-
-    if (url.includes('geospy')) {
-      demoDataProvider.setDemoConfig('GeoSpy', 'full_approved', options.speedMultiplier ?? 1.0);
-      this.currentProvider = demoDataProvider;
-      const res = await demoDataProvider.startScan(options);
-      if (res.success && res.data) {
-        const scanId = res.data.scanId || res.data.id || '';
-        if (scanId) this.activeScanProviders.set(scanId, demoDataProvider);
-      }
-      return res;
-    } else if (url.includes('askbit')) {
-      demoDataProvider.setDemoConfig('AskBit', 'full_approved', options.speedMultiplier ?? 1.0);
+    // Only route to demoDataProvider if explicitly requested via demoTargetId option.
+    // Standard scan path routes through realDataProvider (Real Production Backend).
+    if (options.demoTargetId) {
+      const target = options.demoTargetId;
+      demoDataProvider.setDemoConfig(target, options.scenarioId ?? 'full_approved', options.speedMultiplier ?? 1.0);
       this.currentProvider = demoDataProvider;
       const res = await demoDataProvider.startScan(options);
       if (res.success && res.data) {
@@ -43,7 +35,7 @@ export class SmartAMASSDataProvider implements AMASSDataProvider {
       }
       return res;
     } else {
-      // NON-DEMO REAL BACKEND RUN
+      // NORMAL PATH: REAL PRODUCTION BACKEND RUN
       this.currentProvider = realDataProvider;
       const res = await realDataProvider.startScan(options);
       if (res.success && res.data) {

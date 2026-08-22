@@ -60,6 +60,15 @@ export function classifySqlMap(input: ClassifySqlMapInput): SqlMapClassification
     };
   }
 
+  if (parsed.noParameters) {
+    return {
+      status: 'NOT_TESTED',
+      reason: 'target endpoint contains no GET query parameters or POST body parameters to test',
+      retryable: false,
+      signals: baseSignals(input, false),
+    };
+  }
+
   // Connection-level problems are INCONCLUSIVE, not tool failures — the
   // endpoint exists but could not be reached; transient retry is useful.
   if (parsed.connectionError) {

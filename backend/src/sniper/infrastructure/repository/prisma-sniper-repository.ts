@@ -66,10 +66,58 @@ export class PrismaSniperRepository implements SniperRepository {
   async saveExploit(payload: SaveExploitPayload): Promise<ProofOfConcept> {
     const existing = await this.getExploitForTarget(payload.targetId, payload.type);
 
+    let vulnerabilityId = payload.vulnerabilityId ?? null;
+
+    if (payload.status === 'CONFIRMED') {
+      if (vulnerabilityId) {
+        await prisma.vulnerability.update({
+          where: { id: vulnerabilityId },
+          data: { status: 'CONFIRMED' },
+        }).catch(() => undefined);
+      } else {
+        const existingVuln = await prisma.vulnerability.findFirst({
+          where: {
+            scanId: payload.scanId,
+            OR: [
+              { vulnType: payload.type },
+              { vulnType: 'sqli' },
+              { vulnType: 'SQL_INJECTION' },
+            ],
+          },
+        });
+        if (existingVuln) {
+          vulnerabilityId = existingVuln.id;
+          await prisma.vulnerability.update({
+            where: { id: existingVuln.id },
+            data: { status: 'CONFIRMED' },
+          });
+        } else {
+          const createdVuln = await prisma.vulnerability.create({
+            data: {
+              scanId: payload.scanId,
+              title: `SQL Injection at ${payload.endpoint}`,
+              severity: 'HIGH',
+              status: 'CONFIRMED',
+              scanner: 'sniper',
+              vulnType: payload.type,
+              message: payload.reason ?? 'SQL injection confirmed by sqlmap',
+              evidence: JSON.stringify({
+                endpoint: payload.endpoint,
+                method: payload.method,
+                parameter: payload.parameter,
+                reason: payload.reason,
+              }),
+            },
+          });
+          vulnerabilityId = createdVuln.id;
+        }
+      }
+    }
+
     const data = {
       scanId: payload.scanId,
       targetId: payload.targetId,
-      vulnerabilityId: payload.vulnerabilityId ?? null,
+      vulnerabilityId,
       vulnerabilityType: payload.type,
       endpoint: payload.endpoint,
       method: payload.method,

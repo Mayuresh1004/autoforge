@@ -49,6 +49,8 @@ const PARAMETERIZATION_HINTS = [
   /conn\s*\.\s*execute\s*\(\s*['"][^'"]*['"]\s*,\s*(?:params?|\(|\[)/,
   /\bplaceholder\s*[:=(]/,
   /query\s+(?:params?\s*=|parameterized)/i,
+  /\bprepare\s*\(/i,
+  /\.all\s*\(/i,
 ];
 
 export class CriticSecurityReviewGate {

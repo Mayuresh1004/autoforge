@@ -126,7 +126,23 @@ export function useScanStore(initialScanId: string | null = null) {
 
   const targets = useMemo(() => {
     return Object.values(findingsById)
-      .map((record) => record.target)
+      .map((record) => {
+        if (!record.target) return null;
+        let vStatus = record.target.verificationStatus ?? 'NOT_RUN';
+        let vReason = record.target.verificationReason;
+
+        if (record.exploit && (vStatus === 'NOT_RUN' || !vStatus)) {
+          vStatus = record.exploit.status || (record.exploit.confirmed ? 'CONFIRMED' : 'NOT_CONFIRMED');
+          vReason = record.exploit.verificationNotes || (record.exploit as any).reason || vReason;
+        }
+
+        return {
+          ...record.target,
+          status: record.target.status ?? 'PLANNED',
+          verificationStatus: vStatus,
+          verificationReason: vReason,
+        } as TargetModel;
+      })
       .filter((t): t is TargetModel => Boolean(t));
   }, [findingsById]);
 
@@ -169,36 +185,82 @@ export function useScanStore(initialScanId: string | null = null) {
       setLastSequence(event.sequence);
 
       // 1. Agent Pipeline Stage Statuses (Strictly driven by explicit phase events)
+      // 1. Agent Pipeline Stage Statuses (Strictly driven by explicit phase events)
       if (event.agentType) {
         setAgents((prev) => {
-          const current = prev[event.agentType!];
+          const agentKey = event.agentType!;
+          const current = prev[agentKey];
           let nextStatus: AgentStatus = current?.status ?? 'IDLE';
 
-          if (event.eventType.endsWith('_STARTED') || event.status === 'STARTED') {
+          const evType = event.eventType;
+          const status = event.status;
+
+          // RUNNING transitions
+          if (
+            evType.endsWith('_STARTED') ||
+            status === 'STARTED' ||
+            status === 'IN_PROGRESS' ||
+            evType === 'SCANNER_FINDING_DISCOVERED' ||
+            evType === 'SANDBOX_PROVISIONING' ||
+            evType === 'SCOUT_ENDPOINT_DISCOVERED' ||
+            evType === 'SNIPER_TARGET_SELECTED' ||
+            evType === 'SNIPER_VERIFICATION_STARTED' ||
+            evType === 'SNIPER_CONFIRMED' ||
+            evType === 'SNIPER_REJECTED' ||
+            evType === 'SNIPER_NOT_TESTED' ||
+            evType === 'ENGINEER_SOURCE_READ' ||
+            evType === 'ENGINEER_RAG_STARTED' ||
+            evType === 'ENGINEER_RAG_COMPLETED' ||
+            evType === 'ENGINEER_LLM_STARTED' ||
+            evType === 'ENGINEER_LLM_COMPLETED' ||
+            evType === 'BASELINE_CHECK_STARTED' ||
+            evType === 'BASELINE_CHECK_COMPLETED' ||
+            evType === 'PATCH_APPLY_STARTED' ||
+            evType === 'PATCH_APPLIED' ||
+            evType === 'BUILD_STARTED' ||
+            evType === 'BUILD_COMPLETED' ||
+            evType === 'TESTS_STARTED' ||
+            evType === 'TESTS_COMPLETED' ||
+            evType === 'EXPLOIT_RETEST_STARTED' ||
+            evType === 'EXPLOIT_RETEST_COMPLETED'
+          ) {
             nextStatus = 'RUNNING';
-          } else if (
-            event.eventType === 'ANALYZER_COMPLETED' ||
-            event.eventType === 'SCANNER_COMPLETED' ||
-            (event.agentType === 'SANDBOX' && (event.eventType === 'SANDBOX_READY' || event.status === 'READY')) ||
-            event.eventType === 'SCOUT_COMPLETED' ||
-            (event.eventType === 'PLANNER_COMPLETED' && event.status === 'COMPLETED') ||
-            event.eventType === 'SNIPER_VERIFICATION_COMPLETED' ||
-            event.eventType === 'ENGINEER_COMPLETED' ||
-            event.eventType === 'CRITIC_COMPLETED' ||
-            (event.agentType === 'SYSTEM' && event.eventType === 'SCAN_COMPLETED')
+          }
+
+          // COMPLETED transitions
+          if (
+            evType === 'ANALYZER_COMPLETED' ||
+            evType === 'SCANNER_COMPLETED' ||
+            (agentKey === 'SANDBOX' && (evType === 'SANDBOX_READY' || status === 'READY')) ||
+            evType === 'SCOUT_COMPLETED' ||
+            evType === 'PLANNER_COMPLETED' ||
+            evType === 'SNIPER_VERIFICATION_COMPLETED' ||
+            evType === 'ENGINEER_PATCH_GENERATED' ||
+            evType === 'ENGINEER_REJECTED' ||
+            evType === 'ENGINEER_COMPLETED' ||
+            evType === 'CRITIC_APPROVED' ||
+            evType === 'CRITIC_REJECTED' ||
+            evType === 'CRITIC_COMPLETED' ||
+            (agentKey === 'SYSTEM' && evType === 'SCAN_COMPLETED')
           ) {
             nextStatus = 'COMPLETED';
-          } else if (
-            event.eventType.endsWith('_FAILED') ||
-            event.status === 'FAILED'
+          }
+
+          // FAILED transitions
+          if (
+            evType.endsWith('_FAILED') ||
+            status === 'FAILED' ||
+            evType === 'ENGINEER_FAILED' ||
+            evType === 'CRITIC_FAILED' ||
+            evType === 'SANDBOX_FAILED'
           ) {
             nextStatus = 'FAILED';
           }
 
           return {
             ...prev,
-            [event.agentType!]: {
-              type: event.agentType!,
+            [agentKey]: {
+              type: agentKey,
               status: nextStatus,
               lastMessage: event.message,
               updatedAt: event.timestamp,
@@ -209,14 +271,20 @@ export function useScanStore(initialScanId: string | null = null) {
 
       // 2. Workflow / Scan status update & Clean State Initialization at start
       if (event.eventType === 'SCAN_STARTED') {
-        setScan((prev) => (prev ? { ...prev, status: 'RUNNING' } : null));
+        setScan((prev) => ({
+          scanId: event.scanId,
+          repositoryUrl: (event.metadata?.targetUrl as string) ?? prev?.repositoryUrl,
+          status: 'RUNNING',
+          startedAt: event.timestamp,
+          isDemo: provider.isDemoMode,
+        }));
         setFindingsById({});
         setSandbox(null);
         setActiveFindingId(null);
       } else if (event.eventType === 'SCAN_COMPLETED') {
-        setScan((prev) => (prev ? { ...prev, status: 'COMPLETED' } : null));
+        setScan((prev) => (prev ? { ...prev, status: 'COMPLETED', completedAt: event.timestamp } : { scanId: event.scanId, status: 'COMPLETED', startedAt: event.timestamp, completedAt: event.timestamp }));
       } else if (event.eventType === 'SCAN_FAILED') {
-        setScan((prev) => (prev ? { ...prev, status: 'FAILED' } : null));
+        setScan((prev) => (prev ? { ...prev, status: 'FAILED', completedAt: event.timestamp } : { scanId: event.scanId, status: 'FAILED', startedAt: event.timestamp, completedAt: event.timestamp }));
       }
 
       // 3. Domain Model State Reducer (Strictly findingId-keyed updates)
@@ -407,11 +475,14 @@ export function useScanStore(initialScanId: string | null = null) {
           break;
 
         case 'SNIPER_CONFIRMED':
-          if (targetFindingId) {
+          if (targetFindingId || event.metadata?.targetId || event.metadata?.vulnerabilityId) {
+            const tgtId = event.metadata?.targetId as string | undefined;
+            const vulnId = (event.metadata?.findingId as string) || (event.metadata?.vulnerabilityId as string);
+            const keyId = vulnId || tgtId || targetFindingId;
             const expMeta = (event.metadata?.exploit as ExploitEvidenceModel | undefined) ?? {
-              exploitId: `exp_${targetFindingId}`,
-              targetId: targetFindingId,
-              findingId: targetFindingId,
+              exploitId: `exp_${keyId}`,
+              targetId: tgtId || keyId,
+              findingId: vulnId || keyId,
               scanId: event.scanId,
               confirmed: true,
               endpoint: event.metadata?.endpoint as string | undefined,
@@ -420,28 +491,53 @@ export function useScanStore(initialScanId: string | null = null) {
             };
             setFindingsById((prev) => {
               const key = Object.keys(prev).find(
-                (k) => k === targetFindingId || prev[k].target?.targetId === targetFindingId || prev[k].finding.id === targetFindingId
-              ) || targetFindingId;
+                (k) =>
+                  (vulnId && (k === vulnId || prev[k].finding.id === vulnId)) ||
+                  (tgtId && (k === tgtId || prev[k].target?.targetId === tgtId))
+              ) || keyId;
               const record = prev[key];
-              if (!record) return prev;
+              if (!record) {
+                const newFinding: FindingModel = {
+                  id: key,
+                  findingId: key,
+                  title: `SQL Injection at ${event.metadata?.endpoint || 'endpoint'}`,
+                  severity: 'HIGH',
+                  status: 'CONFIRMED',
+                  isConfirmed: true,
+                };
+                return {
+                  ...prev,
+                  [key]: {
+                    finding: newFinding,
+                    exploit: expMeta,
+                    criticStages: createInitialCriticStages(),
+                  },
+                };
+              }
               return {
                 ...prev,
                 [key]: {
                   ...record,
                   exploit: expMeta,
-                  finding: { ...record.finding, status: 'EXPLOIT_CONFIRMED', isConfirmed: true },
+                  finding: { ...record.finding, status: 'CONFIRMED', isConfirmed: true },
+                  target: record.target ? {
+                    ...record.target,
+                    status: record.target.status ?? 'PLANNED',
+                    verificationStatus: 'CONFIRMED',
+                    verificationReason: event.message,
+                  } : record.target,
                 },
               };
             });
           }
+          break;
+
+        case 'SNIPER_NOT_TESTED':
         case 'SNIPER_REJECTED':
           if (targetFindingId) {
-            const isNotTested =
-              event.metadata?.result === 'NOT_TESTED' ||
-              (event.metadata?.reason as string)?.includes('unsupported') ||
-              (event.metadata?.reason as string)?.includes('refused') ||
-              (event.metadata?.reason as string)?.includes('auth');
-            const statusLabel = isNotTested ? 'NOT_TESTED' : 'EXPLOIT_REJECTED';
+            const rawResult = (event.metadata?.result as string) || (event.eventType === 'SNIPER_NOT_TESTED' ? 'NOT_TESTED' : 'NOT_CONFIRMED');
+            const vStatus = rawResult === 'REJECTED' ? 'NOT_CONFIRMED' : rawResult;
+            const vReason = (event.metadata?.reason as string) || event.message;
 
             setFindingsById((prev) => {
               const key =
@@ -453,11 +549,18 @@ export function useScanStore(initialScanId: string | null = null) {
                 ) || targetFindingId;
               const record = prev[key];
               if (!record) return prev;
+              const findingStatus = vStatus === 'NOT_TESTED' ? record.finding.status : 'NOT_CONFIRMED';
               return {
                 ...prev,
                 [key]: {
                   ...record,
-                  finding: { ...record.finding, status: statusLabel },
+                  finding: { ...record.finding, status: findingStatus },
+                  target: record.target ? {
+                    ...record.target,
+                    status: record.target.status ?? 'PLANNED',
+                    verificationStatus: vStatus,
+                    verificationReason: vReason,
+                  } : record.target,
                 },
               };
             });
@@ -467,15 +570,52 @@ export function useScanStore(initialScanId: string | null = null) {
         // ENGINEER REMEDIATION PATCH
         case 'ENGINEER_PATCH_GENERATED':
           if (targetFindingId) {
-            const patchMeta = (event.metadata?.patch as PatchModel | undefined) ?? {
-              patchId: (event.metadata?.patchId as string) ?? `patch_${targetFindingId}`,
-              findingId: targetFindingId,
-              scanId: event.scanId,
-              filePath: (event.metadata?.filePath as string) ?? 'src/vulnerable.ts',
-              diffContent: event.message,
-              status: 'GENERATED',
-              explanation: (event.metadata?.explanation as string) ?? 'Automated defensive code patch.',
-            };
+            const rawDiff =
+              (event.metadata?.diffContent as string) ||
+              (event.metadata?.diff as string) ||
+              '';
+            const rawPath =
+              (event.metadata?.filePath as string) ||
+              (event.metadata?.file as string) ||
+              '';
+
+            if (rawDiff && rawPath) {
+              const patchMeta: PatchModel = {
+                patchId: (event.metadata?.patchId as string) ?? `patch_${targetFindingId}`,
+                findingId: targetFindingId,
+                scanId: event.scanId,
+                filePath: rawPath,
+                diffContent: rawDiff,
+                status: 'GENERATED',
+                explanation: (event.metadata?.explanation as string) ?? 'Automated defensive code patch.',
+              };
+
+              setFindingsById((prev) => {
+                const key = Object.keys(prev).find(
+                  (k) => k === targetFindingId || prev[k].finding.id === targetFindingId || prev[k].target?.targetId === targetFindingId
+                ) || targetFindingId;
+                const record = prev[key];
+                if (!record) return prev;
+                return {
+                  ...prev,
+                  [key]: {
+                    ...record,
+                    patch: patchMeta,
+                    finding: { ...record.finding, status: 'PATCHED' },
+                  },
+                };
+              });
+            }
+          }
+          break;
+
+        case 'ENGINEER_REJECTED':
+          if (targetFindingId) {
+            const rejectionReason =
+              (event.metadata?.reason as string) ||
+              event.message ||
+              'Source code file context is unavailable and patch cannot be safely generated';
+
             setFindingsById((prev) => {
               const key = Object.keys(prev).find(
                 (k) => k === targetFindingId || prev[k].finding.id === targetFindingId || prev[k].target?.targetId === targetFindingId
@@ -486,8 +626,16 @@ export function useScanStore(initialScanId: string | null = null) {
                 ...prev,
                 [key]: {
                   ...record,
-                  patch: patchMeta,
-                  finding: { ...record.finding, status: 'PATCHED' },
+                  patch: {
+                    patchId: `rejected_${targetFindingId}`,
+                    findingId: targetFindingId,
+                    scanId: event.scanId,
+                    filePath: (event.metadata?.filePath as string) ?? '',
+                    diffContent: '',
+                    status: 'REJECTED',
+                    explanation: rejectionReason,
+                  },
+                  finding: { ...record.finding, status: 'EXPLOIT_REJECTED' },
                 },
               };
             });
@@ -630,6 +778,20 @@ export function useScanStore(initialScanId: string | null = null) {
             rawFindings.forEach((f) => {
               const fId = f.id || f.findingId || '';
               if (!fId) return;
+              const isConfirmed = f.status === 'CONFIRMED' || f.status === 'EXPLOIT_CONFIRMED' || Boolean(f.isConfirmed);
+              
+              const restPatch: PatchModel | undefined = f.patch
+                ? {
+                    patchId: f.patch.id || f.patch.patchId || `patch_${fId}`,
+                    findingId: fId,
+                    scanId: scanId,
+                    filePath: f.patch.filePath || f.file || 'src/vulnerable.ts',
+                    diffContent: f.patch.diffContent || '',
+                    status: f.patch.status || 'GENERATED',
+                    explanation: f.patch.explanation || 'Automated defensive code patch.',
+                  }
+                : undefined;
+
               if (!map[fId]) {
                 map[fId] = {
                   finding: {
@@ -637,18 +799,31 @@ export function useScanStore(initialScanId: string | null = null) {
                     id: fId,
                     findingId: fId,
                     status: f.status ?? 'DISCOVERED',
+                    isConfirmed,
                   },
+                  patch: restPatch,
                   criticStages: createInitialCriticStages(),
                 };
               } else {
+                const existingPatch = map[fId].patch;
+                const mergedPatch = restPatch
+                  ? {
+                      ...restPatch,
+                      diffContent: restPatch.diffContent || existingPatch?.diffContent || '',
+                    }
+                  : existingPatch;
+
                 map[fId] = {
                   ...map[fId],
                   finding: {
-                    ...f,
                     ...map[fId].finding,
+                    ...f,
                     id: fId,
                     findingId: fId,
+                    status: f.status ?? map[fId].finding.status,
+                    isConfirmed: isConfirmed || map[fId].finding.isConfirmed,
                   },
+                  patch: mergedPatch,
                 };
               }
             });
@@ -689,7 +864,7 @@ export function useScanStore(initialScanId: string | null = null) {
                     id: targetKey,
                     findingId: targetKey,
                     title: `Planned Target: ${target.endpoint}`,
-                    description: target.reason || `Target priority ${target.priorityScore ?? target.priority}`,
+                    description: target.reason || `Target priority ${(target as any).priorityScore ?? (target as any).priority ?? 1}`,
                     severity: (target.estimatedRisk as any) || 'HIGH',
                     status: 'PLANNED',
                   };
@@ -699,16 +874,33 @@ export function useScanStore(initialScanId: string | null = null) {
                   };
                 }
 
+                const existingTarget = map[targetKey].target;
+                const incomingVStatus = target.verificationStatus && target.verificationStatus !== 'NOT_RUN' ? target.verificationStatus : undefined;
+                const existingVStatus = existingTarget?.verificationStatus && existingTarget.verificationStatus !== 'NOT_RUN' ? existingTarget.verificationStatus : undefined;
+                const finalVStatus = incomingVStatus ?? existingVStatus ?? target.verificationStatus ?? existingTarget?.verificationStatus ?? 'NOT_RUN';
+
+                const finalVReason = incomingVStatus
+                  ? target.verificationReason
+                  : existingVStatus
+                    ? existingTarget?.verificationReason
+                    : target.verificationReason ?? existingTarget?.verificationReason;
+
+                const nextFindingStatus = map[targetKey].finding.status === 'DISCOVERED' ? 'PLANNED' : map[targetKey].finding.status;
                 map[targetKey] = {
                   ...map[targetKey],
+                  finding: {
+                    ...map[targetKey].finding,
+                    status: nextFindingStatus,
+                  },
                   target: {
+                    ...existingTarget,
                     ...target,
                     findingId: targetKey,
+                    status: (existingTarget?.status ?? target.status ?? 'PLANNED') as any,
+                    verificationStatus: finalVStatus,
+                    verificationReason: finalVReason,
                   },
                 };
-                if (map[targetKey].finding.status === 'DISCOVERED') {
-                  map[targetKey].finding.status = 'PLANNED';
-                }
               }
             });
 
@@ -733,10 +925,7 @@ export function useScanStore(initialScanId: string | null = null) {
   const fetchScanDataRef = useRef(fetchScanData);
   fetchScanDataRef.current = fetchScanData;
 
-  // Subscribe to events when active scan is selected
-  useEffect(() => {
-    if (!activeScanId) return;
-
+  const resetLiveState = useCallback(() => {
     setAgents(INITIAL_AGENTS);
     setFindingsById({});
     setEvents([]);
@@ -744,44 +933,92 @@ export function useScanStore(initialScanId: string | null = null) {
     setConnectionStatus('CONNECTED');
     setSandbox(null);
     setActiveFindingId(null);
+    setScan(null);
+    setError(null);
+    setIsLoading(false);
+  }, []);
+
+  const connectEventStream = useCallback(
+    (scanId: string) => {
+      if (!scanId) return () => {};
+      setConnectionStatus('CONNECTED');
+      return provider.subscribeEvents(scanId, handleEvent);
+    },
+    [handleEvent, provider]
+  );
+
+  const attachToScan = useCallback(
+    (scanId: string) => {
+      if (!scanId) return;
+      setActiveScanId(scanId);
+      resetLiveState();
+      setScan({
+        scanId,
+        status: 'RUNNING',
+        startedAt: new Date().toISOString(),
+        isDemo: provider.isDemoMode,
+      });
+      fetchScanData(scanId);
+    },
+    [fetchScanData, provider.isDemoMode, resetLiveState]
+  );
+
+  const createScan = useCallback(
+    async (options: StartScanOptions) => {
+      resetLiveState();
+      setError(null);
+
+      try {
+        const res = await provider.startScan(options);
+        if (res.success && res.data) {
+          const newScanId = res.data.scanId || res.data.id;
+          if (newScanId) {
+            attachToScan(newScanId);
+          }
+        } else if (res.error) {
+          setError(res.error.message);
+        }
+        return res;
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : 'Error starting scan';
+        setError(message);
+        return {
+          success: false,
+          data: null,
+          error: { code: 'START_SCAN_ERROR', message },
+          timestamp: new Date().toISOString(),
+        };
+      }
+    },
+    [attachToScan, provider, resetLiveState]
+  );
+
+  // Subscribe to events when active scan is selected
+  useEffect(() => {
+    if (!activeScanId) return;
 
     fetchScanData(activeScanId);
-
-    const unsubscribe = provider.subscribeEvents(activeScanId, handleEvent);
+    const unsubscribe = connectEventStream(activeScanId);
 
     return () => {
       unsubscribe();
     };
-  }, [activeScanId, provider]);
+  }, [activeScanId, connectEventStream, fetchScanData]);
 
   const selectScan = useCallback((scanId: string) => {
-    setActiveScanId(scanId);
-  }, []);
+    attachToScan(scanId);
+  }, [attachToScan]);
 
-  const startScan = useCallback(
-    async (options: StartScanOptions) => {
-      const res = await provider.startScan(options);
-      if (res.success && res.data) {
-        const newScanId = res.data.scanId || res.data.id;
-        if (newScanId) setActiveScanId(newScanId);
-      }
-      return res;
-    },
-    [provider]
-  );
+  const startScan = createScan;
 
   const startDemoScan = useCallback(
     async (targetId: DemoTargetId, scenarioId: DemoScenarioId, speedMultiplier: number = 1.0) => {
       if ('setDemoConfig' in provider && typeof (provider as any).setDemoConfig === 'function') {
         (provider as any).setDemoConfig(targetId, scenarioId, speedMultiplier);
       }
-      const res = await provider.startScan({ demoTargetId: targetId, scenarioId, speedMultiplier });
-      if (res.success && res.data) {
-        const newScanId = res.data.scanId;
-        setActiveScanId(newScanId);
-      }
+      return createScan({ demoTargetId: targetId, scenarioId, speedMultiplier });
     },
-    [provider]
+    [createScan, provider]
   );
 
   const resetDemoScan = useCallback(() => {
@@ -789,15 +1026,9 @@ export function useScanStore(initialScanId: string | null = null) {
       (provider as any).stopActiveDemoScan();
     }
     if (activeScanId) {
-      setAgents(INITIAL_AGENTS);
-      setFindingsById({});
-      setEvents([]);
-      setLastSequence(0);
-      setSandbox(null);
-      setActiveFindingId(null);
-      fetchScanData(activeScanId);
+      attachToScan(activeScanId);
     }
-  }, [activeScanId, fetchScanData, provider]);
+  }, [activeScanId, attachToScan, provider]);
 
   const activeFinding = useMemo(() => {
     if (!activeFindingId) return findings[0] ?? null;
@@ -831,6 +1062,10 @@ export function useScanStore(initialScanId: string | null = null) {
       isLoading,
       error,
       isDemoMode: provider.isDemoMode,
+      resetLiveState,
+      connectEventStream,
+      attachToScan,
+      createScan,
       selectScan,
       startScan,
       startDemoScan,
@@ -857,6 +1092,10 @@ export function useScanStore(initialScanId: string | null = null) {
       isLoading,
       error,
       provider.isDemoMode,
+      resetLiveState,
+      connectEventStream,
+      attachToScan,
+      createScan,
       selectScan,
       startScan,
       startDemoScan,

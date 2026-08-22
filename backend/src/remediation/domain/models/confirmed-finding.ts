@@ -41,6 +41,8 @@ export interface ConfirmedVulnerabilityFinding {
   /** Number of verification attempts (depth signal for selection). */
   readonly exploitDepth: number;
   readonly confirmedAt: string;
+  /** Planned-target id Sniper used when it confirmed this exploit (optional). */
+  readonly exploitTargetId?: string;
 }
 
 /**

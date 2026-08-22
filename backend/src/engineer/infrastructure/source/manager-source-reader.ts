@@ -101,6 +101,27 @@ export class ManagerSourceReader implements EngineerSourceReader {
     return result.stdout;
   }
 
+  async listAllFiles(context: RuntimeSandboxContext): Promise<readonly string[]> {
+    const result = await this.sandboxes.execute(context.sandboxId, {
+      argv: [
+        'find', '.', '-type', 'f',
+        '-not', '-path', '*/.*',
+        '-not', '-path', '*/node_modules/*',
+        '-not', '-path', '*/dist/*',
+        '-not', '-path', '*/build/*',
+        '-not', '-path', '*/.next/*',
+        '-not', '-path', '*/out/*',
+        '-not', '-path', '*/coverage/*',
+      ],
+      timeoutMs: 15_000,
+    });
+    if (result.exitCode !== 0 || result.timedOut) return [];
+    return result.stdout
+      .split('\n')
+      .map((p) => normalizeRepoPath(p))
+      .filter((p) => p !== '' && isSupportedCodeFile(p));
+  }
+
   private assertOk(result: { exitCode: number | null; stderr: string; timedOut: boolean }, label: string): void {
     if (result.exitCode !== 0 || result.timedOut) {
       const reason = result.timedOut ? 'timed out' : `exit ${result.exitCode}`;

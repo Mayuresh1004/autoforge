@@ -97,10 +97,40 @@ describe('resolveRuntimeConfig', () => {
     const { config, generatedDockerfile } = await resolveRuntimeConfig(dir);
     expect(config.strategy).toBe('NODE');
     expect(config.port).toBe(3000);
-    expect(generatedDockerfile).toContain('FROM node:20-alpine');
+    expect(generatedDockerfile).toContain('FROM node:22-alpine');
     expect(generatedDockerfile).toContain('ENV HOST=0.0.0.0');
     expect(generatedDockerfile).toContain('COPY . .');
     expect(generatedDockerfile).toContain('npm install --no-audit --no-fund');
+    expect(generatedDockerfile).toContain('CMD ["npm", "start"]');
+  });
+
+  it('Mode 2 node: npm workspace monorepo with root build delegating to nested client and root start delegating to nested server', async () => {
+    const dir = await tempRepo({
+      'package.json': JSON.stringify({
+        name: 'owasp-vuln-lab',
+        workspaces: ['server', 'client'],
+        scripts: {
+          build: 'npm --workspace client run build',
+          start: 'npm --workspace server run start',
+        },
+      }),
+      'server/package.json': JSON.stringify({
+        name: 'server',
+        main: 'server.js',
+        scripts: { start: 'node server.js' },
+      }),
+      'client/package.json': JSON.stringify({
+        name: 'client',
+        scripts: { build: 'vite build' },
+      }),
+    });
+    const { config, generatedDockerfile } = await resolveRuntimeConfig(dir);
+    expect(config.strategy).toBe('NODE');
+    expect(config.port).toBe(3000);
+    expect(generatedDockerfile).toContain('FROM node:22-alpine');
+    expect(generatedDockerfile).toContain('ENV HOST=0.0.0.0');
+    expect(generatedDockerfile).toContain('npm install --no-audit --no-fund');
+    expect(generatedDockerfile).toContain('RUN npm run build');
     expect(generatedDockerfile).toContain('CMD ["npm", "start"]');
   });
 

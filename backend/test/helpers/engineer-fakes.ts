@@ -149,6 +149,10 @@ export class StubEngineerSourceReader implements EngineerSourceReader {
     if (!result) throw new Error(`source not found: ${request.path}`);
     return { filePath: result.filePath, content: result.lines.join('\n'), byteLength: result.byteLength };
   }
+
+  async listAllFiles(): Promise<readonly string[]> {
+    return [...this.files.keys()];
+  }
 }
 
 export class StubRagService implements RagService {
@@ -236,6 +240,8 @@ export const SQLI_PATCH_JSON = JSON.stringify({
   vulnerabilityId: 'vuln-1',
   status: 'GENERATED',
   filePath: 'src/app.py',
+  originalCode: 'query = "SELECT * FROM items WHERE name = \'" + q + "\'"\ncursor.execute(query)',
+  patchedCode: 'query = "SELECT * FROM items WHERE name = %s"\ncursor.execute(query, (q,))',
   diff: SQLI_PATCH_DIFF,
   explanation: 'Replaced string concatenation with a parameterized query so user input can never alter the SQL grammar.',
   remediation: 'parameterized query',

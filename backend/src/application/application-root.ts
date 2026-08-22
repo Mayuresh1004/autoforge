@@ -49,7 +49,7 @@ import type { AgentExecutionService } from '../agent/application/services/agent-
 import { DefaultAgentExecutionService } from '../agent/application/services/agent-execution.service';
 import { PrismaAgentExecutionRepository } from '../agent/infrastructure/repositories/prisma-agent-execution-repository';
 import { createKnowledgeInfrastructure } from '../knowledge/infrastructure/factory/knowledge-factory';
-import { embeddingConfig, knowledgeConfig } from '../config';
+import { embeddingConfig, knowledgeConfig, githubConfig } from '../config';
 import type { EventBus, AmassEventPublisher } from '../observability/domain/ports/event-bus';
 import { InMemoryEventBus } from '../observability/application/in-memory-event-bus';
 import { eventsConfig } from '../config';
@@ -59,6 +59,8 @@ import type { PlannerService } from '../planner/domain/ports/planner';
 import { createPlannerService } from '../planner/infrastructure/factory/plan-factory';
 import { PrismaPlanRepository } from '../planner/infrastructure/repository/prisma-plan-repository';
 import { AutonomousPipelineService } from './services/autonomous-pipeline.service';
+import { RemediationDeliveryService } from '../remediation/application/services/remediation-delivery.service';
+import { GitHubPullRequestGateway } from '../remediation/infrastructure/github-pull-request-gateway';
 
 export interface ApplicationRootOptions {
   /** Shared Prisma client (injected by the bootstrap module). */
@@ -95,6 +97,7 @@ export interface ApplicationInfrastructure {
   readonly sniper: { readonly service: SniperService };
   readonly engineer: { readonly engineer: EngineerService };
   readonly critic: CriticInfrastructure;
+  readonly remediationDelivery?: RemediationDeliveryService;
   readonly pipeline: AutonomousPipelineService;
   readonly rag: RagService;
   readonly registry: PromptRegistry;
@@ -198,6 +201,12 @@ export function createApplicationInfrastructure(
     events: publisher,
   });
 
+  const remediationDelivery = new RemediationDeliveryService({
+    prisma: db,
+    gateway: new GitHubPullRequestGateway({ token: githubConfig.token }),
+    events: publisher,
+  });
+
   const scout = createScoutService({ events: publisher });
   const planner = createPlannerService(new PrismaPlanRepository(), { events: publisher });
   const pipeline = new AutonomousPipelineService({
@@ -207,10 +216,11 @@ export function createApplicationInfrastructure(
     planner,
     sniper: sniper.service,
     engineer: engineer.engineer,
-    critic: critic.service,
+    critic: critic.critic,
+    remediationDelivery,
     events: publisher,
     prisma: db,
   });
 
-  return { manager, runtime, scout, planner, sniper, engineer, critic, pipeline, rag, registry, llm, executions, events: { bus, publisher } };
+  return { manager, runtime, scout, planner, sniper, engineer, critic, remediationDelivery, pipeline, rag, registry, llm, executions, events: { bus, publisher } };
 }

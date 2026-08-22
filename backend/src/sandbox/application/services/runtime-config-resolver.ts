@@ -55,17 +55,17 @@ function pythonDockerfile(target: PythonTarget, port: number): string {
   ];
 
   const entryDir = path.dirname(target.entrypoint).replace(/\\/g, '/');
-  const pythonPaths = ['/app'];
+  const pythonPaths = ['/workspace'];
   if (entryDir && entryDir !== '.') {
     const parentDir = path.dirname(entryDir).replace(/\\/g, '/');
     if (parentDir && parentDir !== '.') {
-      pythonPaths.push(`/app/${parentDir}`);
+      pythonPaths.push(`/workspace/${parentDir}`);
     } else {
-      pythonPaths.push(`/app/${entryDir}`);
+      pythonPaths.push(`/workspace/${entryDir}`);
     }
   }
   lines.push(`ENV PYTHONPATH=${pythonPaths.join(':')}`);
-  lines.push('WORKDIR /app', 'COPY . /app');
+  lines.push('WORKDIR /workspace', 'COPY . /workspace');
 
   if (target.requirementsPath) {
     lines.push(`RUN pip install --no-cache-dir --default-timeout=100 -r ${target.requirementsPath}`);
@@ -75,7 +75,7 @@ function pythonDockerfile(target: PythonTarget, port: number): string {
 
   const p = target.entrypoint.replace(/\\/g, '/');
   if (p.includes('/')) {
-    const runnerScript = `import sys, os, importlib; p = '${p}'; d = os.path.dirname(p); sys.path.insert(0, '/app'); sys.path.insert(0, '/app/' + os.path.dirname(d) if '/' in d else '/app/' + d); m = os.path.splitext(p)[0].replace('/', '.'); mod = importlib.import_module(m); (importlib.import_module('uvicorn').run(mod.app, host='0.0.0.0', port=${port}) if hasattr(mod, 'app') else (exec(open(p).read())))`;
+    const runnerScript = `import sys, os, importlib; p = '${p}'; d = os.path.dirname(p); sys.path.insert(0, '/workspace'); sys.path.insert(0, '/workspace/' + os.path.dirname(d) if '/' in d else '/workspace/' + d); m = os.path.splitext(p)[0].replace('/', '.'); mod = importlib.import_module(m); (importlib.import_module('uvicorn').run(mod.app, host='0.0.0.0', port=${port}) if hasattr(mod, 'app') else (exec(open(p).read())))`;
     lines.push(`CMD ["python", "-c", "${runnerScript}"]`);
   } else {
     lines.push(`CMD ["python", "${p}"]`);
@@ -87,7 +87,7 @@ function nodeDockerfile(target: NodeTarget, port: number): string {
   const dir = path.dirname(target.packageJsonPath).replace(/\\/g, '/');
   const lines: string[] = [
     `FROM ${target.baseImage}`,
-    'WORKDIR /app',
+    'WORKDIR /workspace',
     `ENV PORT=${port}`,
     'ENV HOST=0.0.0.0',
     'ENV NEXT_PUBLIC_APPWRITE_HOST_URL=http://localhost:8000',
@@ -339,11 +339,8 @@ function findPythonTarget(files: readonly string[]): PythonTarget | null {
 
 export function detectNodeEngine(manifest: PackageManifest): string {
   const engineStr = manifest.engines?.node;
-  if (!engineStr) return 'node:20-alpine';
+  if (!engineStr) return 'node:22-alpine';
 
-  if (/\b(22|23|24|25|26)\b/.test(engineStr)) {
-    return 'node:22-alpine';
-  }
   if (/\b(18)\b/.test(engineStr) && !/\b(20|22)\b/.test(engineStr)) {
     return 'node:18-alpine';
   }
@@ -351,7 +348,7 @@ export function detectNodeEngine(manifest: PackageManifest): string {
     return 'node:16-alpine';
   }
 
-  return 'node:20-alpine';
+  return 'node:22-alpine';
 }
 
 export function detectPackageManager(
@@ -434,12 +431,7 @@ export async function findNodeTarget(
       const baseImage = detectNodeEngine(parsed);
 
       const hasBuildScript = typeof scripts.build === 'string';
-      const startPointsToBuildDir = /\b(build|dist|\.next|out)\//i.test(selectedScript || parsed.main || '');
-      const hasTsConfig = files.some((f) => f === 'tsconfig.json' || f.endsWith('/tsconfig.json'));
-      const isFrameworkBuild = /next|nuxt|vite|tsc|nest|ng\b/i.test(scripts.build || '');
-      const hasNextConfig = files.some((f) => /next\.config\.(ts|js|mjs|cjs)$/i.test(f));
-
-      const requiresBuild = hasBuildScript && (startPointsToBuildDir || hasTsConfig || isFrameworkBuild || hasNextConfig);
+      const requiresBuild = hasBuildScript;
 
       const detectedPort = detectPortFromScript(selectedScript);
 

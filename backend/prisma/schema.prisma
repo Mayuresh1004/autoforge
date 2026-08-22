@@ -353,6 +353,13 @@ model Patch {
   filePath        String?
   explanation     String?
   validatedAt     DateTime?
+  prNumber        Int?
+  prUrl           String?
+  prBranch        String?
+  prCommitSha     String?
+  prStatus        String?
+  prDeliveredAt   DateTime?
+  prError         String?
   createdAt       DateTime    @default(now())
   updatedAt       DateTime    @updatedAt
 

@@ -187,14 +187,16 @@ export class DockerSandboxBackend implements SandboxBackend {
   }
 
   async copyFile(id: string, sourceHostPath: string, destPath: string): Promise<void> {
-    await this.mustRun(['cp', sourceHostPath, `${id}:${this.toMountPath(destPath)}`], `copy=${id}`);
+    const ctx = this.ctx.get(id);
+    await this.mustRun(['cp', sourceHostPath, `${id}:${this.toMountPath(destPath, ctx?.hostWorkspace)}`], `copy=${id}`);
   }
 
   async writeFile(id: string, destPath: string, content: string): Promise<void> {
+    const ctx = this.ctx.get(id);
     const tmp = path.join(tmpdir(), `amass-patch-${randomUUID()}`);
     await fs.writeFile(tmp, content, 'utf8');
     try {
-      await this.mustRun(['cp', tmp, `${id}:${this.toMountPath(destPath)}`], `patch=${id}`);
+      await this.mustRun(['cp', tmp, `${id}:${this.toMountPath(destPath, ctx?.hostWorkspace)}`], `patch=${id}`);
     } finally {
       await fs.rm(tmp, { force: true }).catch(() => undefined);
     }
@@ -392,14 +394,66 @@ export class DockerSandboxBackend implements SandboxBackend {
 
   private async ensureSecurityToolsImage(): Promise<void> {
     const imageName = DEFAULT_SECURITY_TOOLS_IMAGE;
-    const dockerfilePath = path.join(process.cwd(), 'docker', 'Dockerfile.security-tools');
-    try {
-      await fs.access(dockerfilePath);
-    } catch {
+    const candidates = [
+      path.resolve(process.cwd(), 'docker', 'Dockerfile.security-tools'),
+      path.resolve(process.cwd(), '..', 'docker', 'Dockerfile.security-tools'),
+      path.resolve(__dirname, '../../../../../docker/Dockerfile.security-tools'),
+      path.resolve(__dirname, '../../../../docker/Dockerfile.security-tools'),
+    ];
+    let dockerfilePath: string | undefined;
+    let contextPath: string | undefined;
+    for (const cand of candidates) {
+      try {
+        await fs.access(cand);
+        dockerfilePath = cand;
+        contextPath = path.dirname(path.dirname(cand));
+        break;
+      } catch {
+        /* try next */
+      }
+    }
+    if (!dockerfilePath || !contextPath) {
+      logger.warn({ imageName, candidates }, 'docker.ensureSecurityToolsImage: Dockerfile.security-tools not found');
       return;
     }
-    const buildArgs = ['build', '-t', imageName, '-f', dockerfilePath, process.cwd()];
+    const buildArgs = ['build', '-t', imageName, '-f', dockerfilePath, contextPath];
     await this.runner(buildArgs, 300_000);
+  }
+
+  private async ensureAnalysisImage(imageName: string = DEFAULT_ANALYSIS_IMAGE): Promise<void> {
+    const inspectRes = await this.runner(['image', 'inspect', imageName]);
+    if (inspectRes.exitCode === 0) {
+      return;
+    }
+
+    logger.info({ imageName }, 'docker.ensureAnalysisImage: analysis image missing locally; building image');
+    const candidates = [
+      path.resolve(process.cwd(), 'backend', 'analysis.Dockerfile'),
+      path.resolve(process.cwd(), 'analysis.Dockerfile'),
+      path.resolve(__dirname, '../../../../analysis.Dockerfile'),
+      path.resolve(__dirname, '../../../../../backend/analysis.Dockerfile'),
+    ];
+    let dockerfilePath: string | undefined;
+    let contextPath: string | undefined;
+    for (const cand of candidates) {
+      try {
+        await fs.access(cand);
+        dockerfilePath = cand;
+        contextPath = path.dirname(cand);
+        break;
+      } catch {
+        /* try next candidate */
+      }
+    }
+    if (!dockerfilePath || !contextPath) {
+      logger.warn({ imageName, candidates }, 'docker.ensureAnalysisImage: analysis.Dockerfile not found');
+      return;
+    }
+    const buildArgs = ['build', '-t', imageName, '-f', dockerfilePath, contextPath];
+    const buildOut = await this.runner(buildArgs, 300_000);
+    if (buildOut.exitCode !== 0) {
+      throw new Error(`failed to build analysis image ${imageName}: ${buildOut.stderr.trim()}`);
+    }
   }
 
   async sweep(): Promise<number> {
@@ -505,6 +559,13 @@ export class DockerSandboxBackend implements SandboxBackend {
   private async resolveImageUser(image: string): Promise<{ uid: number; gid: number }> {
     const cached = this.imageUserCache.get(image);
     if (cached) return cached;
+
+    if (image === DEFAULT_ANALYSIS_IMAGE || image === 'amass/analysis:local') {
+      await this.ensureAnalysisImage(image).catch((err) => {
+        logger.warn({ err, image }, 'docker.resolveImageUser: ensureAnalysisImage attempt failed; continuing to run');
+      });
+    }
+
     const out = await this.runner(
       ['run', '--rm', '--entrypoint', 'sh', image, '-c', 'id -u; id -g'],
       60_000

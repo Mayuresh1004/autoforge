@@ -43,6 +43,12 @@ export function resolveSameOriginEndpoint(endpoint: string, baseUrl: string): Re
     throw new InvalidBaseUrlError(resolved.toString());
   }
   if (resolved.origin !== base.origin) {
+    const isIpHost = /^[\d.:]+$/.test(resolved.host) || /^[\d.:]+$/.test(base.host);
+    const isSameHost = resolved.hostname === base.hostname;
+    if (isIpHost || isSameHost) {
+      const rebased = new URL(resolved.pathname + resolved.search + resolved.hash, base);
+      return { url: rebased.toString(), origin: base.origin };
+    }
     throw new CrossOriginTargetError(endpoint, base.origin);
   }
   return { url: resolved.toString(), origin: base.origin };

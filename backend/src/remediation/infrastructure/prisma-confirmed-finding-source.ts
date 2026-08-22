@@ -95,6 +95,41 @@ type MappingRow = {
   evidence: readonly { indicator: string; category: string; detail: string | null }[];
 };
 
+export function normalizeTargetEndpoint(
+  rawEndpoint: string | null,
+  rawParam: string | null,
+  rawMethod: string | null,
+): { endpoint: string | null; method: string; parameter: string | null } {
+  const method = (rawMethod ?? 'GET').toUpperCase();
+  if (!rawEndpoint) {
+    return { endpoint: null, method, parameter: rawParam ?? null };
+  }
+  let endpointPath: string | null = null;
+  let parameter: string | null = rawParam ?? null;
+
+  try {
+    let urlString = rawEndpoint.trim();
+    if (!urlString.startsWith('http://') && !urlString.startsWith('https://')) {
+      urlString = `http://localhost${urlString.startsWith('/') ? '' : '/'}${urlString}`;
+    }
+    const parsed = new URL(urlString);
+    endpointPath = parsed.pathname;
+    if (!parameter && parsed.searchParams.size > 0) {
+      parameter = Array.from(parsed.searchParams.keys())[0] ?? null;
+    }
+  } catch {
+    const withoutQuery = rawEndpoint.split('?')[0].trim();
+    const slash = withoutQuery.indexOf('/');
+    if (slash !== -1) {
+      endpointPath = withoutQuery.slice(slash);
+    } else {
+      endpointPath = withoutQuery;
+    }
+  }
+
+  return { endpoint: endpointPath, method, parameter };
+}
+
 /** Pure mapping (exported for tests): exploit + vulnerability → payload. */
 export function mapConfirmedFinding(row: MappingRow): ConfirmedFindingPayload {
   const vuln = row.vulnerability ?? {};
@@ -102,6 +137,8 @@ export function mapConfirmedFinding(row: MappingRow): ConfirmedFindingPayload {
     .map((e) => `${e.indicator}${e.detail ? `: ${e.detail.slice(0, 300)}` : ''}`)
     .slice(0, 5)
     .join('; ');
+  const normalized = normalizeTargetEndpoint(row.endpoint ?? null, row.parameter ?? null, row.method ?? null);
+
   return {
     vulnerabilityId: row.vulnerabilityId,
     scanId: row.scanId,
@@ -116,9 +153,9 @@ export function mapConfirmedFinding(row: MappingRow): ConfirmedFindingPayload {
     message: vuln.message ?? null,
     filePath: vuln.filePath ?? null,
     lineNumber: vuln.lineNumber ?? null,
-    endpoint: row.endpoint ?? null,
-    method: row.method ?? null,
-    parameter: row.parameter ?? null,
+    endpoint: normalized.endpoint,
+    method: normalized.method,
+    parameter: normalized.parameter,
     evidence: evidence.length > 0 ? evidence.slice(0, 1_000) : null,
     reason: row.reason ? row.reason.slice(0, 500) : null,
     exploitDepth: row.attempts.length,

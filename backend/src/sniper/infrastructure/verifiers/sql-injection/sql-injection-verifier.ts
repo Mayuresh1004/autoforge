@@ -13,6 +13,7 @@ import { classifySqlMap, type SqlMapClassification } from '../../../application/
 import { scoreConfidence } from '../../../application/services/confidence-scorer';
 import { SqlMapAdapter } from '../../tools/sqlmap/sqlmap-adapter';
 import { parseSqlMapOutput, type ParsedSqlMapOutput } from '../../tools/sqlmap/sqlmap-output-parser';
+import { logger } from '../../../../config/logger';
 import { summarizeOutput } from '../../tools/sqlmap/sqlmap-redact';
 
 export interface SqlInjectionVerifierOptions {
@@ -44,17 +45,84 @@ export class SqlInjectionVerifier implements VulnerabilityVerifier {
 
   async verify(target: VerificationTarget, context: VerificationContext): Promise<VerificationOutcome> {
     const adapter = new SqlMapAdapter(context.runtime);
-    const execution = await adapter.run({
+    const body = derivePostBody(target);
+
+    // SQLMAP SEMANTICS: Do not run sqlmap on parameterless GET/POST endpoints.
+    // Parameterless endpoints must return NOT_TESTED.
+    const urlObj = new URL(target.endpoint);
+    const hasQueryParams = urlObj.searchParams.size > 0;
+    const hasBodyParams = Boolean(body);
+
+    if (!hasQueryParams && !hasBodyParams) {
+      logger.info(
+        { targetId: target.targetId, url: target.endpoint, method: target.method },
+        'SQLMAP_SKIPPED_NO_PARAMETERS'
+      );
+      return {
+        status: 'NOT_TESTED',
+        confidence: { score: 0, weighted: false, factors: [] },
+        evidence: [],
+        verifier: this.id,
+        tool: this.tool,
+        toolSummary: 'Skipped: endpoint has no query or body parameters to test',
+        toolStderr: '',
+        reason: 'no parameters available to test for SQL injection',
+        retryable: false,
+      };
+    }
+
+    const sqlmapOptions = {
       url: target.endpoint,
       method: target.method,
+      body,
       cookie: target.credentials?.cookie,
       authHeader: target.credentials?.header,
       timeoutMs: context.timeoutMs,
-    });
+    };
+    const { argv } = adapter.buildArgv(sqlmapOptions);
+
+    logger.info(
+      {
+        targetId: target.targetId,
+        url: target.endpoint,
+        method: target.method,
+        parameters: target.verificationHints?.parameters,
+        hints: target.verificationHints,
+        body,
+        securityToolsImage: 'amass/security-tools:local',
+        argv,
+      },
+      'SQLMAP_EXEC_START'
+    );
+
+    const execution = await adapter.run(sqlmapOptions);
+
+    logger.info(
+      {
+        targetId: target.targetId,
+        exitCode: execution.exitCode,
+        timedOut: execution.timedOut,
+        stdout: execution.stdout,
+        stderr: execution.stderr,
+      },
+      'SQLMAP_EXEC_RESULT'
+    );
 
     const parsed = parseSqlMapOutput(execution.stdout, execution.stderr);
     const staticCorrelation = correlationLevel(context);
     const classified = classifySqlMap({ parsed, execution, staticCorrelation });
+
+    logger.info(
+      {
+        targetId: target.targetId,
+        status: classified.status,
+        reason: classified.reason,
+        retryable: classified.retryable,
+        parsed,
+      },
+      'SQLMAP_CLASSIFICATION'
+    );
+
     const confidence = scoreConfidence(classified.signals);
     const evidence = buildEvidence(parsed, classified, confidence, staticCorrelation);
 
@@ -150,4 +218,33 @@ function buildEvidence(
   });
 
   return items;
+}
+
+function derivePostBody(target: VerificationTarget): string | undefined {
+  const method = target.method.toUpperCase();
+  if (method !== 'POST' && method !== 'PUT' && method !== 'PATCH') {
+    return undefined;
+  }
+
+  try {
+    const urlObj = new URL(target.endpoint);
+    if (urlObj.search && urlObj.search.length > 1) {
+      return undefined;
+    }
+  } catch {
+    // Ignore invalid URL
+  }
+
+  const hints = target.verificationHints;
+  if (!hints) return undefined;
+
+  if (hints.parameters && hints.parameters.length > 0) {
+    return hints.parameters.map((p) => `${encodeURIComponent(p)}=1`).join('&');
+  }
+
+  if (hints.parameterName) {
+    return `${encodeURIComponent(hints.parameterName)}=1`;
+  }
+
+  return undefined;
 }

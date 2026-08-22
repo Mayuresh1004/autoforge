@@ -34,6 +34,7 @@ export interface ScanSummary {
   readonly medium: number;
   readonly low: number;
   readonly info: number;
+  readonly confirmed?: number;
 }
 
 export interface ScannerStatistics {
@@ -94,6 +95,7 @@ export interface StoredFinding {
   readonly scanner: string;
   readonly type: string;
   readonly severity: Severity;
+  readonly status?: string;
   readonly confidence: number;
   readonly file: string | null;
   readonly line: number | null;
@@ -103,6 +105,13 @@ export interface StoredFinding {
   readonly references: readonly string[];
   readonly evidence: string | null;
   readonly createdAt: Date;
+  readonly patch?: {
+    readonly id: string;
+    readonly filePath: string | null;
+    readonly diffContent: string | null;
+    readonly explanation: string | null;
+    readonly status: string;
+  } | null;
 }
 
 export const EMPTY_SUMMARY: ScanSummary = {
@@ -112,15 +121,20 @@ export const EMPTY_SUMMARY: ScanSummary = {
   medium: 0,
   low: 0,
   info: 0,
+  confirmed: 0,
 };
 
-export function summarize(findings: readonly { severity: Severity }[]): ScanSummary {
+export function summarize(findings: readonly { severity: Severity; status?: string }[]): ScanSummary {
   let critical = 0;
   let high = 0;
   let medium = 0;
   let low = 0;
   let info = 0;
+  let confirmed = 0;
   for (const finding of findings) {
+    if (finding.status === 'CONFIRMED' || finding.status === 'EXPLOITABLE') {
+      confirmed += 1;
+    }
     switch (finding.severity) {
       case 'CRITICAL':
         critical += 1;
@@ -138,5 +152,6 @@ export function summarize(findings: readonly { severity: Severity }[]): ScanSumm
         info += 1;
     }
   }
-  return { total: findings.length, critical, high, medium, low, info };
+  const summary: ScanSummary = { total: findings.length, critical, high, medium, low, info };
+  return confirmed > 0 ? { ...summary, confirmed } : summary;
 }

@@ -19,12 +19,14 @@ import {
 import { isSupportedConfirmedFinding, selectConfirmedSqlInjection } from './engineer-selection';
 import { resolveWindow } from './source-window';
 import { buildRagQuery, ragDocumentsToAdvisory } from './rag-query-builder';
+import { SourceResolver, type SourceResolutionResult } from './source-resolver';
 import type { EngineerRunInput, EngineerDependencies } from './engineer.service';
 
 export interface PreparedEngineerRun {
   readonly finding: ConfirmedVulnerabilityFinding;
   readonly context: RuntimeSandboxContext;
-  readonly source: SourceReadResult;
+  readonly source: SourceReadResult | null;
+  readonly resolution: SourceResolutionResult | null;
   readonly rag: {
     readonly docs: readonly RagResultDocument[];
     readonly advisory: string;
@@ -77,20 +79,35 @@ export async function readSource(
   deps: Pick<EngineerDependencies, 'sourceReader' | 'maxSourceBytes' | 'maxContextLines' | 'defaultContextWindow'>,
   context: RuntimeSandboxContext,
   finding: ConfirmedVulnerabilityFinding,
-): Promise<SourceReadResult> {
-  if (!finding.filePath) {
-    throw new EngineerSourceError('SOURCE_UNAVAILABLE', 'finding has no source path — cannot gather context');
+  emit?: (event: import('../../../observability/domain/ports/event-bus').AmassEventInput) => void,
+): Promise<{ source: SourceReadResult | null; resolution: SourceResolutionResult | null; resolvedFinding: ConfirmedVulnerabilityFinding }> {
+  const resolver = new SourceResolver();
+  const resolution = await resolver.resolve(finding, context, deps.sourceReader, undefined, undefined, emit);
+  if (!resolution) {
+    return { source: null, resolution: null, resolvedFinding: finding };
   }
-  const window = resolveWindow(finding.lineNumber, {
-    window: deps.defaultContextWindow,
-    maxLines: deps.maxContextLines,
-  });
-  return deps.sourceReader.read(context, {
-    path: finding.filePath,
-    startLine: window.startLine,
-    endLine: window.endLine,
-    maxBytes: deps.maxSourceBytes,
-  });
+
+  const targetPath = resolution.filePath;
+  const resolvedFinding: ConfirmedVulnerabilityFinding = { ...finding, filePath: targetPath };
+
+  try {
+    const window = resolveWindow(finding.lineNumber, {
+      window: deps.defaultContextWindow,
+      maxLines: deps.maxContextLines,
+    });
+    const source = await deps.sourceReader.read(context, {
+      path: targetPath,
+      startLine: window.startLine,
+      endLine: window.endLine,
+      maxBytes: deps.maxSourceBytes,
+    });
+    return { source, resolution, resolvedFinding };
+  } catch (err) {
+    if (err instanceof EngineerSourceError) {
+      return { source: null, resolution, resolvedFinding };
+    }
+    throw err;
+  }
 }
 
 /** Retrieve RAG advisory knowledge; an outage is never fatal. */
@@ -112,15 +129,16 @@ export async function retrieveRag(
 export async function prepareEngineerRun(
   deps: EngineerDependencies,
   input: EngineerRunInput,
+  emit?: (event: import('../../../observability/domain/ports/event-bus').AmassEventInput) => void,
 ): Promise<PreparedEngineerRun> {
-  const finding = await resolveFinding(deps, input);
-  const context = await resolveSandboxContext(deps, finding.scanId);
+  const initialFinding = await resolveFinding(deps, input);
+  const context = await resolveSandboxContext(deps, initialFinding.scanId);
   if (!context) {
     throw new EngineerSourceError('SOURCE_UNAVAILABLE', 'no READY runtime sandbox for this scan');
   }
-  const source = await readSource(deps, context, finding);
-  const rag = await retrieveRag(deps, finding);
-  return { finding, context, source, rag };
+  const { source, resolution, resolvedFinding } = await readSource(deps, context, initialFinding, emit);
+  const rag = await retrieveRag(deps, resolvedFinding);
+  return { finding: resolvedFinding, context, source, resolution, rag };
 }
 
 /** Parse a JSON object from model text (tolerating code fences). */

@@ -125,12 +125,34 @@ export function applyUnifiedDiff(input: ApplyUnifiedDiffInput): ApplyDiffOutcome
   let lines = baseLines;
   const ordered = [...parsed.hunks].sort((a, b) => b.oldStart - a.oldStart);
   for (const hunk of ordered) {
-    const pos = hunk.oldStart - 1;
-    if (pos < 0 || pos + hunk.oldCount > lines.length) {
-      return { ok: false, reason: 'hunk starts out of file bounds', hunk: hunk.oldStart };
+    let pos = hunk.oldStart - 1;
+    let isMatch = pos >= 0 && pos + hunk.oldCount <= lines.length;
+    if (isMatch) {
+      for (let k = 0; k < hunk.oldCount; k += 1) {
+        if (lines[pos + k] !== hunk.oldOrdered[k]) {
+          isMatch = false;
+          break;
+        }
+      }
     }
-    for (let k = 0; k < hunk.oldCount; k += 1) {
-      if (lines[pos + k] !== hunk.oldOrdered[k]) {
+    if (!isMatch) {
+      let foundIdx = -1;
+      for (let i = 0; i <= lines.length - hunk.oldCount; i += 1) {
+        let match = true;
+        for (let k = 0; k < hunk.oldCount; k += 1) {
+          if (lines[i + k] !== hunk.oldOrdered[k]) {
+            match = false;
+            break;
+          }
+        }
+        if (match) {
+          foundIdx = i;
+          break;
+        }
+      }
+      if (foundIdx >= 0) {
+        pos = foundIdx;
+      } else {
         return { ok: false, reason: 'context mismatch', hunk: hunk.oldStart };
       }
     }

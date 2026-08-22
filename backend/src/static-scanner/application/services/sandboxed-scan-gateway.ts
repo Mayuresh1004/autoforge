@@ -21,6 +21,10 @@ export class SandboxedScanGateway implements StaticScanGateway {
     private readonly reads: ScanService
   ) {}
 
+  async startStaticScan(repositoryUrl: string): Promise<{ scanId: string; status: string }> {
+    return this.orchestrator.startScan(repositoryUrl);
+  }
+
   async runStaticScan(repositoryUrl: string): Promise<ScanResult> {
     return this.orchestrator.runScan(repositoryUrl);
   }

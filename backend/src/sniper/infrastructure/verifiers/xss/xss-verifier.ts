@@ -59,7 +59,9 @@ export class XssVerifier implements VulnerabilityVerifier {
         evidence: [],
         verifier: this.id,
         tool: this.tool,
-        reason: 'Failed to reach XSS target endpoint during baseline check',
+        toolSummary: '',
+        toolStderr: baseline.stderr || '',
+        reason: 'Failed to reach endpoint for baseline check',
         retryable: true,
       };
     }

@@ -128,7 +128,8 @@ export default function App() {
       <NewScanModal
         isOpen={isNewScanOpen}
         onClose={() => setIsNewScanOpen(false)}
-        onScanCreated={(newScan) => store.selectScan(newScan.scanId || newScan.id!)}
+        onStartScan={store.createScan}
+        onScanCreated={(newScan) => store.attachToScan(newScan.scanId || newScan.id!)}
       />
     </div>
   );

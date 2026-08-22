@@ -283,7 +283,7 @@ export class SniperTargetRunner {
           eventType: 'SNIPER_NOT_TESTED',
           agentType: 'SNIPER',
           phase: 'verification',
-          status: 'NOT_TESTED',
+          status: 'SKIPPED',
           message: `target "${targetId}" not tested (${final.outcome.reason ?? 'unsupported candidate'})`,
           metadata: { vulnerabilityId: poc.vulnerabilityId ?? undefined, targetId, endpoint: resolvedUrl, check: type, result: final.outcome.status, reason: final.outcome.reason, counts: { attempts: final.attempts } },
         });
@@ -292,7 +292,7 @@ export class SniperTargetRunner {
           eventType: 'SNIPER_REJECTED',
           agentType: 'SNIPER',
           phase: 'verification',
-          status: final.outcome.status,
+          status: final.outcome.status === 'NOT_CONFIRMED' ? 'NOT_CONFIRMED' : 'REJECTED',
           message: `target "${targetId}" not exploited (${final.outcome.reason ?? 'no confirmed finding'})`,
           metadata: { vulnerabilityId: poc.vulnerabilityId ?? undefined, targetId, endpoint: resolvedUrl, check: type, result: final.outcome.status, reason: final.outcome.reason, counts: { attempts: final.attempts } },
         });
@@ -409,7 +409,7 @@ export class SniperTargetRunner {
       eventType: isNotTested ? 'SNIPER_NOT_TESTED' : 'SNIPER_REJECTED',
       agentType: 'SNIPER',
       phase: 'verification',
-      status: isNotTested ? 'NOT_TESTED' : (status as string),
+      status: isNotTested ? 'SKIPPED' : 'REJECTED',
       message: `target "${targetId}" ${isNotTested ? 'not tested' : 'refused'} (${reason})`,
       metadata: { vulnerabilityId: vulnId ?? undefined, targetId, endpoint: planned?.endpoint ?? targetId, check: typeLabel, result: status, reason },
     });

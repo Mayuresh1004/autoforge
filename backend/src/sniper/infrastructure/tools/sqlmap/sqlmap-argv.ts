@@ -15,6 +15,8 @@ export interface SqlMapRunOptions {
   /** Absolute endpoint URL to test. */
   readonly url: string;
   readonly method: string;
+  /** Explicit POST/request body string, if provided. */
+  readonly body?: string;
   /** Auth cookie (explicitly provided by the sandbox/test config only). */
   readonly cookie?: string;
   /** Extra auth header (explicitly provided only). */
@@ -46,7 +48,9 @@ export function buildSqlMapArgv(options: SqlMapRunRequirements): SqlMapArgv {
 
   let probeUrl = `${url.origin}${url.pathname}${isPost ? '' : url.search}`;
   let data: string | undefined;
-  if (isPost && url.search) {
+  if (options.body) {
+    data = options.body;
+  } else if (isPost && url.search) {
     data = url.search.slice(1); // e.g. q=1&type=book — sqlmap tests both
   }
 

@@ -301,4 +301,91 @@ describe('AutonomousPipelineService (Incremental Lifecycle)', () => {
     // D. Sandbox cleanup still executed
     expect(mockRuntimeService.destroy).toHaveBeenCalledWith('sbx_fail_123');
   });
+
+  it('invokes remediationDelivery.deliver() exactly once when Critic returns APPROVED', async () => {
+    const mockRemediationDelivery: any = {
+      deliver: vi.fn().mockResolvedValue({ status: 'DELIVERED', prNumber: 42, prUrl: 'https://github.com/org/repo/pull/42' }),
+    };
+
+    const mockPrisma: any = {
+      exploit: {
+        findMany: vi.fn().mockResolvedValue([{ vulnerabilityId: 'vuln_123' }]),
+      },
+      patch: {
+        findMany: vi.fn().mockResolvedValue([{ id: 'patch_123' }]),
+      },
+      scan: {
+        update: vi.fn().mockResolvedValue({ id: 'scan_123', status: 'COMPLETED' }),
+      },
+    };
+
+    const mockEngineer: any = {
+      run: vi.fn().mockResolvedValue({ patchId: 'patch_123' }),
+    };
+
+    const mockCritic: any = {
+      run: vi.fn().mockResolvedValue({ status: 'APPROVED' }),
+    };
+
+    const pipeline = new AutonomousPipelineService({
+      manager: {} as any,
+      runtime: { create: vi.fn().mockResolvedValue({ id: 's1', targetUrl: 'http://a' }), destroy: vi.fn().mockResolvedValue({}) } as any,
+      scout: { run: vi.fn() } as any,
+      planner: { generate: vi.fn().mockResolvedValue({ targets: [{ targetId: 't1' }] }) } as any,
+      sniper: { run: vi.fn() } as any,
+      engineer: mockEngineer,
+      critic: mockCritic,
+      remediationDelivery: mockRemediationDelivery,
+      prisma: mockPrisma,
+    });
+
+    await pipeline.runPipeline({ scanId: 'scan_123', repositoryUrl: 'https://github.com/org/repo.git' });
+
+    expect(mockCritic.run).toHaveBeenCalledWith({ patchId: 'patch_123' });
+    expect(mockRemediationDelivery.deliver).toHaveBeenCalledTimes(1);
+    expect(mockRemediationDelivery.deliver).toHaveBeenCalledWith({ scanId: 'scan_123', patchId: 'patch_123' });
+  });
+
+  it('does NOT invoke remediationDelivery.deliver() when Critic returns REJECTED', async () => {
+    const mockRemediationDelivery: any = {
+      deliver: vi.fn(),
+    };
+
+    const mockPrisma: any = {
+      exploit: {
+        findMany: vi.fn().mockResolvedValue([{ vulnerabilityId: 'vuln_123' }]),
+      },
+      patch: {
+        findMany: vi.fn().mockResolvedValue([{ id: 'patch_123' }]),
+      },
+      scan: {
+        update: vi.fn().mockResolvedValue({ id: 'scan_123', status: 'COMPLETED' }),
+      },
+    };
+
+    const mockEngineer: any = {
+      run: vi.fn().mockResolvedValue({ patchId: 'patch_123' }),
+    };
+
+    const mockCritic: any = {
+      run: vi.fn().mockResolvedValue({ status: 'REJECTED' }),
+    };
+
+    const pipeline = new AutonomousPipelineService({
+      manager: {} as any,
+      runtime: { create: vi.fn().mockResolvedValue({ id: 's1', targetUrl: 'http://a' }), destroy: vi.fn().mockResolvedValue({}) } as any,
+      scout: { run: vi.fn() } as any,
+      planner: { generate: vi.fn().mockResolvedValue({ targets: [{ targetId: 't1' }] }) } as any,
+      sniper: { run: vi.fn() } as any,
+      engineer: mockEngineer,
+      critic: mockCritic,
+      remediationDelivery: mockRemediationDelivery,
+      prisma: mockPrisma,
+    });
+
+    await pipeline.runPipeline({ scanId: 'scan_123', repositoryUrl: 'https://github.com/org/repo.git' });
+
+    expect(mockCritic.run).toHaveBeenCalledWith({ patchId: 'patch_123' });
+    expect(mockRemediationDelivery.deliver).not.toHaveBeenCalled();
+  });
 });

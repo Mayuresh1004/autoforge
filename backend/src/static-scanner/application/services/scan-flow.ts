@@ -104,3 +104,14 @@ export function toScanTargetProfile(profile: RepositoryProfile): ScanTargetProfi
     importantFiles,
   };
 }
+
+export function nameFromUrl(url: string): string {
+  try {
+    const parsed = new URL(url);
+    const parts = parsed.pathname.split('/').filter(Boolean);
+    const last = parts.at(-1) || 'repository';
+    return last.replace(/\.git$/i, '');
+  } catch {
+    return 'repository';
+  }
+}

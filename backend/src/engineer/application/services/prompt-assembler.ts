@@ -23,7 +23,7 @@ export interface EngineerPromptInput {
     readonly url?: string;
     readonly primaryLanguage?: string | null;
   };
-  readonly source: SourceReadResult;
+  readonly source: SourceReadResult | null;
   readonly ragAdvisory: string;
   readonly ragDocsUsed: number;
   /** Present on retry attempts: Critic rejection feedback for the prior patch. */
@@ -104,13 +104,15 @@ export async function assembleEngineerRequest(
     {
       key: 'source',
       title: '5. Relevant source context',
-      body: [
-        `file: ${input.source.filePath}`,
-        `lines ${input.source.offset}–${input.source.offset + input.source.lines.length - 1} (${input.source.lines.length} lines)`,
-        '```',
-        numberedSource(input.source),
-        '```',
-      ].join('\n'),
+      body: input.source
+        ? [
+            `file: ${input.source.filePath}`,
+            `lines ${input.source.offset}–${input.source.offset + input.source.lines.length - 1} (${input.source.lines.length} lines)`,
+            '```',
+            numberedSource(input.source),
+            '```',
+          ].join('\n')
+        : 'Source code file context is unavailable for this finding. Use the confirmed vulnerability metadata, endpoint, parameter, and verification evidence below to generate or reject remediation.',
     },
     {
       key: 'static-finding',
@@ -152,13 +154,14 @@ export async function assembleEngineerRequest(
         '  "vulnerabilityId": "<string>",',
         '  "status": "GENERATED" | "REJECTED",',
         '  "filePath": "<repo-relative path or null>",',
-        '  "diff": "<unified diff string or null>",',
-        '  "explanation": "<why this patch mitigates the vulnerability>",',
+        '  "originalCode": "<original vulnerable code snippet from context>",',
+        '  "patchedCode": "<fixed replacement code>",',
+        '  "explanation": "<why this change mitigates the vulnerability>",',
         '  "remediation": "parameterized query" | "prepared statement" | "ORM parameter binding" | "safe query API" | "input validation boundary",',
         '  "assumptions": ["<string>", ...],',
         '  "reason": "<null, or why the patch could not be produced when status=REJECTED>"',
         '}',
-        'For REJECTED: filePath=null and diff=null with a concrete reason.',
+        'For REJECTED: filePath=null, originalCode=null, patchedCode=null with a concrete reason.',
       ].join('\n'),
     },
     ...(input.feedback

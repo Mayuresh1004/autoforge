@@ -69,4 +69,14 @@ describe('parseSqlMapOutput', () => {
     expect(outRedirect.toolError).toBe(false);
     expect(outRedirect.noInjection).toBe(false);
   });
+
+  it('parses output with no GET/POST parameters as noParameters without toolError', () => {
+    const out = parseSqlMapOutput(
+      "[WARNING] you've provided target URL without any GET parameters\n[CRITICAL] no parameter(s) found for testing",
+      ''
+    );
+    expect(out.noParameters).toBe(true);
+    expect(out.toolError).toBe(false);
+    expect(out.vulnerable).toBe(false);
+  });
 });

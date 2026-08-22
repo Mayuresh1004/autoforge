@@ -9,6 +9,7 @@ import type { PlannerService } from '../../planner/domain/ports/planner';
 import type { SniperService } from '../../sniper/domain/ports/sniper-service';
 import type { EngineerService } from '../../engineer/application/services/engineer.service';
 import type { CriticService } from '../../critic/application/services/critic.service';
+import type { RemediationDeliveryService } from '../../remediation/application/services/remediation-delivery.service';
 import type { AmassEventPublisher, AmassEventInput } from '../../observability/domain/ports/event-bus';
 
 export interface AutonomousPipelineDeps {
@@ -19,6 +20,7 @@ export interface AutonomousPipelineDeps {
   readonly sniper: SniperService;
   readonly engineer: EngineerService;
   readonly critic: CriticService;
+  readonly remediationDelivery?: RemediationDeliveryService;
   readonly events?: AmassEventPublisher;
   readonly prisma?: PrismaClient;
 }
@@ -266,7 +268,19 @@ export class AutonomousPipelineService {
 
       for (const patch of generatedPatches) {
         try {
-          await this.deps.critic.run({ patchId: patch.id });
+          const criticRun = await this.deps.critic.run({ patchId: patch.id });
+          if (criticRun.status === 'APPROVED') {
+            logger.info({ scanId, patchId: patch.id, criticStatus: criticRun.status }, 'remediation_delivery:triggered');
+            if (this.deps.remediationDelivery) {
+              try {
+                await this.deps.remediationDelivery.deliver({ scanId, patchId: patch.id });
+              } catch (deliveryErr) {
+                logger.error({ scanId, patchId: patch.id, err: deliveryErr }, 'remediation_delivery:failed');
+              }
+            } else {
+              logger.warn({ scanId, patchId: patch.id }, 'remediation_delivery:skipped_no_service');
+            }
+          }
         } catch (err) {
           logger.error({ scanId, patchId: patch.id, err }, 'autonomous_pipeline:stage6_critic:patch_error');
         }

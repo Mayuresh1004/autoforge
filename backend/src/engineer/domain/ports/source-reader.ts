@@ -58,4 +58,6 @@ export interface EngineerSourceReader {
    * invariants as read().
    */
   readWholeFile(context: RuntimeSandboxContext, request: SourceReadRequest): Promise<ReadWholeFileResult>;
+  /** Optional file listing seam for dynamic source resolution. */
+  listAllFiles?(context: RuntimeSandboxContext): Promise<readonly string[]>;
 }

@@ -27,7 +27,7 @@ function makeRes(): { status: ReturnType<typeof vi.fn>; json: ReturnType<typeof 
 }
 
 describe('ScanController', () => {
-  it('POST /scan/static validates the body, runs the scan, and returns a 201 envelope', async () => {
+  it('POST /scan/static validates the body, runs the scan, and returns envelope', async () => {
     const service = {
       runStaticScan: vi.fn().mockResolvedValue({ scanId: 'scan_1' }),
     } as unknown as ScanService;
@@ -40,7 +40,44 @@ describe('ScanController', () => {
     const payload = (await res.payloadPromise) as { success: boolean; data: unknown };
     expect(service.runStaticScan).toHaveBeenCalledWith('https://github.com/owner/repo');
     expect(payload.success).toBe(true);
-    expect(payload.data).toEqual({ scanId: 'scan_1' });
+    expect(payload.data).toEqual({ scanId: 'scan_1', status: 'COMPLETED' });
+  });
+
+  it('POST /scan/static returns HTTP 202 immediately with scanId while background pipeline continues', async () => {
+    let pipelineFinished = false;
+    let finishPipeline: () => void = () => undefined;
+    const backgroundPromise = new Promise<void>((resolve) => {
+      finishPipeline = () => {
+        pipelineFinished = true;
+        resolve();
+      };
+    });
+
+    const gateway = {
+      startStaticScan: vi.fn().mockImplementation(async () => {
+        void backgroundPromise;
+        return { scanId: 'scan_async_100', status: 'RUNNING' };
+      }),
+      runStaticScan: vi.fn(),
+    };
+
+    const controller = new ScanController(gateway as never);
+    const res = makeRes() as unknown as Response;
+    const req = { body: { url: 'https://github.com/Mayuresh1004/AskBit' } } as unknown as Request;
+
+    controller.createStaticScan(req, res);
+
+    const payload = (await res.payloadPromise) as { success: boolean; data: { scanId: string; status: string } };
+
+    expect(res.status).toHaveBeenCalledWith(202);
+    expect(payload.success).toBe(true);
+    expect(payload.data.scanId).toBe('scan_async_100');
+    expect(payload.data.status).toBe('RUNNING');
+    expect(pipelineFinished).toBe(false);
+
+    finishPipeline();
+    await backgroundPromise;
+    expect(pipelineFinished).toBe(true);
   });
 
   it('rejects a malformed static-scan body with a 400 and no service call', async () => {

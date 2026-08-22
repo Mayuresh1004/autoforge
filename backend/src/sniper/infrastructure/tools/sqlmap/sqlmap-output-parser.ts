@@ -22,6 +22,8 @@ export interface ParsedSqlMapOutput {
   readonly dbms: string | null;
   /** sqlmap explicitly ruled out injection for every tested parameter. */
   readonly noInjection: boolean;
+  /** sqlmap indicated that the target URL has no GET/POST parameters to test. */
+  readonly noParameters: boolean;
   /** A runtime/connection-level problem prevented a verdict. */
   readonly connectionError: boolean;
   /** Target endpoint required authentication or redirected to login. */
@@ -39,6 +41,8 @@ const DBMS_RE =
   /back-end DBMS[:\s]+[^:\n]*?\b(mysql|postgresql|sqlite|microsoft sql server|oracle|mariadb|db2|access|firebird|sybase|informix)\b/i;
 const NO_INJECTION_RE =
   /all tested parameters do not appear to be injectable|do not appear to be injectable/i;
+const NO_PARAMETER_RE =
+  /no parameter\(s\) found for testing|provided target URL without any GET parameters/i;
 const CONNECTION_RE =
   /connection refused|unable to connect|timed out|connection reset|no connection/i;
 const AUTH_REQUIRED_RE =
@@ -66,10 +70,11 @@ export function parseSqlMapOutput(stdout: string, stderr: string): ParsedSqlMapO
   const dbmsMatch = combined.match(DBMS_RE);
   const dbms = dbmsMatch ? dbmsMatch[1].toLowerCase() : null;
   const noInjection = NO_INJECTION_RE.test(stdout) && !vulnerable;
+  const noParameters = NO_PARAMETER_RE.test(combined) && !vulnerable && !noInjection;
   const authRequired = AUTH_REQUIRED_RE.test(combined) && !vulnerable;
   const connectionError = CONNECTION_RE.test(combined) && !vulnerable && !authRequired;
   const hasToolErrorText = TOOL_ERROR_RE.test(combined) || /\[PANIC\]/.test(combined);
-  const toolError = hasToolErrorText && !vulnerable && !authRequired && !connectionError;
+  const toolError = hasToolErrorText && !vulnerable && !authRequired && !connectionError && !noParameters;
   const reached =
     parameterMatch !== null || vulnerable || noInjection || authRequired || /HTTP\/[12]\.\d/.test(stdout);
 
@@ -81,6 +86,7 @@ export function parseSqlMapOutput(stdout: string, stderr: string): ParsedSqlMapO
     payloadCount,
     dbms,
     noInjection,
+    noParameters,
     connectionError,
     authRequired,
     toolError,

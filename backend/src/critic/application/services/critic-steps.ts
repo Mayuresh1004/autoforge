@@ -7,8 +7,9 @@
 
 import type { SniperService } from '../../../sniper/domain/ports/sniper-service';
 import type { RuntimeSandboxService } from '../../../sandbox/domain/ports/runtime-sandbox-service';
+import type { RuntimeSandboxStore } from '../../../sandbox/domain/ports/runtime-sandbox-store';
+import type { RuntimeRepositoryRef, RuntimeSandboxContext } from '../../../sandbox/domain/entities/runtime-sandbox';
 import { toRuntimeContext } from '../../../sandbox/domain/entities/runtime-sandbox';
-import type { RuntimeSandboxContext } from '../../../sandbox/domain/entities/runtime-sandbox';
 import type { CriticPatchContext } from '../../domain/ports/critic-finding-resolver';
 import type { CriticEventSink } from '../../domain/events/critic-events';
 import type { CriticEventName } from '../../domain/events/critic-events';
@@ -37,6 +38,7 @@ export interface CriticStepsConfig {
 
 export interface CriticStepsDependencies {
   readonly runtimeService: RuntimeSandboxService;
+  readonly runtimeStore?: RuntimeSandboxStore;
   readonly sniper: SniperService;
   readonly applier: SandboxPatchApplier;
   readonly buildCheck: CriticBuildCheck;
@@ -54,13 +56,24 @@ export class CriticSteps {
   // provisioning + health
   // ------------------------------------------------------------------------
 
-  async provisionFresh(scanId: string, runId: string): Promise<RuntimeSandboxContext> {
+  async provisionFresh(
+    scanId: string,
+    runId: string,
+    repositoryOverride?: RuntimeRepositoryRef
+  ): Promise<RuntimeSandboxContext> {
     this.emit('SANDBOX_PROVISIONING', runId, 'fresh validation sandbox');
     try {
+      let repo = repositoryOverride;
+      if ((!repo || (!repo.url && !repo.path)) && this.deps.runtimeStore) {
+        const existing = await this.deps.runtimeStore.listByScan(scanId);
+        if (existing.length > 0 && (existing[0].repository.url || existing[0].repository.path)) {
+          repo = existing[0].repository;
+        }
+      }
+
       const fresh = await this.deps.runtimeService.create({
         scanId,
-        repository: { name: 'critic-validation', url: undefined, path: undefined },
-        hostExpose: true,
+        repository: repo ?? { name: 'critic-validation', url: undefined, path: undefined },
       });
       this.emit('SANDBOX_READY', runId, `fresh sandbox ${fresh.id} READY`);
       return toRuntimeContext(fresh);
@@ -70,12 +83,17 @@ export class CriticSteps {
   }
 
   async waitHealthy(scanId: string, sandbox: RuntimeSandboxContext): Promise<boolean> {
-    try {
-      const health = await this.deps.runtimeService.healthCheck(sandbox.id, { scanId });
-      return health.ok;
-    } catch {
-      return false;
+    const deadline = Date.now() + 15_000;
+    while (Date.now() < deadline) {
+      try {
+        const health = await this.deps.runtimeService.healthCheck(sandbox.id, { scanId });
+        if (health.ok) return true;
+      } catch {
+        // absorb process boot window after container restart
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1_000));
     }
+    return false;
   }
 
   // -------------------------------------------------------------------------

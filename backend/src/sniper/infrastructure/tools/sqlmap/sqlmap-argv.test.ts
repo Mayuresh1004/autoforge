@@ -66,4 +66,43 @@ describe('buildSqlMapArgv', () => {
       cookie: 'session=abc123',
     });
     expect(authed.argv[authed.argv.indexOf('--cookie') + 1]).toBe('session=abc123');
-  });});
+  });
+
+  it('passes explicit POST body to --data for POST /api/vote (form data)', () => {
+    const { argv, probeUrl, data } = buildSqlMapArgv({
+      url: 'http://app:3000/api/vote',
+      method: 'POST',
+      body: 'answerId=1&vote=up',
+      timeoutMs: 60_000,
+    });
+    expect(probeUrl).toBe('http://app:3000/api/vote');
+    expect(data).toBe('answerId=1&vote=up');
+    expect(argv).toContain('--data');
+    expect(argv[argv.indexOf('--data') + 1]).toBe('answerId=1&vote=up');
+  });
+
+  it('passes explicit POST body to --data for POST with JSON body', () => {
+    const jsonBody = '{"answerId":1,"vote":"up"}';
+    const { argv, probeUrl, data } = buildSqlMapArgv({
+      url: 'http://app:3000/api/vote',
+      method: 'POST',
+      body: jsonBody,
+      timeoutMs: 60_000,
+    });
+    expect(probeUrl).toBe('http://app:3000/api/vote');
+    expect(data).toBe(jsonBody);
+    expect(argv).toContain('--data');
+    expect(argv[argv.indexOf('--data') + 1]).toBe(jsonBody);
+  });
+
+  it('generates no --data when POST endpoint has no known parameters', () => {
+    const { argv, probeUrl, data } = buildSqlMapArgv({
+      url: 'http://app:3000/api/vote',
+      method: 'POST',
+      timeoutMs: 60_000,
+    });
+    expect(probeUrl).toBe('http://app:3000/api/vote');
+    expect(data).toBeUndefined();
+    expect(argv).not.toContain('--data');
+  });
+});

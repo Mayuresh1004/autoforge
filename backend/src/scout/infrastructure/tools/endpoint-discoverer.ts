@@ -9,7 +9,9 @@ import type {
   DiscoveryResult,
   EndpointDiscoverer,
 } from '../../domain/ports/endpoint-discoverer';
-import { extractForms, extractHrefs, extractWebsocketHints } from './html';
+import { extractForms, extractHrefs, extractWebsocketHints, isJsScriptUrl } from './html';
+import { discoverEndpointsFromJs } from './js-discoverer';
+import { parseOpenApiSpec } from './openapi-parser';
 
 const COMMON_PATHS = [
   '/admin', '/administrator', '/login', '/signin', '/register',
@@ -17,14 +19,28 @@ const COMMON_PATHS = [
   '/health', '/status', '/docs', '/wp-admin', '/phpmyadmin',
 ];
 const GRAPHQL_PATHS = ['/graphql', '/api/graphql', '/v1/graphql', '/query'];
-const DOCS_PATHS = ['/openapi.json', '/swagger-ui', '/api-docs', '/redoc'];
+const DOCS_PATHS = ['/openapi.json', '/swagger-ui', '/api-docs', '/redoc', '/swagger.json'];
 const WS_PATHS = ['/ws', '/websocket', '/socket.io'];
 
 const GRAPHQL_HINT = /graphql|must provide operation|query string|"errors"\s*:/i;
 
+const SOURCE_PRIORITY: Record<string, number> = {
+  docs: 5,
+  api: 4,
+  form: 3,
+  crawler: 2,
+  link: 2,
+  robots: 1,
+  sitemap: 1,
+  'common-path': 0,
+  health: 0,
+  graphql: 1,
+  websocket: 1,
+};
+
 /**
- * Discovers endpoints from crawled pages (links + forms), robots hints and
- * well-known path probes; detects REST/GraphQL/WebSocket/API-docs signals.
+ * Discovers endpoints from crawled pages (links + forms + JS bundles), OpenAPI specs,
+ * robots hints and well-known path probes; detects REST/GraphQL/WebSocket/API-docs signals.
  * Every probe is idle and bounded — no payloads are emitted, target is read-only.
  */
 export class ScoutEndpointDiscoverer implements EndpointDiscoverer {
@@ -40,17 +56,35 @@ export class ScoutEndpointDiscoverer implements EndpointDiscoverer {
     const forms: DiscoveredForm[] = [];
     const websockets: Endpoint[] = [];
 
-    // 1. Crawled pages <- GET endpoints.
+    // 1. Crawled pages (HTML + JS bundles)
     for (const page of input.pages) {
       if (isSameOrigin(page.url, input.baseUrl)) {
         this.add(endpoints, {
           url: page.url,
           method: 'GET',
-          parameters: [],
+          parameters: paramNames(page.url),
           authentication: page.statusCode === 401 || page.statusCode === 403,
           source: 'crawler',
           statusCode: page.statusCode,
         });
+
+        // Inspect JS bundle files for API endpoints and parameters
+        if (isJsScriptUrl(page.url) || page.html.includes('fetch(') || page.html.includes('axios')) {
+          const jsEndpoints = discoverEndpointsFromJs(page.html);
+          for (const jsEp of jsEndpoints) {
+            const url = toUrl(jsEp.path, input.baseUrl);
+            if (isSameOrigin(url, input.baseUrl)) {
+              this.add(endpoints, {
+                url,
+                method: jsEp.method,
+                parameters: jsEp.parameters,
+                authentication: false,
+                source: 'api',
+                statusCode: null,
+              });
+            }
+          }
+        }
       }
 
       for (const href of extractHrefs(page.html)) {
@@ -124,7 +158,7 @@ export class ScoutEndpointDiscoverer implements EndpointDiscoverer {
       }
     }
 
-    // 5. GraphQL + API docs.
+    // 5. GraphQL + API docs / OpenAPI specs.
     let graphql = false;
     for (const path of GRAPHQL_PATHS) {
       const url = toUrl(path, input.baseUrl);
@@ -151,6 +185,22 @@ export class ScoutEndpointDiscoverer implements EndpointDiscoverer {
           source: 'docs',
           statusCode: probe.statusCode,
         });
+
+        // Parse machine-readable OpenAPI / Swagger specs when available
+        const openApiEndpoints = parseOpenApiSpec(probe.body);
+        for (const oapiEp of openApiEndpoints) {
+          const epUrl = toUrl(oapiEp.path, input.baseUrl);
+          if (isSameOrigin(epUrl, input.baseUrl)) {
+            this.add(endpoints, {
+              url: epUrl,
+              method: oapiEp.method,
+              parameters: oapiEp.parameters,
+              authentication: false,
+              source: 'docs',
+              statusCode: null,
+            });
+          }
+        }
       }
     }
 
@@ -196,10 +246,35 @@ export class ScoutEndpointDiscoverer implements EndpointDiscoverer {
   }
 
   private add(endpoints: Map<string, Endpoint>, endpoint: Endpoint): void {
-    const key = `${endpoint.method} ${endpoint.url}`;
+    let pathname = endpoint.url;
+    try {
+      const u = new URL(endpoint.url);
+      pathname = u.origin + u.pathname;
+    } catch {}
+
+    const key = `${endpoint.method} ${pathname}`;
     const existing = endpoints.get(key);
-    if (existing && (existing.statusCode !== null || endpoint.statusCode === null)) return;
-    endpoints.set(key, endpoint);
+
+    if (existing) {
+      const combinedParams = [...new Set([...existing.parameters, ...endpoint.parameters])];
+      const existingScore = SOURCE_PRIORITY[existing.source] ?? 0;
+      const newScore = SOURCE_PRIORITY[endpoint.source] ?? 0;
+      const bestSource = newScore > existingScore ? endpoint.source : existing.source;
+      const bestStatusCode = existing.statusCode ?? endpoint.statusCode;
+      const bestUrl = existing.url.includes('?') ? existing.url : endpoint.url;
+      const bestAuth = existing.authentication || endpoint.authentication;
+
+      endpoints.set(key, {
+        ...existing,
+        url: bestUrl,
+        parameters: combinedParams,
+        source: bestSource,
+        statusCode: bestStatusCode,
+        authentication: bestAuth,
+      });
+    } else {
+      endpoints.set(key, endpoint);
+    }
   }
 }
 

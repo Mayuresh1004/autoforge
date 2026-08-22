@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { PlanEngine } from './plan-engine';
+import { PlanEngine, deriveVerificationHints } from './plan-engine';
 import type { PlanRequest, SurfaceInput } from '../../domain/models/plan-input';
 
 const engine = new PlanEngine();
@@ -82,5 +82,36 @@ describe('PlanEngine', () => {
     expect(plan.targets).toHaveLength(0);
     expect(plan.summary.targets).toBe(0);
     expect(plan.id).toBe('plan-4');
+  });
+
+  it('deriveVerificationHints: does not parse port number (e.g. 3000) as parameterName or resourceIdentifier', () => {
+    const hints = deriveVerificationHints(
+      surface({ url: 'http://172.23.0.2:3000/api/graphql', method: 'GET', parameters: [] }),
+      ['SQL Injection']
+    );
+    expect(hints.parameterName).toBeUndefined();
+    expect(hints.resourceIdentifier).toBeUndefined();
+    expect(hints.parameters).toBeUndefined();
+  });
+
+  it('deriveVerificationHints: extracts query parameter from GET URL', () => {
+    const hints = deriveVerificationHints(
+      surface({ url: 'http://172.23.0.2:3000/api/products/search?q=1', method: 'GET', parameters: ['q'] }),
+      ['SQL Injection']
+    );
+    expect(hints.parameterName).toBe('q');
+    expect(hints.parameterLocation).toBe('query');
+    expect(hints.parameters).toEqual(['q']);
+  });
+
+  it('deriveVerificationHints: preserves all body parameters for POST', () => {
+    const params = ['votedById', 'voteStatus', 'type', 'typeId'];
+    const hints = deriveVerificationHints(
+      surface({ url: 'http://172.23.0.2:3000/api/vote', method: 'POST', parameters: params }),
+      ['SQL Injection']
+    );
+    expect(hints.parameterName).toBe('votedById');
+    expect(hints.parameterLocation).toBe('body');
+    expect(hints.parameters).toEqual(params);
   });
 });

@@ -5,6 +5,8 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 
+import { promises as fs } from 'node:fs';
+
 const ENABLED = process.env.ASKBIT_E2E === '1' || process.env.SNIPER_E2E === '1';
 const PG_NAME = `amass-askbit-e2e-pg-${Date.now()}`;
 const SCAN_ID = `scan_askbit_${Date.now()}`;
@@ -35,6 +37,80 @@ describe.skipIf(!ENABLED)('AskBit Autonomous Scan E2E', () => {
   let hostPortResolved: string | undefined;
 
   beforeAll(async () => {
+    // 0. Ensure /tmp/askbit-test fixture exists
+    await fs.mkdir(ASKBIT_PATH, { recursive: true });
+    await fs.writeFile(
+      path.join(ASKBIT_PATH, 'Dockerfile'),
+      `FROM python:3.11-slim
+COPY app.py /opt/app.py
+EXPOSE 8000
+CMD ["python3", "/opt/app.py"]
+`
+    );
+    await fs.writeFile(
+      path.join(ASKBIT_PATH, 'app.py'),
+      `import http.server, sqlite3, os
+from urllib.parse import parse_qs, urlparse
+
+DBP = '/tmp/askbit.db'
+if os.path.exists(DBP): os.remove(DBP)
+con = sqlite3.connect(DBP)
+con.execute('CREATE TABLE users (id INTEGER PRIMARY KEY, username TEXT, email TEXT)')
+con.executemany('INSERT INTO users (username, email) VALUES (?,?)', [
+  ('admin', 'admin@askbit.io'), ('user1', 'user1@askbit.io')])
+con.commit(); con.close()
+
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        parsed = urlparse(self.path)
+        q = (parse_qs(parsed.query).get('q') or [''])[0]
+        con = sqlite3.connect(DBP)
+        try:
+            rows = con.execute(f"SELECT username, email FROM users WHERE id = {q}").fetchall()
+        except Exception:
+            rows = []
+        finally:
+            con.close()
+        if rows:
+            body = '<html><body>' + ''.join(f'<p>{u} {e}</p>' for u, e in rows) + '</body></html>'
+        else:
+            body = '<html><body><p>NOT FOUND</p></body></html>'
+        data = body.encode()
+        self.send_response(200)
+        self.send_header('Content-Type', 'text/html')
+        self.send_header('Content-Length', str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_POST(self):
+        length = int(self.headers.get('Content-Length', 0))
+        post_data = self.rfile.read(length).decode('utf-8')
+        qs = parse_qs(post_data)
+        username = (qs.get('username') or [''])[0]
+        con = sqlite3.connect(DBP)
+        try:
+            rows = con.execute(f"SELECT username, email FROM users WHERE username = '{username}'").fetchall()
+        except Exception:
+            rows = []
+        finally:
+            con.close()
+        if rows:
+            body = '<html><body>' + ''.join(f'<p>{u} {e}</p>' for u, e in rows) + '</body></html>'
+        else:
+            body = '<html><body><p>NOT FOUND</p></body></html>'
+        data = body.encode()
+        self.send_response(200)
+        self.send_header('Content-Type', 'text/html')
+        self.send_header('Content-Length', str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def log_message(self, *a): pass
+
+http.server.ThreadingHTTPServer(('0.0.0.0', 8000), H).serve_forever()
+`
+    );
+
     // 1. Ephemeral PostgreSQL
     try {
       runDocker(['rm', '-f', PG_NAME]);
@@ -157,6 +233,16 @@ describe.skipIf(!ENABLED)('AskBit Autonomous Scan E2E', () => {
       options: { concurrency: 1, maxAttempts: 1, timeoutMs: 300_000 },
     });
     expect(sniperReport.results.length).toBe(plan.targets.length);
+
+    const sqliResults = sniperReport.results.filter((r) => r.exploit.type === 'SQL_INJECTION');
+    console.log('=== SQLi TARGET RESULTS ===\n', JSON.stringify(sqliResults, null, 2));
+
+    expect(sqliResults.length).toBeGreaterThan(0);
+    const nonFailedSqli = sqliResults.filter((r) => r.exploit.status !== 'FAILED');
+    expect(
+      nonFailedSqli.length,
+      'At least one SQLi target must reach an actual verdict rather than immediately returning FAILED'
+    ).toBeGreaterThan(0);
 
     // Cleanup runtime sandbox
     const destroyed = await runtimeService.destroy(sandbox.id);

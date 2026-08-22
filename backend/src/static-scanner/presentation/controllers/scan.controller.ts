@@ -1,3 +1,4 @@
+import { logger } from '../../../config/logger';
 import type { Request, Response } from 'express';
 import type { StaticScanGateway } from '../../application/ports/static-scan-gateway';
 import { createSuccessResponse } from '../../../utils/response';
@@ -17,13 +18,33 @@ export class ScanController {
   constructor(private readonly scanService: StaticScanGateway) {}
 
   createStaticScan = asyncHandler(async (req: Request, res: Response) => {
+    logger.info({ url: req.body?.url }, 'SCAN_REQUEST_RECEIVED');
     const parsed = ScanStaticRequestSchema.safeParse(req.body);
     if (!parsed.success) {
       throw new ValidationError('Invalid request body', parsed.error.flatten().fieldErrors);
     }
     const body: ScanStaticRequest = parsed.data;
-    const result = await this.scanService.runStaticScan(body.url);
-    res.status(201).json(createSuccessResponse(result));
+
+    let scanId: string;
+    let status = 'RUNNING';
+
+    if (typeof this.scanService.startStaticScan === 'function') {
+      const started = await this.scanService.startStaticScan(body.url);
+      scanId = started.scanId;
+      status = started.status ?? 'RUNNING';
+    } else {
+      const result = await this.scanService.runStaticScan(body.url);
+      scanId = result.scanId;
+      status = result.status ?? 'COMPLETED';
+    }
+
+    logger.info({ scanId, status }, 'SCAN_RESPONSE_SENT');
+    res.status(202).json(
+      createSuccessResponse({
+        scanId,
+        status,
+      })
+    );
   });
 
   getScan = asyncHandler(async (req: Request, res: Response) => {

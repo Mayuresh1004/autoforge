@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { AttackPlan, AttackPlanSummary, PlannedTarget } from '../../domain/models/plan';
-import type { PlanRequest } from '../../domain/models/plan-input';
+import type { PlanRequest, SurfaceInput, StaticVulnInput } from '../../domain/models/plan-input';
 import { categorizeFinding, extractFeatures, summarizeFindings } from '../scoring/feature-extractor';
 import { TargetScorer, compareTargets } from '../scoring/target-scorer';
 import { isExternalDocUrl } from '../../infrastructure/repository/prisma-plan-repository';
@@ -94,8 +94,10 @@ export function deriveVerificationHints(
   let uploadField: string | undefined = undefined;
   let resourceIdentifier: string | undefined = undefined;
 
+  let pathname = surface.url;
   try {
     const urlObj = new URL(surface.url);
+    pathname = urlObj.pathname;
     const searchKeys = Array.from(urlObj.searchParams.keys());
     if (searchKeys.length > 0) {
       paramName = paramName ?? searchKeys[0];
@@ -105,7 +107,7 @@ export function deriveVerificationHints(
     // Ignore invalid URL formatting
   }
 
-  const pathMatch = surface.url.match(/[:{]([a-zA-Z0-9_]+)}?/);
+  const pathMatch = pathname.match(/[:{]([a-zA-Z0-9_]+)}?/);
   if (pathMatch) {
     resourceIdentifier = pathMatch[1];
     if (!paramName) {
@@ -129,5 +131,6 @@ export function deriveVerificationHints(
     parameterLocation: paramLocation,
     uploadField,
     resourceIdentifier,
+    parameters: surface.parameters && surface.parameters.length > 0 ? surface.parameters : undefined,
   };
 }

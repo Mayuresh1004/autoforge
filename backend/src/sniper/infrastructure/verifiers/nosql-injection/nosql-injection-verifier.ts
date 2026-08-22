@@ -54,6 +54,8 @@ export class NoSqlInjectionVerifier implements VulnerabilityVerifier {
         evidence: [],
         verifier: this.id,
         tool: this.tool,
+        toolSummary: '',
+        toolStderr: baseline.stderr || '',
         reason: 'Failed to reach endpoint for baseline check',
         retryable: true,
       };

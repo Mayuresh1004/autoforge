@@ -29,13 +29,19 @@ export type VulnerabilitySeverity = 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW' | 'IN
 
 export type FindingStatus =
   | 'DISCOVERED'
+  | 'DETECTED'
   | 'PLANNED'
   | 'VERIFYING'
+  | 'CONFIRMED'
   | 'EXPLOIT_CONFIRMED'
+  | 'NOT_CONFIRMED'
+  | 'NOT_TESTED'
   | 'EXPLOIT_REJECTED'
   | 'REMEDIATION'
   | 'PATCHED'
-  | 'CRITIC_VERIFIED';
+  | 'PATCH_GENERATED'
+  | 'CRITIC_VERIFIED'
+  | 'CRITIC_REJECTED';
 
 export interface ScanModel {
   readonly id?: string;
@@ -57,6 +63,7 @@ export interface FindingModel {
   readonly ruleId?: string;
   readonly vulnerabilityId?: string;
   readonly type?: string;
+  readonly vulnType?: string;
   readonly scanner?: string;
   readonly title?: string;
   readonly description?: string;
@@ -77,6 +84,14 @@ export interface FindingModel {
   readonly status?: FindingStatus;
   readonly isConfirmed?: boolean;
   readonly isDemo?: boolean;
+  readonly patch?: {
+    readonly id?: string;
+    readonly patchId?: string;
+    readonly filePath?: string | null;
+    readonly diffContent?: string | null;
+    readonly explanation?: string | null;
+    readonly status?: string;
+  } | null;
 }
 
 export interface ScanStatistics {
@@ -120,12 +135,15 @@ export interface TargetModel {
   readonly method: string;
   readonly vulnerabilityType: string;
   readonly priorityScore: number;
-  readonly status?: 'PENDING' | 'IN_PROGRESS' | 'COMPLETED' | 'FAILED';
+  readonly priority?: number;
+  readonly status?: 'PENDING' | 'PLANNED' | 'IN_PROGRESS' | 'COMPLETED' | 'FAILED' | string;
   readonly rationale?: string;
   readonly estimatedRisk?: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
   readonly recommendedTool?: string;
   readonly reason?: string;
   readonly candidateVulnerabilities?: readonly string[];
+  readonly verificationStatus?: string;
+  readonly verificationReason?: string;
 }
 
 export interface PlanModel {
@@ -141,6 +159,7 @@ export interface ExploitEvidenceModel {
   readonly findingId?: string;
   readonly scanId: string;
   readonly confirmed: boolean;
+  readonly status?: string;
   readonly payload?: string;
   readonly endpoint?: string;
   readonly method?: string;
@@ -160,6 +179,13 @@ export interface PatchModel {
   readonly status: string;
   readonly ragContextCount?: number;
   readonly explanation?: string;
+  readonly prNumber?: number | null;
+  readonly prUrl?: string | null;
+  readonly prBranch?: string | null;
+  readonly prCommitSha?: string | null;
+  readonly prStatus?: string | null;
+  readonly prDeliveredAt?: string | null;
+  readonly prError?: string | null;
 }
 
 export interface CriticValidationStage {

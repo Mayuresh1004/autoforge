@@ -12,7 +12,7 @@ import type { ScannerRunnerPort } from '../../domain/ports/scanner-runner';
 import type { FindingDeduplicator } from '../../domain/ports/deduplicator';
 import type { ScanRepository } from '../../domain/ports/scan-repository';
 import type { RepositoryPreparer } from '../ports/repository-preparer';
-import { runScannerFlow, toScanTargetProfile } from './scan-flow';
+import { nameFromUrl, runScannerFlow, toScanTargetProfile } from './scan-flow';
 import type { AmassEventPublisher, AmassEventInput } from '../../../observability/domain/ports/event-bus';
 import { DeferredEventPublisher } from '../../../observability/application/deferred-publisher';
 
@@ -28,9 +28,9 @@ export interface ScanServiceOptions {
 }
 
 /**
- * Orchestrates a static scan: prepare (clone+analyze) → select scanners →
- * run (isolated failures) → normalize → deduplicate → persist → summarize.
- * Never makes security decisions; it only executes deterministic scanners.
+ * High-level orchestration for static code analysis runs. Manages context
+ * preparation, delegating execution to the runner port, and handling
+ * high-level error states.
  */
 export class ScanService {
   private readonly preparer: RepositoryPreparer;
@@ -49,6 +49,21 @@ export class ScanService {
     this.repository = options.repository;
     this.severityThreshold = options.severityThreshold;
     this.events = options.events;
+  }
+
+  async startStaticScan(repositoryUrl: string): Promise<{ scanId: string; status: string }> {
+    const name = nameFromUrl(repositoryUrl);
+    const store = await this.repository.createScan({ name, repositoryUrl });
+    const scanId = store.id;
+
+    logger.info({ scanId, repositoryUrl }, 'SCAN_CREATED');
+    logger.info({ scanId, repositoryUrl }, 'SCAN_BACKGROUND_STARTED');
+
+    void this.runStaticScan(repositoryUrl).catch((error) => {
+      logger.error({ scanId, error, repositoryUrl }, 'SCAN_BACKGROUND_UNHANDLED_ERROR');
+    });
+
+    return { scanId, status: 'RUNNING' };
   }
 
   async runStaticScan(repositoryUrl: string): Promise<ScanResult> {
@@ -96,11 +111,11 @@ export class ScanService {
       this.emit(scanId, { eventType: 'SCAN_COMPLETED', agentType: 'SYSTEM', phase: 'scan', status: 'COMPLETED', message: `scan ${scanId} completed`, metadata: { counts: { findings: result.findings.length } } });
       logger.info(
         { scanId, status: result.status, findings: result.findings.length, scanners: result.scannerStatistics.length, repositoryUrl },
-        'scan.static:complete'
+        'SCAN_BACKGROUND_COMPLETED'
       );
       return result;
     } catch (error) {
-      logger.error({ scanId, error, repositoryUrl }, 'scan.static:failed');
+      logger.error({ scanId, error, repositoryUrl }, 'SCAN_BACKGROUND_FAILED');
       if (scanId) {
         this.emit(scanId, { eventType: 'SCAN_FAILED', agentType: 'SYSTEM', phase: 'scan', level: 'ERROR', status: 'FAILED', message: 'scan failed', metadata: { error: error instanceof Error ? error.message.slice(0, 160) : undefined } });
         await this.repository

@@ -335,6 +335,30 @@ describe('DockerSandboxBackend (fake docker runner)', () => {
     expect(buildErr.buildOutput).toContain("can't cd to frontend");
     expect(buildErr.buildOutput).toContain('Step 1/3');
   });
+
+  it('ensureSecurityToolsImage resolves Dockerfile.security-tools when CWD is backend directory', async () => {
+    const calls: string[][] = [];
+    const runner: DockerRunner = async (args) => {
+      calls.push([...args]);
+      if (args[0] === 'image' && args[1] === 'inspect') {
+        // First inspect fails (image missing), second inspect succeeds (image built)
+        const inspectCount = calls.filter((c) => c[0] === 'image' && c[1] === 'inspect').length;
+        if (inspectCount === 1) return { stdout: '', stderr: 'No such image', exitCode: 1, timedOut: false };
+        return { stdout: '[]', stderr: '', exitCode: 0, timedOut: false };
+      }
+      return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+    };
+    const backend = new DockerSandboxBackend(runner);
+    const result = await backend.executeToolInNetwork({
+      networkId: 'amass-net-scan_1',
+      argv: ['sqlmap', '--url', 'http://172.19.0.2:8000/search?q=1', '--batch'],
+      timeoutMs: 30_000,
+    });
+    expect(result.exitCode).toBe(0);
+    const buildCall = calls.find((c) => c[0] === 'build');
+    expect(buildCall).toBeDefined();
+    expect(buildCall!.join(' ')).toContain('Dockerfile.security-tools');
+  });
 });
 
 /**
@@ -548,5 +572,27 @@ describe('DockerSandboxBackend — analysis workspace provisioning', () => {
     expect(create.join(' ')).toContain('/tmp/ws/repo:/workspace');
     const entries = await fs.readdir(workspaceRoot).catch(() => []);
     expect(entries).toHaveLength(0);
+  });
+
+  it('automatically builds missing amass/analysis:local image before resolveImageUser without pulling from Docker Hub', async () => {
+    const calls: string[][] = [];
+    const customRunner = (record: string[][]): DockerRunner => async (args) => {
+      record.push([...args]);
+      if (args[0] === 'image' && args[1] === 'inspect' && args[2] === 'amass/analysis:local') {
+        return { stdout: '', stderr: 'No such image', exitCode: 1, timedOut: false };
+      }
+      if (args[0] === 'run' && args.includes('id -u; id -g')) {
+        return { stdout: '1001\n1001', stderr: '', exitCode: 0, timedOut: false };
+      }
+      return { stdout: 'ok', stderr: '', exitCode: 0, timedOut: false };
+    };
+
+    const backend = new DockerSandboxBackend(customRunner(calls), { workspaceRoot });
+    await backend.create(spec({ image: 'amass/analysis:local', repositoryPath: 'in-sandbox' }));
+
+    const buildCall = calls.find((c) => c[0] === 'build' && c.includes('amass/analysis:local'));
+    expect(buildCall).toBeDefined();
+    expect(buildCall!.join(' ')).toContain('analysis.Dockerfile');
+    expect(calls.some((c) => c.includes('pull'))).toBe(false);
   });
 });

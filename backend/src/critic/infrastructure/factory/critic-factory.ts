@@ -31,6 +31,7 @@ import { CriticAdvisoryReviewer } from '../../application/services/llm-review';
 import { PrismaCriticRepository } from '../persistence/prisma-critic-repository';
 import { PrismaPatchReviewRepository } from '../persistence/prisma-patch-review-repository';
 import { PrismaCriticFindingResolver } from '../persistence/prisma-critic-finding-resolver';
+import { PrismaRuntimeSandboxRepository } from '../../../sandbox/infrastructure/repositories/prisma-runtime-sandbox-repository';
 import { CriticEventCollector } from '../observability/critic-event-collector';
 
 export interface CriticConfig {
@@ -91,6 +92,7 @@ export function createCriticInfrastructure(options: CriticInfrastructureOptions)
 
   const steps = new CriticSteps({
     runtimeService,
+    runtimeStore: new PrismaRuntimeSandboxRepository(options.prisma),
     sniper: options.sniper,
     applier,
     buildCheck,
