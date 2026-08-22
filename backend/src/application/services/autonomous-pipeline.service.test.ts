@@ -320,7 +320,7 @@ describe('AutonomousPipelineService (Incremental Lifecycle)', () => {
     };
 
     const mockEngineer: any = {
-      run: vi.fn().mockResolvedValue({ patchId: 'patch_123' }),
+      run: vi.fn().mockResolvedValue({ status: 'GENERATED', patchId: 'patch_123' }),
     };
 
     const mockCritic: any = {
@@ -364,7 +364,7 @@ describe('AutonomousPipelineService (Incremental Lifecycle)', () => {
     };
 
     const mockEngineer: any = {
-      run: vi.fn().mockResolvedValue({ patchId: 'patch_123' }),
+      run: vi.fn().mockResolvedValue({ status: 'GENERATED', patchId: 'patch_123' }),
     };
 
     const mockCritic: any = {
@@ -387,5 +387,84 @@ describe('AutonomousPipelineService (Incremental Lifecycle)', () => {
 
     expect(mockCritic.run).toHaveBeenCalledWith({ patchId: 'patch_123' });
     expect(mockRemediationDelivery.deliver).not.toHaveBeenCalled();
+  });
+
+  it('fails pipeline, emits SCAN_FAILED, skips Critic/remediation, and cleans up sandbox when Engineer fails', async () => {
+    const eventsEmitted: AmassEventInput[] = [];
+    const eventsPublisher: AmassEventPublisher = {
+      publish: (e) => {
+        eventsEmitted.push(e);
+      },
+    };
+
+    const mockRuntimeSandbox: RuntimeSandbox = {
+      id: 'sbx_eng_fail_123',
+      scanId: 'scan_eng_fail_123',
+      status: 'READY',
+      sandboxId: 'container_eng_fail_123',
+      targetUrl: 'http://localhost:8080',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    const mockRuntimeService: RuntimeSandboxService = {
+      limits: { maxMemoryMb: 512, maxCpuCores: 1, maxPids: 100 },
+      create: vi.fn().mockResolvedValue(mockRuntimeSandbox),
+      get: vi.fn().mockResolvedValue(mockRuntimeSandbox),
+      healthCheck: vi.fn().mockResolvedValue({ ok: true, status: 'READY', checkedAt: new Date().toISOString() }),
+      destroy: vi.fn().mockResolvedValue(mockRuntimeSandbox),
+      expire: vi.fn().mockResolvedValue(mockRuntimeSandbox),
+      cleanupExpired: vi.fn().mockResolvedValue(0),
+    };
+
+    const mockEngineerService: EngineerService = {
+      run: vi.fn().mockRejectedValue(new Error('model response failed structural validation')),
+      getRun: vi.fn(),
+    };
+
+    const mockCriticService: CriticService = {
+      run: vi.fn(),
+      getRun: vi.fn(),
+    };
+
+    const mockPrisma: any = {
+      exploit: {
+        findMany: vi.fn().mockResolvedValue([{ vulnerabilityId: 'vuln_123' }]),
+      },
+      scan: {
+        update: vi.fn().mockResolvedValue({ id: 'scan_eng_fail_123', status: 'FAILED' }),
+      },
+    };
+
+    const pipeline = new AutonomousPipelineService({
+      manager: {} as any,
+      runtime: mockRuntimeService,
+      scout: { run: vi.fn() } as any,
+      planner: { generate: vi.fn().mockResolvedValue({ targets: [{ targetId: 't1' }] }) } as any,
+      sniper: { run: vi.fn() } as any,
+      engineer: mockEngineerService,
+      critic: mockCriticService,
+      events: eventsPublisher,
+      prisma: mockPrisma,
+    });
+
+    await expect(
+      pipeline.runPipeline({
+        scanId: 'scan_eng_fail_123',
+        repositoryUrl: 'https://github.com/org/repo.git',
+      })
+    ).rejects.toThrow('model response failed structural validation');
+
+    expect(mockCriticService.run).not.toHaveBeenCalled();
+
+    const failedEvent = eventsEmitted.find((e) => e.eventType === 'SCAN_FAILED');
+    expect(failedEvent).toBeDefined();
+
+    expect(mockPrisma.scan.update).toHaveBeenCalledWith({
+      where: { id: 'scan_eng_fail_123' },
+      data: expect.objectContaining({ status: 'FAILED' }),
+    });
+
+    expect(mockRuntimeService.destroy).toHaveBeenCalledWith('sbx_eng_fail_123');
   });
 });

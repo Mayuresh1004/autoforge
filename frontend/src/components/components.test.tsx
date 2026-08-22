@@ -111,4 +111,117 @@ describe('Frontend UI Components', () => {
     expect(screen.getByText('Broken Access Control')).toBeInTheDocument();
     expect(screen.getByText('APPROVED')).toBeInTheDocument();
   });
+
+  it('renders AgentPipeline with 9th PR Created step and clickable PR link when delivered', () => {
+    const mockAgents: Record<string, AgentState> = {
+      ANALYZER: { type: 'ANALYZER', status: 'COMPLETED' },
+      SCANNER: { type: 'SCANNER', status: 'COMPLETED' },
+      SANDBOX: { type: 'SANDBOX', status: 'COMPLETED' },
+      SCOUT: { type: 'SCOUT', status: 'COMPLETED' },
+      PLANNER: { type: 'PLANNER', status: 'COMPLETED' },
+      SNIPER: { type: 'SNIPER', status: 'COMPLETED' },
+      ENGINEER: { type: 'ENGINEER', status: 'COMPLETED' },
+      CRITIC: { type: 'CRITIC', status: 'COMPLETED' },
+      REMEDIATION: { type: 'REMEDIATION', status: 'COMPLETED' },
+    } as any;
+
+    const mockPatches: PatchModel[] = [
+      {
+        patchId: 'patch_1',
+        scanId: 'scan_1',
+        filePath: 'src/routes/auth.ts',
+        diffContent: 'diff',
+        status: 'APPROVED',
+        prNumber: 7,
+        prUrl: 'https://github.com/test/repo/pull/7',
+        prBranch: 'amass/remediation/patch_1',
+      },
+    ];
+
+    render(<AgentPipeline agents={mockAgents} patches={mockPatches} />);
+    expect(screen.getByText('PR Created')).toBeInTheDocument();
+    expect(screen.getByText('#7')).toBeInTheDocument();
+    const link = screen.getByRole('link', { name: /view ↗/i });
+    expect(link).toHaveAttribute('href', 'https://github.com/test/repo/pull/7');
+    expect(link).toHaveAttribute('target', '_blank');
+    expect(link).toHaveAttribute('rel', 'noreferrer');
+  });
+
+  it('renders FindingCard with ✓ PR CREATED and clickable View Pull Request link', () => {
+    const mockFinding: FindingModel = {
+      id: 'f_1',
+      scanId: 'scan_1',
+      title: 'SQL Injection in /api/login',
+      severity: 'CRITICAL',
+      filePath: 'src/routes/auth.ts',
+      status: 'CRITIC_VERIFIED',
+      patch: {
+        patchId: 'patch_1',
+        scanId: 'scan_1',
+        filePath: 'src/routes/auth.ts',
+        diffContent: 'diff',
+        status: 'APPROVED',
+        prNumber: 7,
+        prUrl: 'https://github.com/test/repo/pull/7',
+      },
+    };
+
+    render(<FindingCard finding={mockFinding} />);
+    expect(screen.getByText('✓ PR CREATED #7')).toBeInTheDocument();
+    const link = screen.getByRole('link', { name: /view pull request ↗/i });
+    expect(link).toHaveAttribute('href', 'https://github.com/test/repo/pull/7');
+    expect(link).toHaveAttribute('target', '_blank');
+  });
+
+  it('renders FindingCard with ✕ PR DELIVERY FAILED when PR delivery fails', () => {
+    const mockFinding: FindingModel = {
+      id: 'f_2',
+      scanId: 'scan_1',
+      title: 'XSS in comment field',
+      severity: 'HIGH',
+      filePath: 'src/routes/comments.ts',
+      status: 'CRITIC_VERIFIED',
+      patch: {
+        patchId: 'patch_2',
+        scanId: 'scan_1',
+        filePath: 'src/routes/comments.ts',
+        diffContent: 'diff',
+        status: 'APPROVED',
+        prError: 'GitHub API HTTP 403 Forbidden',
+      },
+    };
+
+    render(<FindingCard finding={mockFinding} />);
+    expect(screen.getByText('✕ PR DELIVERY FAILED')).toBeInTheDocument();
+    expect(screen.getByText('GitHub API HTTP 403 Forbidden')).toBeInTheDocument();
+  });
+
+  it('renders ValidationMatrix with Pull Request column and clickable link', () => {
+    const mockFindings: FindingModel[] = [
+      {
+        id: 'fnd-1',
+        title: 'SQL Injection',
+        severity: 'CRITICAL',
+        filePath: 'src/routes/search.ts',
+        status: 'CRITIC_VERIFIED',
+        patch: {
+          patchId: 'patch_1',
+          scanId: 'scan_1',
+          filePath: 'src/routes/search.ts',
+          diffContent: 'diff',
+          status: 'APPROVED',
+          prNumber: 7,
+          prUrl: 'https://github.com/test/repo/pull/7',
+          prBranch: 'amass/remediation/patch_1',
+        },
+      },
+    ];
+
+    render(<ValidationMatrix findings={mockFindings} />);
+    expect(screen.getByText('Pull Request')).toBeInTheDocument();
+    expect(screen.getByText('✓ PR #7')).toBeInTheDocument();
+    expect(screen.getByText('amass/remediation/patch_1')).toBeInTheDocument();
+    const link = screen.getByRole('link', { name: /view pull request ↗/i });
+    expect(link).toHaveAttribute('href', 'https://github.com/test/repo/pull/7');
+  });
 });

@@ -24,24 +24,32 @@ export function PatchView({ patches, activeFinding, onSelectFindingId }: PatchVi
   ) ?? patches[0] ?? null;
 
   const patchStatusVariant =
-    activePatch?.status === 'APPROVED' || activePatch?.status === 'CRITIC_VERIFIED'
+    activePatch?.prNumber || activePatch?.prUrl
       ? 'success'
-      : activePatch?.status === 'APPLIED'
-        ? 'info'
-        : activePatch?.status === 'REJECTED'
-          ? 'danger'
-          : 'purple';
+      : activePatch?.prError
+        ? 'danger'
+        : activePatch?.status === 'APPROVED' || activePatch?.status === 'CRITIC_VERIFIED'
+          ? 'success'
+          : activePatch?.status === 'APPLIED'
+            ? 'info'
+            : activePatch?.status === 'REJECTED'
+              ? 'danger'
+              : 'purple';
 
   const patchStatusLabel =
-    activePatch?.status === 'APPROVED' || activePatch?.status === 'CRITIC_VERIFIED'
-      ? '✓ CRITIC VERIFIED'
-      : activePatch?.status === 'APPLIED'
-        ? '⚙️ PATCH APPLIED'
-        : activePatch?.status === 'REJECTED'
-          ? '❌ PATCH REJECTED'
-          : activePatch?.status === 'GENERATED' || activePatch?.status === 'PATCH_GENERATED'
-            ? '🛠️ PATCH GENERATED'
-            : activePatch?.status || 'PATCH GENERATED';
+    activePatch?.prNumber || activePatch?.prUrl
+      ? `✓ PR CREATED ${activePatch.prNumber ? `#${activePatch.prNumber}` : ''}`
+      : activePatch?.prError
+        ? '✕ PR DELIVERY FAILED'
+        : activePatch?.status === 'APPROVED' || activePatch?.status === 'CRITIC_VERIFIED'
+          ? '✓ CRITIC VERIFIED'
+          : activePatch?.status === 'APPLIED'
+            ? '⚙️ PATCH APPLIED'
+            : activePatch?.status === 'REJECTED'
+              ? '❌ PATCH REJECTED'
+              : activePatch?.status === 'GENERATED' || activePatch?.status === 'PATCH_GENERATED'
+                ? '🛠️ PATCH GENERATED'
+                : activePatch?.status || 'PATCH GENERATED';
 
   return (
     <Card>

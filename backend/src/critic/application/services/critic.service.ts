@@ -43,6 +43,8 @@ import type { RuntimeSandboxContext } from '../../../sandbox/domain/entities/run
 import { logger } from '../../../config/logger';
 import { CriticSteps } from './critic-steps';
 import { CriticOutcomeWriter, classifyFailure } from './critic-outcome';
+import type { ValidationStrategyRegistry } from '../../domain/validation/validation-strategy-registry';
+import type { VulnerabilityValidationStrategy } from '../../domain/validation/validation-strategy';
 
 export interface CriticRunInput {
   readonly patchId: string;
@@ -62,6 +64,7 @@ export interface CriticConfig {
 export interface CriticDependencies {
   readonly patches: PatchReviewRepository;
   readonly findings: CriticFindingResolver;
+  readonly strategyRegistry: ValidationStrategyRegistry;
   /** The ONLY lifecycle seam (existing RuntimeSandboxService, via steps). */
   readonly steps: CriticSteps;
   readonly events: CriticEventSink;
@@ -83,22 +86,28 @@ export class DefaultCriticService implements CriticService {
   async run(input: CriticRunInput): Promise<CriticRunResult> {
     const startedAt = new Date();
     const attempt = input.attempt ?? 1;
-    // ---- gate 1: only GENERATED patches on CONFIRMED SQLI findings -----
+    // ---- gate 1: only GENERATED patches on CONFIRMED findings -----
     const patch = await this.deps.patches.getPatch(input.patchId);
     if (!patch) throw new PatchNotFoundError(input.patchId);
     if (patch.status !== 'GENERATED') throw new InvalidPatchStatusError(input.patchId, patch.status);
 
     const context = await this.deps.findings.resolveForPatch(input.patchId);
     if (!context) throw new UnsupportedVulnerabilityError(input.patchId, 'n/a', 'n/a');
-    if (context.finding.status !== 'CONFIRMED' || context.finding.type !== 'SQL_INJECTION') {
+    if (context.finding.status !== 'CONFIRMED') {
       throw new UnsupportedVulnerabilityError(input.patchId, context.finding.status, context.finding.type);
     }
+
+    const strategy = this.deps.strategyRegistry.resolve(context.finding.type);
+    if (!strategy) {
+      throw new UnsupportedVulnerabilityError(input.patchId, context.finding.status, context.finding.type);
+    }
+
     if (!patch.filePath || !patch.diffContent) {
       throw new PatchConflictError('patch has no file content to validate');
     }
 
     await this.deps.patches.markUnderReview(patch.id);
-    return this.validate(input, context, patch, attempt, startedAt);
+    return this.validate(input, context, patch, strategy, attempt, startedAt);
   }
 
   async getRun(executionId: string): Promise<CriticRunResult | null> {
@@ -113,6 +122,7 @@ export class DefaultCriticService implements CriticService {
     input: CriticRunInput,
     context: CriticPatchContext,
     patch: ReviewablePatch,
+    strategy: VulnerabilityValidationStrategy,
     attempt: number,
     startedAt: Date,
   ): Promise<CriticRunResult> {
@@ -133,6 +143,21 @@ export class DefaultCriticService implements CriticService {
       sandbox = await this.deps.steps.provisionFresh(scanId, runId);
 
       this.bridge(scanId, {
+        eventType: 'CRITIC_VALIDATION_STRATEGY_SELECTED' as any,
+        agentType: 'CRITIC',
+        phase: 'validation',
+        status: 'STARTED',
+        message: `selected validation strategy ${strategy.name} for ${context.finding.type}`,
+        metadata: {
+          patchId: patch.id,
+          vulnerabilityId: context.finding.vulnerabilityId,
+          vulnerabilityType: context.finding.type,
+          strategy: strategy.name,
+        },
+      });
+      this.emit('CRITIC_VALIDATION_STRATEGY_SELECTED', runId, `strategy: ${strategy.name}`);
+
+      this.bridge(scanId, {
         eventType: 'BASELINE_CHECK_STARTED',
         agentType: 'CRITIC',
         phase: 'validation',
@@ -140,7 +165,7 @@ export class DefaultCriticService implements CriticService {
         message: 'reproducing the exploit baseline in the fresh sandbox',
         metadata: { vulnerabilityId: context.finding.vulnerabilityId },
       });
-      const baseline = await this.deps.steps.runBaseline(scanId, context, sandbox, checks, runId);
+      const baseline = await this.deps.steps.runBaseline(scanId, context, sandbox, strategy, checks, runId);
       this.bridge(scanId, {
         eventType: 'BASELINE_CHECK_COMPLETED',
         agentType: 'CRITIC',
@@ -220,7 +245,7 @@ export class DefaultCriticService implements CriticService {
         message: 're-attempting the exploit after the patch',
         metadata: { patchId: patch.id },
       });
-      const retest = await this.deps.steps.retest(scanId, context, sandbox, baseline, checks, runId);
+      const retest = await this.deps.steps.retest(scanId, context, sandbox, baseline, strategy, checks, runId);
       exploit = retest.exploit;
       this.bridge(scanId, {
         eventType: 'EXPLOIT_RETEST_COMPLETED',
@@ -231,7 +256,7 @@ export class DefaultCriticService implements CriticService {
         metadata: { patchId: patch.id, result: retest.verdict },
       });
       if (retest.verdict === 'SUCCEEDS') {
-        throw new ExploitStillSucceedsError('the original SQL injection is still confirmed after the patch');
+        throw new ExploitStillSucceedsError(`the original ${context.finding.type} is still confirmed after the patch`);
       }
       if (retest.verdict === 'INCONCLUSIVE') {
         throw new ExploitInconclusiveError(`retest did not conclude (${retest.detail ?? 'no verifier verdict'})`);

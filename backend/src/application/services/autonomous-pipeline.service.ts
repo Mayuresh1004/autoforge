@@ -212,33 +212,35 @@ export class AutonomousPipelineService {
       return;
     }
 
-    try {
-      // Find vulnerabilities that have confirmed exploits
-      const confirmedExploits = await this.deps.prisma.exploit.findMany({
-        where: { scanId, status: 'CONFIRMED' },
-        select: { vulnerabilityId: true },
-      });
+    // Find vulnerabilities that have confirmed exploits
+    const confirmedExploits = await this.deps.prisma.exploit.findMany({
+      where: { scanId, status: 'CONFIRMED' },
+      select: { vulnerabilityId: true },
+    });
 
-      const confirmedVulnIds = Array.from(
-        new Set(confirmedExploits.map((e) => e.vulnerabilityId).filter((id): id is string => Boolean(id)))
-      );
+    const confirmedVulnIds = Array.from(
+      new Set(confirmedExploits.map((e) => e.vulnerabilityId).filter((id): id is string => Boolean(id)))
+    );
 
-      if (confirmedVulnIds.length === 0) {
-        logger.info({ scanId }, 'autonomous_pipeline:stage5_engineer:no_confirmed_vulnerabilities');
-        return;
-      }
-
-      for (const vulnId of confirmedVulnIds) {
-        try {
-          await this.deps.engineer.run({ scanId, vulnerabilityId: vulnId });
-        } catch (err) {
-          logger.error({ scanId, vulnId, err }, 'autonomous_pipeline:stage5_engineer:vulnerability_error');
-        }
-      }
-      logger.info({ scanId, count: confirmedVulnIds.length }, 'autonomous_pipeline:stage5_engineer:completed');
-    } catch (err) {
-      logger.error({ scanId, err }, 'autonomous_pipeline:stage5_engineer:error');
+    if (confirmedVulnIds.length === 0) {
+      logger.info({ scanId }, 'autonomous_pipeline:stage5_engineer:no_confirmed_vulnerabilities');
+      return;
     }
+
+    let generatedCount = 0;
+    for (const vulnId of confirmedVulnIds) {
+      const res = await this.deps.engineer.run({ scanId, vulnerabilityId: vulnId });
+      if (res.status === 'GENERATED' && res.patchId) {
+        generatedCount++;
+      }
+    }
+
+    if (generatedCount === 0) {
+      logger.error({ scanId, count: confirmedVulnIds.length }, 'autonomous_pipeline:stage5_engineer:no_patches_generated');
+      throw new Error(`Engineer failed to generate a patch for confirmed vulnerabilities in scan ${scanId}`);
+    }
+
+    logger.info({ scanId, count: confirmedVulnIds.length, generatedCount }, 'autonomous_pipeline:stage5_engineer:completed');
   }
 
   // -------------------------------------------------------------------------

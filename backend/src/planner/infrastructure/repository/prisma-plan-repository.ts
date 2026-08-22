@@ -41,6 +41,7 @@ export class PrismaPlanRepository implements PlanRepository {
       cve: f.cve ?? null,
       confidence: f.confidence ?? 0,
       message: f.message ?? f.title,
+      filePath: f.filePath ?? null,
     }));
   }
 

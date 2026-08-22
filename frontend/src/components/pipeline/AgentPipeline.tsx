@@ -1,9 +1,11 @@
 import { AgentCard } from './AgentCard';
 import type { AgentState } from '../../hooks/useScanStore';
 import type { AmassAgentType } from '../../types/amass-events';
+import type { PatchModel } from '../../types/api-types';
 
 export interface AgentPipelineProps {
   agents: Record<AmassAgentType, AgentState>;
+  patches?: PatchModel[];
 }
 
 const PIPELINE_STEPS: Array<{ type: AmassAgentType; label: string }> = [
@@ -15,9 +17,12 @@ const PIPELINE_STEPS: Array<{ type: AmassAgentType; label: string }> = [
   { type: 'SNIPER', label: 'Sniper' },
   { type: 'ENGINEER', label: 'Engineer' },
   { type: 'CRITIC', label: 'Critic' },
+  { type: 'REMEDIATION', label: 'PR Created' },
 ];
 
-export function AgentPipeline({ agents }: AgentPipelineProps) {
+export function AgentPipeline({ agents, patches = [] }: AgentPipelineProps) {
+  const deliveredPatch = patches.find((p) => p.prNumber || p.prUrl);
+
   return (
     <div className="border-b border-zinc-800 bg-zinc-950/60 px-6 py-2.5 overflow-x-auto">
       <div className="flex items-center gap-1 min-w-max">
@@ -31,6 +36,8 @@ export function AgentPipeline({ agents }: AgentPipelineProps) {
             label={step.label}
             state={agents[step.type] ?? { type: step.type, status: 'IDLE' }}
             isLast={idx === PIPELINE_STEPS.length - 1}
+            prNumber={step.type === 'REMEDIATION' ? deliveredPatch?.prNumber : undefined}
+            prUrl={step.type === 'REMEDIATION' ? deliveredPatch?.prUrl : undefined}
           />
         ))}
       </div>

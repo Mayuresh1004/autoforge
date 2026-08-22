@@ -80,6 +80,7 @@ const INITIAL_AGENTS: Record<AmassAgentType, AgentState> = {
   SNIPER: { type: 'SNIPER', status: 'IDLE' },
   ENGINEER: { type: 'ENGINEER', status: 'IDLE' },
   CRITIC: { type: 'CRITIC', status: 'IDLE' },
+  REMEDIATION: { type: 'REMEDIATION', status: 'IDLE' },
   BROWSER: { type: 'BROWSER', status: 'IDLE' },
   SYSTEM: { type: 'SYSTEM', status: 'IDLE' },
 };
@@ -185,15 +186,28 @@ export function useScanStore(initialScanId: string | null = null) {
       setLastSequence(event.sequence);
 
       // 1. Agent Pipeline Stage Statuses (Strictly driven by explicit phase events)
-      // 1. Agent Pipeline Stage Statuses (Strictly driven by explicit phase events)
-      if (event.agentType) {
-        setAgents((prev) => {
-          const agentKey = event.agentType!;
-          const current = prev[agentKey];
-          let nextStatus: AgentStatus = current?.status ?? 'IDLE';
+      setAgents((prev) => {
+        const evType = event.eventType;
+        const status = event.status;
+        const agentKey = event.agentType;
 
-          const evType = event.eventType;
-          const status = event.status;
+        const next = { ...prev };
+
+        // Handle cross-agent workflow triggers
+        if (evType === 'CRITIC_APPROVED') {
+          next.CRITIC = { type: 'CRITIC', status: 'COMPLETED', lastMessage: event.message, updatedAt: event.timestamp };
+          if (next.REMEDIATION.status !== 'COMPLETED') {
+            next.REMEDIATION = { type: 'REMEDIATION', status: 'RUNNING', lastMessage: 'Remediation Delivery in progress...', updatedAt: event.timestamp };
+          }
+        } else if (evType === 'REMEDIATION_PR_CREATED') {
+          next.REMEDIATION = { type: 'REMEDIATION', status: 'COMPLETED', lastMessage: event.message, updatedAt: event.timestamp };
+        } else if (evType === 'REMEDIATION_DELIVERY_FAILED') {
+          next.REMEDIATION = { type: 'REMEDIATION', status: 'FAILED', lastMessage: event.message, updatedAt: event.timestamp };
+        }
+
+        if (agentKey && next[agentKey]) {
+          const current = next[agentKey];
+          let nextStatus: AgentStatus = current?.status ?? 'IDLE';
 
           // RUNNING transitions
           if (
@@ -238,9 +252,8 @@ export function useScanStore(initialScanId: string | null = null) {
             evType === 'ENGINEER_PATCH_GENERATED' ||
             evType === 'ENGINEER_REJECTED' ||
             evType === 'ENGINEER_COMPLETED' ||
-            evType === 'CRITIC_APPROVED' ||
-            evType === 'CRITIC_REJECTED' ||
-            evType === 'CRITIC_COMPLETED' ||
+            (agentKey === 'CRITIC' && (evType === 'CRITIC_APPROVED' || evType === 'CRITIC_REJECTED' || evType === 'CRITIC_COMPLETED')) ||
+            (agentKey === 'REMEDIATION' && evType === 'REMEDIATION_PR_CREATED') ||
             (agentKey === 'SYSTEM' && evType === 'SCAN_COMPLETED')
           ) {
             nextStatus = 'COMPLETED';
@@ -252,22 +265,22 @@ export function useScanStore(initialScanId: string | null = null) {
             status === 'FAILED' ||
             evType === 'ENGINEER_FAILED' ||
             evType === 'CRITIC_FAILED' ||
-            evType === 'SANDBOX_FAILED'
+            evType === 'SANDBOX_FAILED' ||
+            (agentKey === 'REMEDIATION' && evType === 'REMEDIATION_DELIVERY_FAILED')
           ) {
             nextStatus = 'FAILED';
           }
 
-          return {
-            ...prev,
-            [agentKey]: {
-              type: agentKey,
-              status: nextStatus,
-              lastMessage: event.message,
-              updatedAt: event.timestamp,
-            },
+          next[agentKey] = {
+            type: agentKey,
+            status: nextStatus,
+            lastMessage: event.message,
+            updatedAt: event.timestamp,
           };
-        });
-      }
+        }
+
+        return next;
+      });
 
       // 2. Workflow / Scan status update & Clean State Initialization at start
       if (event.eventType === 'SCAN_STARTED') {
@@ -740,6 +753,108 @@ export function useScanStore(initialScanId: string | null = null) {
             });
           }
           break;
+
+        // REMEDIATION PR DELIVERY OBSERVABILITY
+        case 'REMEDIATION_PR_CREATED': {
+          const pId = (event.metadata?.patchId as string) || '';
+          const prNum = (event.metadata?.prNumber as number) ?? null;
+          const prUrl = (event.metadata?.prUrl as string) ?? null;
+          const prBranch = (event.metadata?.prBranch as string) ?? null;
+          const prStatus = (event.metadata?.prStatus as string) ?? 'OPEN';
+
+          setFindingsById((prev) => {
+            const key =
+              Object.keys(prev).find(
+                (k) =>
+                  k === targetFindingId ||
+                  prev[k].patch?.patchId === pId ||
+                  prev[k].finding.id === targetFindingId ||
+                  prev[k].target?.targetId === targetFindingId
+              ) || targetFindingId || Object.keys(prev)[0];
+
+            if (!key || !prev[key]) return prev;
+            const record = prev[key];
+            const existingPatch = record.patch;
+
+            const updatedPatch: PatchModel = existingPatch
+              ? {
+                  ...existingPatch,
+                  prNumber: prNum ?? existingPatch.prNumber,
+                  prUrl: prUrl ?? existingPatch.prUrl,
+                  prBranch: prBranch ?? existingPatch.prBranch,
+                  prStatus: prStatus ?? existingPatch.prStatus,
+                  prDeliveredAt: event.timestamp,
+                  prError: null,
+                }
+              : {
+                  patchId: pId || `patch_${key}`,
+                  findingId: key,
+                  scanId: event.scanId,
+                  filePath: (event.metadata?.filePath as string) || record.finding.filePath || '',
+                  diffContent: '',
+                  status: 'APPROVED',
+                  prNumber: prNum,
+                  prUrl: prUrl,
+                  prBranch: prBranch,
+                  prStatus: prStatus,
+                  prDeliveredAt: event.timestamp,
+                  prError: null,
+                };
+
+            return {
+              ...prev,
+              [key]: {
+                ...record,
+                patch: updatedPatch,
+              },
+            };
+          });
+          break;
+        }
+
+        case 'REMEDIATION_DELIVERY_FAILED': {
+          const pId = (event.metadata?.patchId as string) || '';
+          const err = (event.metadata?.error as string) || event.message || 'Remediation Delivery Failed';
+
+          setFindingsById((prev) => {
+            const key =
+              Object.keys(prev).find(
+                (k) =>
+                  k === targetFindingId ||
+                  prev[k].patch?.patchId === pId ||
+                  prev[k].finding.id === targetFindingId ||
+                  prev[k].target?.targetId === targetFindingId
+              ) || targetFindingId || Object.keys(prev)[0];
+
+            if (!key || !prev[key]) return prev;
+            const record = prev[key];
+            const existingPatch = record.patch;
+
+            const updatedPatch: PatchModel = existingPatch
+              ? {
+                  ...existingPatch,
+                  prError: err,
+                }
+              : {
+                  patchId: pId || `patch_${key}`,
+                  findingId: key,
+                  scanId: event.scanId,
+                  filePath: (event.metadata?.filePath as string) || record.finding.filePath || '',
+                  diffContent: '',
+                  status: 'APPROVED',
+                  prError: err,
+                };
+
+            return {
+              ...prev,
+              [key]: {
+                ...record,
+                patch: updatedPatch,
+              },
+            };
+          });
+          break;
+        }
       }
     },
     [provider]
@@ -789,6 +904,13 @@ export function useScanStore(initialScanId: string | null = null) {
                     diffContent: f.patch.diffContent || '',
                     status: f.patch.status || 'GENERATED',
                     explanation: f.patch.explanation || 'Automated defensive code patch.',
+                    prNumber: (f.patch as any).prNumber ?? null,
+                    prUrl: (f.patch as any).prUrl ?? null,
+                    prBranch: (f.patch as any).prBranch ?? null,
+                    prCommitSha: (f.patch as any).prCommitSha ?? null,
+                    prStatus: (f.patch as any).prStatus ?? null,
+                    prDeliveredAt: (f.patch as any).prDeliveredAt ?? null,
+                    prError: (f.patch as any).prError ?? null,
                   }
                 : undefined;
 
@@ -808,8 +930,16 @@ export function useScanStore(initialScanId: string | null = null) {
                 const existingPatch = map[fId].patch;
                 const mergedPatch = restPatch
                   ? {
+                      ...existingPatch,
                       ...restPatch,
                       diffContent: restPatch.diffContent || existingPatch?.diffContent || '',
+                      prNumber: restPatch.prNumber ?? existingPatch?.prNumber,
+                      prUrl: restPatch.prUrl ?? existingPatch?.prUrl,
+                      prBranch: restPatch.prBranch ?? existingPatch?.prBranch,
+                      prCommitSha: restPatch.prCommitSha ?? existingPatch?.prCommitSha,
+                      prStatus: restPatch.prStatus ?? existingPatch?.prStatus,
+                      prDeliveredAt: restPatch.prDeliveredAt ?? existingPatch?.prDeliveredAt,
+                      prError: restPatch.prError ?? existingPatch?.prError,
                     }
                   : existingPatch;
 
@@ -902,6 +1032,42 @@ export function useScanStore(initialScanId: string | null = null) {
                   },
                 };
               }
+            });
+
+            const records = Object.values(map);
+            const deliveredRecord = records.find((r) => r.patch?.prNumber || r.patch?.prUrl);
+            const failedRecord = records.find((r) => r.patch?.prError && !r.patch?.prNumber);
+            const approvedRecord = records.find(
+              (r) => r.patch?.status === 'APPROVED' || r.patch?.status === 'CRITIC_VERIFIED' || r.finding.status === 'CRITIC_VERIFIED'
+            );
+
+            setAgents((prev) => {
+              const next = { ...prev };
+              if (deliveredRecord?.patch) {
+                next.CRITIC = { ...next.CRITIC, type: 'CRITIC', status: 'COMPLETED', lastMessage: 'Critic approved patch' };
+                next.REMEDIATION = {
+                  type: 'REMEDIATION',
+                  status: 'COMPLETED',
+                  lastMessage: `PR #${deliveredRecord.patch.prNumber} created: ${deliveredRecord.patch.prUrl}`,
+                };
+              } else if (failedRecord?.patch) {
+                next.CRITIC = { ...next.CRITIC, type: 'CRITIC', status: 'COMPLETED', lastMessage: 'Critic approved patch' };
+                next.REMEDIATION = {
+                  type: 'REMEDIATION',
+                  status: 'FAILED',
+                  lastMessage: failedRecord.patch.prError || 'PR delivery failed',
+                };
+              } else if (approvedRecord) {
+                next.CRITIC = { ...next.CRITIC, type: 'CRITIC', status: 'COMPLETED', lastMessage: 'Critic approved patch' };
+                if (next.REMEDIATION.status !== 'COMPLETED') {
+                  next.REMEDIATION = {
+                    type: 'REMEDIATION',
+                    status: 'RUNNING',
+                    lastMessage: 'Remediation Delivery in progress...',
+                  };
+                }
+              }
+              return next;
             });
 
             return map;

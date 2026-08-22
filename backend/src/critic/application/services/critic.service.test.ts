@@ -16,6 +16,11 @@ import { CriticBuildCheck } from './build-check';
 import { CriticRegressionTestRunner } from './test-runner';
 import { CriticSecurityReviewGate } from './security-review-gate';
 import { CriticAdvisoryReviewer } from './llm-review';
+import { DefaultValidationStrategyRegistry } from '../../domain/validation/validation-strategy-registry';
+import { SqlInjectionValidationStrategy } from '../../domain/validation/strategies/sql-injection-validation-strategy';
+import { XssValidationStrategy } from '../../domain/validation/strategies/xss-validation-strategy';
+import { AccessControlValidationStrategy } from '../../domain/validation/strategies/access-control-validation-strategy';
+import { SecurityMisconfigurationValidationStrategy } from '../../domain/validation/strategies/security-misconfiguration-validation-strategy';
 import {
   InvalidPatchStatusError,
   PatchNotFoundError,
@@ -105,7 +110,14 @@ function buildEnv(options: EnvOptions = {}): Env {
   patches.seed(patch);
   findings.seed(patch.id, criticContext({ finding: confirmedFinding(options.findingNotConfirmed) }));
 
-  const critic = new DefaultCriticService({ patches, findings, steps, events, outcomes, results });
+  const strategyRegistry = new DefaultValidationStrategyRegistry([
+    new SqlInjectionValidationStrategy(),
+    new XssValidationStrategy(),
+    new AccessControlValidationStrategy(),
+    new SecurityMisconfigurationValidationStrategy(),
+  ]);
+
+  const critic = new DefaultCriticService({ patches, findings, strategyRegistry, steps, events, outcomes, results });
   return { critic, patches, results, events, runtime, sniper, manager, patch };
 }
 

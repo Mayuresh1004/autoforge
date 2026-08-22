@@ -12,13 +12,14 @@ import { FileUploadVerifier } from '../verifiers/file-upload/file-upload-verifie
 import { SsrfVerifier } from '../verifiers/ssrf/ssrf-verifier';
 import { XssVerifier } from '../verifiers/xss/xss-verifier';
 import { BrokenAccessControlVerifier } from '../verifiers/broken-access-control/broken-access-control-verifier';
+import { SecurityMisconfigurationVerifier } from '../verifiers/security-misconfiguration/security-misconfiguration-verifier';
 
 export interface SniperInfrastructureOptions {
   /** The application composition root's SINGLE shared manager — required so
    *  the Sniper can validate sandboxes created through the runtime surface. */
   readonly manager: SandboxManager;
   readonly repository?: SniperRepository;
-  /** Injectable verifier set (defaults: SQL + NoSQL injection + File Upload + SSRF + XSS + Broken Access Control). */
+  /** Injectable verifier set (defaults: SQL + NoSQL injection + File Upload + SSRF + XSS + Access Control + Security Misconfiguration). */
   readonly verifiers?: DefaultVerifierRegistry;
   /** Optional observability publisher (default: no events emitted). */
   readonly events?: AmassEventPublisher;
@@ -27,7 +28,7 @@ export interface SniperInfrastructureOptions {
 
 /**
  * Composition root for the Sniper Agent. The only component that knows which
- * verifiers exist (SQL + NoSQL + File Upload + SSRF + XSS + Access Control) and which sandbox manager to
+ * verifiers exist (SQL + NoSQL + File Upload + SSRF + XSS + Access Control + Security Misconfig) and which sandbox manager to
  * use. Everything downstream talks to ports. Never builds its own manager.
  */
 export function createSniperInfrastructure(
@@ -42,6 +43,7 @@ export function createSniperInfrastructure(
       new SsrfVerifier(),
       new XssVerifier(),
       new BrokenAccessControlVerifier(),
+      new SecurityMisconfigurationVerifier(),
     ]);
   const deps: SniperServiceDeps = {
     repository: options.repository ?? new PrismaSniperRepository(),

@@ -16,7 +16,7 @@ import {
   EngineerSourceError,
   UnsupportedVulnerabilityError,
 } from '../../domain/errors/engineer.errors';
-import { isSupportedConfirmedFinding, selectConfirmedSqlInjection } from './engineer-selection';
+import { isSupportedConfirmedFinding, selectConfirmedVulnerability } from './engineer-selection';
 import { resolveWindow } from './source-window';
 import { buildRagQuery, ragDocumentsToAdvisory } from './rag-query-builder';
 import { SourceResolver, type SourceResolutionResult } from './source-resolver';
@@ -49,9 +49,9 @@ export async function resolveFinding(
     return found;
   }
   const all = await deps.findings.listConfirmed(input.scanId);
-  const selected = selectConfirmedSqlInjection(all);
+  const selected = selectConfirmedVulnerability(all);
   if (!selected) {
-    throw new ConfirmedFindingNotFoundError(`scan ${input.scanId} has no CONFIRMED SQL_INJECTION finding`);
+    throw new ConfirmedFindingNotFoundError(`scan ${input.scanId} has no CONFIRMED supported vulnerability finding`);
   }
   return selected;
 }
@@ -144,12 +144,31 @@ export async function prepareEngineerRun(
 /** Parse a JSON object from model text (tolerating code fences). */
 export function tryParseJsonObject(text: string): unknown {
   const trimmed = text.trim();
-  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/);
-  const candidate = fenced ? fenced[1] : trimmed;
-  if (candidate.startsWith('{') === false && candidate.startsWith('[') === false) return null;
+
+  // 1. Try direct parse
   try {
-    return JSON.parse(candidate);
-  } catch {
-    return null;
+    return JSON.parse(trimmed);
+  } catch {}
+
+  // 2. Strip code block fence markers from lines (```json ... ```)
+  const stripped = trimmed
+    .split('\n')
+    .filter((line) => !/^\s*```(?:json)?\s*$/i.test(line))
+    .join('\n')
+    .trim();
+
+  try {
+    return JSON.parse(stripped);
+  } catch {}
+
+  // 3. Extract from first '{' to last '}'
+  const firstBrace = trimmed.indexOf('{');
+  const lastBrace = trimmed.lastIndexOf('}');
+  if (firstBrace !== -1 && lastBrace > firstBrace) {
+    try {
+      return JSON.parse(trimmed.slice(firstBrace, lastBrace + 1));
+    } catch {}
   }
+
+  return null;
 }

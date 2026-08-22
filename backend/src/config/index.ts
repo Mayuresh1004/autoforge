@@ -155,7 +155,7 @@ const envSchema = z.object({
   LLM_TEMPERATURE: z.coerce.number().min(0).max(2).default(0.1),
   LLM_MAX_TOKENS: z.coerce.number().int().min(1).max(128_000).default(4096),
   LLM_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(600_000).default(60_000),
-  LLM_MAX_RETRIES: z.coerce.number().int().min(0).max(5).default(1),
+  LLM_MAX_RETRIES: z.coerce.number().int().min(0).max(10).default(5),
   // Comma-separated escalation order after the primary (e.g. "groq,mistral").
   LLM_FALLBACK_PROVIDERS: z.string().default(''),
   GEMINI_API_KEY: z.string().optional(),

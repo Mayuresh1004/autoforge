@@ -72,6 +72,9 @@ export const AMASS_EVENT_TYPES = [
   'CRITIC_REJECTED',
   'CRITIC_FAILED',
   'CRITIC_COMPLETED',
+  // remediation delivery
+  'REMEDIATION_PR_CREATED',
+  'REMEDIATION_DELIVERY_FAILED',
   // browser/network observation contract
   'BROWSER_NAVIGATION',
   'BROWSER_PAGE_LOADED',
@@ -90,6 +93,7 @@ export const AMASS_AGENT_TYPES = [
   'SNIPER',
   'ENGINEER',
   'CRITIC',
+  'REMEDIATION',
   'BROWSER',
   'SYSTEM',
 ] as const;

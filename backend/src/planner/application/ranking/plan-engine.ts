@@ -23,15 +23,19 @@ export class PlanEngine {
       const scored = this.scorer.score(features, staticSummary);
       const targetId = randomUUID();
 
-      const matchingFinding = request.staticFindings.find((f) => {
-        const categories = categorizeFinding(f);
-        return scored.candidateVulnerabilities.some(
-          (c) =>
-            categories.includes(c) ||
-            c.toLowerCase().includes((f.type || '').toLowerCase()) ||
-            (f.cwe && c.includes(f.cwe))
-        );
-      });
+      const matchingFinding = request.staticFindings
+        .filter((f) => {
+          const categories = categorizeFinding(f);
+          return scored.candidateVulnerabilities.some((c) => categories.includes(c));
+        })
+        .sort((a, b) => {
+          const aPath = a.filePath ? a.filePath.toLowerCase() : '';
+          const bPath = b.filePath ? b.filePath.toLowerCase() : '';
+          const urlLower = surface.url.toLowerCase();
+          const aMatch = aPath && urlLower.includes(aPath.split('/').pop()?.replace(/\..*$/, '') ?? '___') ? 1 : 0;
+          const bMatch = bPath && urlLower.includes(bPath.split('/').pop()?.replace(/\..*$/, '') ?? '___') ? 1 : 0;
+          return bMatch - aMatch;
+        })[0];
 
       const verificationHints = deriveVerificationHints(surface, scored.candidateVulnerabilities, matchingFinding);
 

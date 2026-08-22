@@ -78,11 +78,7 @@ export class PrismaSniperRepository implements SniperRepository {
         const existingVuln = await prisma.vulnerability.findFirst({
           where: {
             scanId: payload.scanId,
-            OR: [
-              { vulnType: payload.type },
-              { vulnType: 'sqli' },
-              { vulnType: 'SQL_INJECTION' },
-            ],
+            vulnType: payload.type,
           },
         });
         if (existingVuln) {
@@ -95,12 +91,12 @@ export class PrismaSniperRepository implements SniperRepository {
           const createdVuln = await prisma.vulnerability.create({
             data: {
               scanId: payload.scanId,
-              title: `SQL Injection at ${payload.endpoint}`,
+              title: `${payload.type} at ${payload.endpoint}`,
               severity: 'HIGH',
               status: 'CONFIRMED',
               scanner: 'sniper',
               vulnType: payload.type,
-              message: payload.reason ?? 'SQL injection confirmed by sqlmap',
+              message: payload.reason ?? `${payload.type} confirmed by sniper`,
               evidence: JSON.stringify({
                 endpoint: payload.endpoint,
                 method: payload.method,

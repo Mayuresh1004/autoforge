@@ -617,6 +617,27 @@ export class DemoRunner {
             metadata: { findingId: fId, patchId: patch.patchId },
           },
         });
+        eventsToSchedule.push({
+          delaySec: cTime + 4.2,
+          event: {
+            scanId,
+            eventType: 'REMEDIATION_PR_CREATED',
+            agentType: 'SYSTEM',
+            phase: 'remediation',
+            level: 'INFO',
+            status: 'SUCCEEDED',
+            message: `PR #${patch.prNumber || 101} created: ${patch.prUrl || 'https://github.com/Mayuresh1004/owasp-vuln-lab/pull/101'}`,
+            metadata: {
+              findingId: fId,
+              vulnerabilityId: fId,
+              patchId: patch.patchId,
+              prNumber: patch.prNumber || 101,
+              prUrl: patch.prUrl || 'https://github.com/Mayuresh1004/owasp-vuln-lab/pull/101',
+              prBranch: patch.prBranch || `amass/remediation/${patch.patchId}`,
+              prStatus: patch.prStatus || 'OPEN',
+            },
+          },
+        });
       }
     });
 

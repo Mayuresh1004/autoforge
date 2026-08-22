@@ -111,6 +111,13 @@ export interface StoredFinding {
     readonly diffContent: string | null;
     readonly explanation: string | null;
     readonly status: string;
+    readonly prNumber?: number | null;
+    readonly prUrl?: string | null;
+    readonly prBranch?: string | null;
+    readonly prCommitSha?: string | null;
+    readonly prStatus?: string | null;
+    readonly prDeliveredAt?: string | null;
+    readonly prError?: string | null;
   } | null;
 }
 

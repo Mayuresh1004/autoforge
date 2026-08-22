@@ -53,7 +53,6 @@ export class PrismaConfirmedFindingSource implements ConfirmedFindingSource {
         ...(where.scanId !== undefined ? { scanId: where.scanId } : {}),
         ...(where.vulnerabilityId !== undefined ? { vulnerabilityId: where.vulnerabilityId } : {}),
         status: REMEDIATION_CONFIRMED_STATUS,
-        vulnerabilityType: REMEDIATION_SUPPORTED_TYPE,
       },
       include: {
         vulnerability: true,
@@ -139,11 +138,13 @@ export function mapConfirmedFinding(row: MappingRow): ConfirmedFindingPayload {
     .join('; ');
   const normalized = normalizeTargetEndpoint(row.endpoint ?? null, row.parameter ?? null, row.method ?? null);
 
+  const resolvedType = (row.vulnerabilityType as any) || 'SQL_INJECTION';
+
   return {
     vulnerabilityId: row.vulnerabilityId,
     scanId: row.scanId,
     exploitId: row.id,
-    type: 'SQL_INJECTION',
+    type: resolvedType,
     status: 'CONFIRMED',
     severity: (vuln.severity ?? 'MEDIUM') as ConfirmedFindingPayload['severity'],
     confidence: row.confidence ?? 0,

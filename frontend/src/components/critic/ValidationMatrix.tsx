@@ -1,12 +1,13 @@
 import { Card, CardHeader, CardTitle } from '../ui/Card';
 import { Badge } from '../ui/Badge';
 import type { CriticStageState } from '../../hooks/useScanStore';
-import type { FindingModel } from '../../types/api-types';
+import type { FindingModel, PatchModel } from '../../types/api-types';
 
 export interface ValidationMatrixProps {
   stages?: CriticStageState[];
   criticMatrix?: Record<string, CriticStageState[]>;
   findings?: FindingModel[];
+  patches?: PatchModel[];
   activeFinding?: FindingModel | null;
   activeFindingId?: string | null;
   onSelectFindingId?: (findingId: string) => void;
@@ -16,6 +17,7 @@ export function ValidationMatrix({
   stages = [],
   criticMatrix = {},
   findings = [],
+  patches = [],
   activeFinding,
   onSelectFindingId,
 }: ValidationMatrixProps) {
@@ -87,7 +89,8 @@ export function ValidationMatrix({
                   <th className="p-2.5 text-center">Build</th>
                   <th className="p-2.5 text-center">Tests</th>
                   <th className="p-2.5 text-center">Retest</th>
-                  <th className="p-2.5 text-center rounded-r">Verdict</th>
+                  <th className="p-2.5 text-center">Verdict</th>
+                  <th className="p-2.5 text-center rounded-r">Pull Request</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-zinc-800/60">
@@ -102,6 +105,8 @@ export function ValidationMatrix({
                   const testStatus = fStages.find((s) => s.key === 'tests')?.status;
                   const retestStatus = fStages.find((s) => s.key === 'retest')?.status;
                   const verdictStatus = fStages.find((s) => s.key === 'approval')?.status;
+
+                  const patch = f.patch || patches.find((p) => p.findingId === fId || p.patchId?.includes(fId));
 
                   const shortId = (f.cwe || f.ruleId || fId).replace('OWASP-', '');
 
@@ -151,6 +156,43 @@ export function ValidationMatrix({
                           <Badge variant="danger" size="sm">REJECTED</Badge>
                         ) : (
                           <span className="text-zinc-500 text-[10px]">PENDING</span>
+                        )}
+                      </td>
+
+                      <td className="p-2.5 text-center font-mono text-[11px]">
+                        {patch?.prNumber || patch?.prUrl ? (
+                          <div className="flex flex-col items-center gap-0.5">
+                            <Badge variant="success" size="sm" className="text-[9px]">
+                              ✓ PR #{patch.prNumber}
+                            </Badge>
+                            {patch.prUrl && (
+                              <a
+                                href={patch.prUrl}
+                                target="_blank"
+                                rel="noreferrer"
+                                onClick={(e) => e.stopPropagation()}
+                                className="text-[10px] text-sky-400 hover:text-sky-300 underline font-bold flex items-center gap-0.5"
+                              >
+                                View Pull Request ↗
+                              </a>
+                            )}
+                            {patch.prBranch && (
+                              <span className="text-[9px] text-zinc-400 truncate max-w-[120px]" title={patch.prBranch}>
+                                {patch.prBranch}
+                              </span>
+                            )}
+                          </div>
+                        ) : patch?.prError ? (
+                          <div className="flex flex-col items-center gap-0.5">
+                            <Badge variant="danger" size="sm" className="text-[9px]">
+                              ✕ PR FAILED
+                            </Badge>
+                            <span className="text-[9px] text-rose-400 truncate max-w-[120px]" title={patch.prError}>
+                              {patch.prError}
+                            </span>
+                          </div>
+                        ) : (
+                          <span className="text-zinc-600 text-[10px]">PENDING</span>
                         )}
                       </td>
                     </tr>

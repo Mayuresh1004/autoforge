@@ -91,5 +91,35 @@ describe('TargetScorer', () => {
     expect(categorizeFinding(finding({ cwe: 'CWE-89' }))).toContain('SQL Injection');
     expect(categorizeFinding(finding({ cwe: 'CWE-79', type: 'XSS' }))).toContain('Cross-Site Scripting');
     expect(categorizeFinding(finding({ message: 'SSRF via user url' }))).toContain('Server-Side Request Forgery');
+    expect(categorizeFinding(finding({ cwe: 'CWE-200', message: 'Exposed sensitive configuration' }))).toContain('Security Misconfiguration');
+  });
+
+  it('Phase 9 Target Generation: /api/debug/config yields Security Misconfiguration, never SQL Injection', () => {
+    const features = extractFeatures(
+      surface({ url: 'http://app.test/api/debug/config', parameters: [], risk: 'HIGH' }),
+      profile,
+    );
+    const summary = summarizeFindings([
+      finding({ cwe: 'CWE-89', message: 'SQL injection in search' }),
+      finding({ cwe: 'CWE-200', message: 'Exposed config' }),
+    ]);
+    const scored = scorer.score(features, summary);
+
+    expect(scored.candidateVulnerabilities).toContain('Security Misconfiguration');
+    expect(scored.candidateVulnerabilities).not.toContain('SQL Injection');
+  });
+
+  it('Phase 9 Target Generation: /api/users/:id yields Broken Access Control, never SQL Injection', () => {
+    const features = extractFeatures(
+      surface({ url: 'http://app.test/api/users/:id', parameters: ['id'], risk: 'HIGH' }),
+      profile,
+    );
+    const summary = summarizeFindings([
+      finding({ cwe: 'CWE-284', message: 'Broken access control' }),
+    ]);
+    const scored = scorer.score(features, summary);
+
+    expect(scored.candidateVulnerabilities).toContain('Broken Access Control');
+    expect(scored.candidateVulnerabilities).not.toContain('SQL Injection');
   });
 });

@@ -35,6 +35,8 @@ export function extractFeatures(
 ): TargetFeatures {
   const path = pathOf(surface.url);
   const hasQuery = surface.url.includes('?');
+  const bodyOrQueryParams = surface.parameters.filter((p) => !p.startsWith(':') && !p.startsWith('{'));
+  const hasBodyOrQueryParameters = bodyOrQueryParams.length > 0 || hasQuery;
   const hasParameters = surface.parameters.length > 0 || hasQuery;
   const isApi = /^\/(api|v[0-9]|rest|graphql|rpc)(\/|$)/i.test(path);
   const isAdmin = /(^|\/)(admin|administrator|console|wp-admin)(\/|$)/i.test(path);
@@ -42,7 +44,7 @@ export function extractFeatures(
     /(^|\/)(upload|uploads|file-upload|attachment)(\/|$)/i.test(path);
   const isLogin = /(^|\/)(login|signin|sign-in|auth|sso)(\/|$)/i.test(path);
   const isSearch = SEARCH_RE.test(path);
-  const isDbRelated = DB_PATH_RE.test(path) || (hasParameters && (isApi || isSearch));
+  const isDbRelated = DB_PATH_RE.test(path) || (hasQuery && (isApi || isSearch));
   const isStatic = /\.(png|jpe?g|gif|svg|webp|ico|css|js|woff2?|ttf|map|pdf|zip)$/i.test(path);
   const isHealth = /(health|healthz|status|ready|ping)$/i.test(path);
   const isDocs = /(openapi|swagger|api-docs|redoc)/i.test(path);
@@ -54,7 +56,7 @@ export function extractFeatures(
     statusCode: surface.statusCode,
     scoutRisk: normalizeRisk(surface.risk),
     authentication: surface.authentication,
-    hasParameters,
+    hasParameters: hasBodyOrQueryParameters,
     hasQuery,
     isApi,
     isAdmin,
@@ -108,13 +110,18 @@ export function summarizeFindings(findings: readonly StaticVulnInput[]): StaticS
 export function categorizeFinding(f: StaticVulnInput): readonly string[] {
   const hay = `${f.type ?? ''} ${f.cwe ?? ''} ${f.cve ?? ''} ${f.message ?? ''}`.toLowerCase();
   const out: string[] = [];
-  if (/(sql|sqli|injection)/i.test(hay)) out.push('SQL Injection');
-  if (/(xss|cross-site|scripting|reflect)/i.test(hay)) out.push('Cross-Site Scripting');
-  if (/(auth|login|session|bypass|idor|access control)/i.test(hay)) out.push('Authentication Bypass');
-  if (/(ssrf|server-side request)/i.test(hay)) out.push('Server-Side Request Forgery');
-  if (/(upload|file upload)/i.test(hay)) out.push('Insecure File Upload');
-  if (/(traversal|path traversal|\.\.\/)/i.test(hay)) out.push('Path Traversal');
+
+  // Explicit CWE check
+  if (/(cwe[-_]?89|sqli|sql[-_ ]?injection)/i.test(hay)) out.push('SQL Injection');
+  if (/(cwe[-_]?79|xss|cross-site|scripting)/i.test(hay)) out.push('Cross-Site Scripting');
+  if (/(cwe[-_]?284|cwe[-_]?639|idor|access control|authorization)/i.test(hay)) out.push('Broken Access Control');
+  if (/(cwe[-_]?287|auth[-_ ]?bypass|session)/i.test(hay)) out.push('Authentication Bypass');
+  if (/(cwe[-_]?918|ssrf|server-side request)/i.test(hay)) out.push('Server-Side Request Forgery');
+  if (/(cwe[-_]?434|file[-_ ]?upload)/i.test(hay)) out.push('Insecure File Upload');
+  if (/(cwe[-_]?22|traversal|\.\.\/)/i.test(hay)) out.push('Path Traversal');
+  if (/(cwe[-_]?(16|200|693)|misconfig|debug|sensitive.*config)/i.test(hay)) out.push('Security Misconfiguration');
   if (/(deserial)/i.test(hay)) out.push('Insecure Deserialization');
+
   return [...new Set(out)];
 }
 

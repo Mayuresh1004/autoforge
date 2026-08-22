@@ -24,9 +24,23 @@ const SEVERITY_RANK: Readonly<Record<string, number>> = {
   INFO: 1,
 };
 
-/** Only ever select a CONFIRMED SQL injection finding. */
+/** Support confirmed vulnerabilities across all supported canonical types. */
 export function isSupportedConfirmedFinding(f: ConfirmedVulnerabilityFinding): boolean {
-  return f.status === 'CONFIRMED' && f.type === 'SQL_INJECTION';
+  if (f.status !== 'CONFIRMED') return false;
+  const type = (f.type as string) ?? '';
+  return [
+    'SQL_INJECTION',
+    'BROKEN_ACCESS_CONTROL',
+    'SECURITY_MISCONFIGURATION',
+    'XSS',
+    'FILE_UPLOAD',
+    'SSRF',
+    'IDOR',
+    'NOSQL_INJECTION',
+    'PATH_TRAVERSAL',
+    'COMMAND_INJECTION',
+    'AUTH_BYPASS',
+  ].includes(type);
 }
 
 export function compareCandidates(a: ConfirmedVulnerabilityFinding, b: ConfirmedVulnerabilityFinding): number {
@@ -45,11 +59,21 @@ export function compareCandidates(a: ConfirmedVulnerabilityFinding, b: Confirmed
   return a.vulnerabilityId.localeCompare(b.vulnerabilityId);
 }
 
-/** Pick the highest-priority supported candidate, or null when none apply. */
-export function selectConfirmedSqlInjection(
+/** Pick the highest-priority supported candidate across all supported types. */
+export function selectConfirmedVulnerability(
   candidates: readonly ConfirmedVulnerabilityFinding[],
 ): ConfirmedVulnerabilityFinding | null {
   const supported = candidates.filter(isSupportedConfirmedFinding);
+  if (supported.length === 0) return null;
+  const sorted = [...supported].sort(compareCandidates);
+  return sorted[0];
+}
+
+/** Pick the highest-priority supported SQL injection candidate. */
+export function selectConfirmedSqlInjection(
+  candidates: readonly ConfirmedVulnerabilityFinding[],
+): ConfirmedVulnerabilityFinding | null {
+  const supported = candidates.filter((f) => f.status === 'CONFIRMED' && f.type === 'SQL_INJECTION');
   if (supported.length === 0) return null;
   const sorted = [...supported].sort(compareCandidates);
   return sorted[0];

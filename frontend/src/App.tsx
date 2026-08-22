@@ -54,7 +54,7 @@ export default function App() {
       />
 
       {/* Agent Pipeline Bar */}
-      <AgentPipeline agents={store.agents} />
+      <AgentPipeline agents={store.agents} patches={store.patches} />
 
       {/* Error / Loading Banner if applicable */}
       {store.error && (
@@ -111,6 +111,7 @@ export default function App() {
                 stages={store.criticStages}
                 criticMatrix={store.criticMatrix}
                 findings={store.findings}
+                patches={store.patches}
                 activeFinding={activeFocusFinding}
                 onSelectFindingId={handleSelectFindingId}
               />

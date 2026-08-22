@@ -45,7 +45,7 @@ export class BrokenAccessControlVerifier implements VulnerabilityVerifier {
       }
     }
 
-    // 1. Auth check: If target requires authentication but no credentials are provided -> NOT_TESTED
+    // 1. Auth check: If target explicitly requires authentication but no credentials are provided -> NOT_TESTED
     if (target.requiresAuthentication && !target.credentials) {
       return {
         status: 'NOT_TESTED',
@@ -55,12 +55,11 @@ export class BrokenAccessControlVerifier implements VulnerabilityVerifier {
         tool: this.tool,
         toolSummary: '',
         toolStderr: '',
-        reason: 'Target requires authentication credentials for access control verification',
+        reason: 'Two authenticated authorization contexts are required for cross-user access-control verification.',
         retryable: false,
       };
     }
 
-    // Require two distinct authenticated contexts or explicit target.attackerCredentials for real cross-user verification
     const hasAttackerAuth =
       target.attackerCredentials ||
       (target.credentials?.header && target.credentials.header.includes('user_B'));
@@ -77,6 +76,56 @@ export class BrokenAccessControlVerifier implements VulnerabilityVerifier {
         reason: 'Two authenticated authorization contexts are required for cross-user access-control verification.',
         retryable: false,
       };
+    }
+
+    // Unauthenticated / Anonymous probe check for endpoints without auth requirements
+    const isUnauthenticatedProbe = !target.credentials && !target.attackerCredentials;
+
+    if (isUnauthenticatedProbe) {
+      const anonProbeArgv = ['curl', '-s', '-i', '-X', method, endpoint];
+      const anonProbeExec = await context.runtime.execute({
+        argv: anonProbeArgv,
+        timeoutMs: context.timeoutMs,
+        network: 'internal',
+      });
+
+      const anonResp = anonProbeExec.stdout || '';
+      const is200 = /HTTP\/\d\.\d (200|204)/i.test(anonResp);
+      const isProtected = /HTTP\/\d\.\d (401|403|404)/i.test(anonResp) || /unauthorized|forbidden|access denied/i.test(anonResp);
+      const returnsVictimData =
+        /ssn|credit_card|private_record|document_data/i.test(anonResp) ||
+        (anonResp.includes('"id"') && (anonResp.includes('email') || anonResp.includes('role') || anonResp.includes('username')));
+
+      if (is200 && !isProtected && returnsVictimData) {
+        const confidence = scoreConfidence({
+          toolConfirmed: true,
+          techniqueCount: 2,
+          responseMatched: true,
+          endpointReachable: true,
+          staticCorrelation: correlationLevel(context),
+        });
+
+        return {
+          status: 'CONFIRMED',
+          confidence,
+          evidence: [
+            {
+              indicator: 'idor:unauthenticated_access_confirmed',
+              category: 'tool_confirmation',
+              detail: `Unauthenticated request to ${endpoint} returned HTTP 200 with sensitive victim data`,
+              confidenceFactor: 0.95,
+            },
+          ],
+          verifier: this.id,
+          tool: this.tool,
+          toolSummary: summarizeOutput(anonProbeExec.stdout, this.summarizeBytes),
+          toolStderr: summarizeOutput(anonProbeExec.stderr, this.summarizeBytes),
+          parameter: 'id',
+          reason: `IDOR / Broken Access Control confirmed on '${endpoint}': unauthenticated request returned sensitive data`,
+          indicator: 'idor:unauthenticated_access',
+          retryable: false,
+        };
+      }
     }
 
     // 2. Baseline Probe (User A / Owner Session)

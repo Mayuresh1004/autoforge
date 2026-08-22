@@ -33,6 +33,11 @@ import { PrismaPatchReviewRepository } from '../persistence/prisma-patch-review-
 import { PrismaCriticFindingResolver } from '../persistence/prisma-critic-finding-resolver';
 import { PrismaRuntimeSandboxRepository } from '../../../sandbox/infrastructure/repositories/prisma-runtime-sandbox-repository';
 import { CriticEventCollector } from '../observability/critic-event-collector';
+import { DefaultValidationStrategyRegistry } from '../../domain/validation/validation-strategy-registry';
+import { SqlInjectionValidationStrategy } from '../../domain/validation/strategies/sql-injection-validation-strategy';
+import { XssValidationStrategy } from '../../domain/validation/strategies/xss-validation-strategy';
+import { AccessControlValidationStrategy } from '../../domain/validation/strategies/access-control-validation-strategy';
+import { SecurityMisconfigurationValidationStrategy } from '../../domain/validation/strategies/security-misconfiguration-validation-strategy';
 
 export interface CriticConfig {
   readonly maxPatchBytes: number;
@@ -108,10 +113,18 @@ export function createCriticInfrastructure(options: CriticInfrastructureOptions)
     },
   });
 
+  const strategyRegistry = new DefaultValidationStrategyRegistry([
+    new SqlInjectionValidationStrategy(),
+    new XssValidationStrategy(),
+    new AccessControlValidationStrategy(),
+    new SecurityMisconfigurationValidationStrategy(),
+  ]);
+
   const criticRepository = new PrismaCriticRepository(options.prisma);
   const critic: CriticService = new DefaultCriticService({
     patches: new PrismaPatchReviewRepository(options.prisma),
     findings: new PrismaCriticFindingResolver(options.prisma),
+    strategyRegistry,
     steps,
     events,
     eventsBridge: options.events,

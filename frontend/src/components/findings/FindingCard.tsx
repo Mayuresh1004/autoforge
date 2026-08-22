@@ -32,7 +32,33 @@ export function FindingCard({ finding, isSelected = false, onSelect }: FindingCa
           </span>
         </div>
 
-        {finding.status === 'CRITIC_VERIFIED' ? (
+        {finding.patch?.prNumber || finding.patch?.prUrl ? (
+          <div className="flex flex-col items-end gap-0.5">
+            <Badge variant="success" size="sm" className="text-[10px]">
+              ✓ PR CREATED #{finding.patch.prNumber}
+            </Badge>
+            {finding.patch.prUrl && (
+              <a
+                href={finding.patch.prUrl}
+                target="_blank"
+                rel="noreferrer"
+                onClick={(e) => e.stopPropagation()}
+                className="text-[10px] text-sky-400 hover:text-sky-300 underline font-mono font-semibold"
+              >
+                View Pull Request ↗
+              </a>
+            )}
+          </div>
+        ) : finding.patch?.prError ? (
+          <div className="flex flex-col items-end gap-0.5">
+            <Badge variant="danger" size="sm" className="text-[10px]">
+              ✕ PR DELIVERY FAILED
+            </Badge>
+            <span className="text-[9px] text-rose-400 font-mono truncate max-w-[130px]" title={finding.patch.prError}>
+              {finding.patch.prError}
+            </span>
+          </div>
+        ) : finding.status === 'CRITIC_VERIFIED' ? (
           <Badge variant="success" size="sm" className="text-[10px]">
             ✓ CRITIC VERIFIED
           </Badge>

@@ -29,6 +29,8 @@ import { CriticAdvisoryReviewer } from './llm-review';
 import type { ReviewablePatch } from '../../domain/ports/patch-review-repository';
 import { summarizeFinding } from './critic-outcome';
 
+import type { VulnerabilityValidationStrategy } from '../../domain/validation/validation-strategy';
+
 export interface CriticStepsConfig {
   readonly checkTimeoutMs: number;
   readonly testTimeoutMs: number;
@@ -104,6 +106,7 @@ export class CriticSteps {
     scanId: string,
     context: CriticPatchContext,
     sandbox: RuntimeSandboxContext,
+    strategy: VulnerabilityValidationStrategy,
     checks: CriticCheck[],
     runId: string,
   ): Promise<'CONFIRMED' | 'NOT_CONFIRMED'> {
@@ -114,19 +117,21 @@ export class CriticSteps {
         checks.push({ name: 'baseline', status: 'FAILED', durationMs: 0, detail: 'fresh application not reachable' });
         return 'NOT_CONFIRMED';
       }
-      const report = await this.deps.sniper.run({
+      const res = await strategy.validateBaseline({
         scanId,
-        sandboxId: sandbox.sandboxId,
-        baseUrl: sandbox.targetUrl,
-        targetIds: [context.exploitTargetId],
-        options: { timeoutMs: this.deps.config.retestTimeoutMs, persist: false },
+        context,
+        sandbox,
+        checks,
+        runId,
+        sniper: this.deps.sniper,
+        retestTimeoutMs: this.deps.config.retestTimeoutMs,
       });
-      status = report.results[0]?.exploit?.status === 'CONFIRMED' ? 'CONFIRMED' : 'NOT_CONFIRMED';
+      status = res.status === 'CONFIRMED' ? 'CONFIRMED' : 'NOT_CONFIRMED';
       checks.push({
         name: 'baseline',
         status: status === 'CONFIRMED' ? 'PASSED' : 'FAILED',
         durationMs: 0,
-        detail: `baseline exploit → ${status}`,
+        detail: `baseline exploit (${strategy.name}) → ${status}`,
       });
       return status;
     } catch (error) {
@@ -194,35 +199,43 @@ export class CriticSteps {
     context: CriticPatchContext,
     sandbox: RuntimeSandboxContext,
     baseline: 'CONFIRMED' | 'NOT_CONFIRMED',
+    strategy: VulnerabilityValidationStrategy,
     checks: CriticCheck[],
     runId: string,
   ): Promise<{ readonly verdict: 'FIXED' | 'SUCCEEDS' | 'INCONCLUSIVE'; readonly detail?: string; readonly exploit: ExploitCriticOutcome }> {
     this.emit('EXPLOIT_RETEST_STARTED', runId, context.exploitTargetId);
     const started = Date.now();
     try {
-      const report = await this.deps.sniper.run({
-        scanId,
-        sandboxId: sandbox.sandboxId,
-        baseUrl: sandbox.targetUrl,
-        targetIds: [context.exploitTargetId],
-        options: { timeoutMs: this.deps.config.retestTimeoutMs, persist: false },
-      });
-      const st = report.results[0]?.exploit?.status ?? 'NOT_TESTED';
-      const verdict = st === 'NOT_CONFIRMED' ? 'FIXED' : st === 'CONFIRMED' ? 'SUCCEEDS' : 'INCONCLUSIVE';
+      const res = await strategy.validateRetest(
+        {
+          scanId,
+          context,
+          sandbox,
+          checks,
+          runId,
+          sniper: this.deps.sniper,
+          retestTimeoutMs: this.deps.config.retestTimeoutMs,
+        },
+        { status: baseline }
+      );
+
+      const verdict = res.status === 'NOT_CONFIRMED' ? 'FIXED' : res.status === 'CONFIRMED' ? 'SUCCEEDS' : 'INCONCLUSIVE';
+      const st = res.detail ?? (res.status === 'NOT_CONFIRMED' ? 'NOT_CONFIRMED' : res.status === 'CONFIRMED' ? 'CONFIRMED' : 'INCONCLUSIVE');
+
       checks.push({
         name: 'exploit-retest',
         status: verdict === 'FIXED' ? 'PASSED' : verdict === 'SUCCEEDS' ? 'FAILED' : 'ERROR',
         durationMs: Date.now() - started,
-        detail: `retest (${context.exploitTargetId}) → ${st}`,
+        detail: `retest (${context.exploitTargetId} via ${strategy.name}) → ${st}`,
       });
       this.emit('EXPLOIT_RETEST_COMPLETED', runId, st);
       return {
         verdict,
         detail: st,
-        exploit: {
+        exploit: res.exploit ?? {
           baseline: { status: baseline },
           retest: {
-            status: st === 'CONFIRMED' ? 'CONFIRMED' : st === 'NOT_CONFIRMED' ? 'NOT_CONFIRMED' : 'INCONCLUSIVE',
+            status: res.status === 'CONFIRMED' ? 'CONFIRMED' : res.status === 'NOT_CONFIRMED' ? 'NOT_CONFIRMED' : 'INCONCLUSIVE',
           },
           targetId: context.exploitTargetId,
         },

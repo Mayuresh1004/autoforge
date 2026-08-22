@@ -190,6 +190,13 @@ function toStoredFinding(row: {
     diffContent: string | null;
     explanation: string | null;
     status: string;
+    prNumber?: number | null;
+    prUrl?: string | null;
+    prBranch?: string | null;
+    prCommitSha?: string | null;
+    prStatus?: string | null;
+    prDeliveredAt?: Date | null;
+    prError?: string | null;
   }>;
 }): StoredFinding {
   const latestPatch = row.patches && row.patches.length > 0 ? row.patches[0] : null;
@@ -216,6 +223,13 @@ function toStoredFinding(row: {
           diffContent: latestPatch.diffContent,
           explanation: latestPatch.explanation,
           status: latestPatch.status,
+          prNumber: latestPatch.prNumber ?? null,
+          prUrl: latestPatch.prUrl ?? null,
+          prBranch: latestPatch.prBranch ?? null,
+          prCommitSha: latestPatch.prCommitSha ?? null,
+          prStatus: latestPatch.prStatus ?? null,
+          prDeliveredAt: latestPatch.prDeliveredAt ? latestPatch.prDeliveredAt.toISOString() : null,
+          prError: latestPatch.prError ?? null,
         }
       : null,
   };

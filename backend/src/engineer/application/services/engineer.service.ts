@@ -31,6 +31,7 @@ import type { EngineerPatchRepository } from '../../domain/ports/patch-repositor
 import type { EngineerSourceReader } from '../../domain/ports/source-reader';
 import { assembleEngineerRequest } from './prompt-assembler';
 import { validateEngineerResponse } from './response-validator';
+import { normalizeEngineerLlmResponse } from './response-normalizer';
 import { SecurityReviewGate } from './security-review-gate';
 import { prepareEngineerRun, tryParseJsonObject } from './engineer-run-context';
 import {
@@ -217,6 +218,7 @@ export class DefaultEngineerService implements EngineerService {
         maxTokens: 2_000,
         responseFormat: 'json_object',
       });
+
       this.emit(scanId, {
         eventType: 'ENGINEER_LLM_COMPLETED',
         agentType: 'ENGINEER',
@@ -226,9 +228,31 @@ export class DefaultEngineerService implements EngineerService {
         metadata: { source: llmResponse.model },
       });
 
-      const raw = tryParseJsonObject(llmResponse.text);
+      const rawText = llmResponse.text;
+      const isString = typeof rawText === 'string';
+      const textLength = isString ? rawText.length : 0;
+      const hasCodeFence = isString && /```/i.test(rawText);
+
+      const normalized = normalizeEngineerLlmResponse(rawText);
+      const parsedJsonType = normalized === null ? 'null' : Array.isArray(normalized) ? 'array' : typeof normalized;
+
+      logger.info(
+        {
+          engineerDiagnostic: {
+            typeofResponse: typeof rawText,
+            isString,
+            responseLength: textLength,
+            preview: isString ? rawText.slice(0, 200).replace(/[\r\n]+/g, ' ') : String(rawText),
+            hasCodeFence,
+            parsedJsonType,
+            model: llmResponse.model,
+          },
+        },
+        'engineer_llm_response_diagnostic'
+      );
+
       const validated = validateEngineerResponse(
-        raw,
+        normalized,
         { vulnerabilityId: prepared.finding.vulnerabilityId, filePath: prepared.finding.filePath },
         this.bounds,
       );

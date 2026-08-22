@@ -7,9 +7,11 @@ export interface AgentCardProps {
   label: string;
   state: AgentState;
   isLast?: boolean;
+  prNumber?: number | null;
+  prUrl?: string | null;
 }
 
-export function AgentCard({ label, state, isLast = false }: AgentCardProps) {
+export function AgentCard({ agentType, label, state, isLast = false, prNumber, prUrl }: AgentCardProps) {
   const isRunning = state.status === 'RUNNING';
   const isCompleted = state.status === 'COMPLETED';
   const isFailed = state.status === 'FAILED';
@@ -42,10 +44,26 @@ export function AgentCard({ label, state, isLast = false }: AgentCardProps) {
         </span>
 
         <div className="flex flex-col">
-          <span className="font-medium tracking-tight">{label}</span>
-          <span className="font-mono text-[9px] uppercase tracking-wider opacity-75">
-            {state.status}
-          </span>
+          <div className="flex items-center gap-1.5">
+            <span className="font-medium tracking-tight">{label}</span>
+            {agentType === 'REMEDIATION' && isCompleted && prNumber ? (
+              <span className="font-mono text-[10px] font-bold text-emerald-400">#{prNumber}</span>
+            ) : null}
+          </div>
+          <div className="flex items-center gap-1 font-mono text-[9px] uppercase tracking-wider opacity-75">
+            <span>{state.status}</span>
+            {agentType === 'REMEDIATION' && isCompleted && prUrl ? (
+              <a
+                href={prUrl}
+                target="_blank"
+                rel="noreferrer"
+                onClick={(e) => e.stopPropagation()}
+                className="text-sky-400 hover:text-sky-300 underline font-bold lowercase tracking-normal flex items-center gap-0.5 ml-1"
+              >
+                view ↗
+              </a>
+            ) : null}
+          </div>
         </div>
       </div>
 

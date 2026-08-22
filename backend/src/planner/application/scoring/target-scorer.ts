@@ -107,39 +107,48 @@ export class TargetScorer {
   /** Hypothesis list: which vuln classes deserve a closer look here. */
   candidates(features: TargetFeatures, summary: StaticSummary): readonly string[] {
     const out: string[] = [];
-    const inputDriven = features.hasParameters || features.hasQuery;
 
-    // 1. Static scanner findings correlation
+    // 1. Static scanner findings correlation (PRIMARY SOURCE OF TRUTH)
     for (const cat of summary.categories) {
-      if (cat === 'SQL Injection' && (inputDriven || features.isDbRelated || features.isApi)) {
+      if (cat === 'SQL Injection' && features.hasParameters) {
         out.push('SQL Injection');
       }
-      if (cat === 'Cross-Site Scripting' && (inputDriven || features.isSearch || features.isApi)) {
+      if (cat === 'Cross-Site Scripting' && (features.hasQuery || features.hasParameters || features.isSearch)) {
         out.push('Cross-Site Scripting');
       }
-      if (cat === 'Insecure File Upload' && (features.isUpload || features.isApi)) {
+      if (cat === 'Insecure File Upload' && features.isUpload) {
         out.push('Insecure File Upload');
       }
-      if (cat === 'Server-Side Request Forgery' && (inputDriven || features.isApi)) {
+      if (cat === 'Server-Side Request Forgery' && (features.hasQuery || /url|target|fetch/i.test(features.url))) {
         out.push('Server-Side Request Forgery');
       }
-      if ((cat === 'Authentication Bypass' || cat === 'Broken Access Control') && (features.authentication || features.isLogin || features.isApi)) {
+      if (cat === 'Broken Access Control' || cat === 'Authentication Bypass') {
         out.push('Broken Access Control');
+      }
+      if (cat === 'Security Misconfiguration') {
+        out.push('Security Misconfiguration');
       }
     }
 
-    // 2. Surface heuristic indicators
+    // 2. Surface heuristic fallback (ONLY when grounded in endpoint structure)
+    if (features.isStatic || features.isHealth || features.isDocs) {
+      return [...new Set(out)].slice(0, 4);
+    }
+
     if (features.isUpload) {
       out.push('Insecure File Upload');
     }
-    if (features.isDbRelated && inputDriven) {
+    if ((features.hasQuery || features.hasParameters) && features.isDbRelated) {
       out.push('SQL Injection');
     }
-    if (features.isSearch || (features.hasQuery && features.isApi)) {
+    if ((features.hasQuery || features.hasParameters) && features.isSearch) {
       out.push('Cross-Site Scripting');
     }
-    if (features.authentication && (features.hasParameters || features.url.includes(':') || features.url.includes('{'))) {
+    if (features.url.includes(':') || features.url.includes('{') || /\/api\/(users|admin|profile)\//i.test(features.url)) {
       out.push('Broken Access Control');
+    }
+    if (/\/api\/debug\//i.test(features.url) || /config|env|phpinfo/i.test(features.url)) {
+      out.push('Security Misconfiguration');
     }
     if (features.hasQuery && /url|target|redirect|fetch/i.test(features.url)) {
       out.push('Server-Side Request Forgery');
