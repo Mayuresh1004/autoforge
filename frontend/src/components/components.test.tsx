@@ -4,13 +4,14 @@ import { AgentPipeline } from './pipeline/AgentPipeline';
 import { EventItem } from './timeline/EventItem';
 import { FindingCard } from './findings/FindingCard';
 import { PatchView } from './remediation/PatchView';
+import { PullRequestPanel } from './remediation/PullRequestPanel';
 import { ValidationMatrix } from './critic/ValidationMatrix';
 import type { AmassEvent } from '../types/amass-events';
 import type { FindingModel, PatchModel } from '../types/api-types';
 import type { AgentState, CriticStageState } from '../hooks/useScanStore';
 
 describe('Frontend UI Components', () => {
-  it('renders AgentPipeline with agent stages', () => {
+  it('renders AgentPipeline with agent stages including PR Created', () => {
     const mockAgents: Record<string, AgentState> = {
       ANALYZER: { type: 'ANALYZER', status: 'COMPLETED' },
       SCANNER: { type: 'SCANNER', status: 'COMPLETED' },
@@ -18,14 +19,26 @@ describe('Frontend UI Components', () => {
       SCOUT: { type: 'SCOUT', status: 'COMPLETED' },
       PLANNER: { type: 'PLANNER', status: 'COMPLETED' },
       SNIPER: { type: 'SNIPER', status: 'COMPLETED' },
-      ENGINEER: { type: 'ENGINEER', status: 'RUNNING' },
-      CRITIC: { type: 'CRITIC', status: 'IDLE' },
+      ENGINEER: { type: 'ENGINEER', status: 'COMPLETED' },
+      CRITIC: { type: 'CRITIC', status: 'COMPLETED' },
+      REMEDIATION_DELIVERY: {
+        type: 'REMEDIATION_DELIVERY',
+        status: 'COMPLETED',
+        prNumber: 7,
+        prUrl: 'https://github.com/Mayuresh1004/owasp-vuln-lab/pull/7',
+      },
     } as any;
 
     render(<AgentPipeline agents={mockAgents} />);
     expect(screen.getByText('Analyzer')).toBeInTheDocument();
     expect(screen.getByText('Engineer')).toBeInTheDocument();
     expect(screen.getByText('Critic')).toBeInTheDocument();
+    expect(screen.getByText('PR Created')).toBeInTheDocument();
+    expect(screen.getByText('#7')).toBeInTheDocument();
+    expect(screen.getByText('View PR ↗')).toHaveAttribute(
+      'href',
+      'https://github.com/Mayuresh1004/owasp-vuln-lab/pull/7'
+    );
   });
 
   it('renders EventItem with sequence number and message', () => {
@@ -70,6 +83,56 @@ describe('Frontend UI Components', () => {
     expect(screen.getByText('🎯 CONFIRMED')).toBeInTheDocument();
   });
 
+  it('renders FindingCard with PR CREATED badge and clickable link when delivered', () => {
+    const mockFinding: FindingModel = {
+      id: 'f_pr',
+      scanId: 'scan_1',
+      title: 'A01: Broken Access Control',
+      severity: 'HIGH',
+      status: 'CRITIC_VERIFIED',
+      patch: {
+        patchId: 'patch_1',
+        findingId: 'f_pr',
+        scanId: 'scan_1',
+        filePath: 'src/routes/admin.ts',
+        diffContent: 'diff',
+        status: 'APPROVED',
+        prNumber: 7,
+        prUrl: 'https://github.com/Mayuresh1004/owasp-vuln-lab/pull/7',
+        prBranch: 'amass/remediation/patch_1',
+      },
+    };
+
+    render(<FindingCard finding={mockFinding} />);
+    expect(screen.getByText('✓ PR CREATED #7')).toBeInTheDocument();
+    const link = screen.getByText('View Pull Request ↗');
+    expect(link).toHaveAttribute('href', 'https://github.com/Mayuresh1004/owasp-vuln-lab/pull/7');
+    expect(link).toHaveAttribute('target', '_blank');
+  });
+
+  it('renders FindingCard with PR DELIVERY FAILED badge and error message when failed', () => {
+    const mockFinding: FindingModel = {
+      id: 'f_fail',
+      scanId: 'scan_1',
+      title: 'A03: SQL Injection',
+      severity: 'HIGH',
+      status: 'CRITIC_VERIFIED',
+      patch: {
+        patchId: 'patch_fail',
+        findingId: 'f_fail',
+        scanId: 'scan_1',
+        filePath: 'src/routes/search.ts',
+        diffContent: 'diff',
+        status: 'APPROVED',
+        prError: 'GitHub API 403 Forbidden',
+      },
+    };
+
+    render(<FindingCard finding={mockFinding} />);
+    expect(screen.getByText('✕ PR DELIVERY FAILED')).toBeInTheDocument();
+    expect(screen.getByText('GitHub API 403 Forbidden')).toBeInTheDocument();
+  });
+
   it('renders PatchView with diff content', () => {
     const mockPatches: PatchModel[] = [
       {
@@ -85,6 +148,32 @@ describe('Frontend UI Components', () => {
     render(<PatchView patches={mockPatches} />);
     expect(screen.getAllByText('src/routes/auth.ts')[0]).toBeInTheDocument();
     expect(screen.getByText('Replaced string concatenation with parameterized query')).toBeInTheDocument();
+  });
+
+  it('renders PullRequestPanel with delivered PR details and clickable link', () => {
+    const mockPatches: PatchModel[] = [
+      {
+        patchId: 'patch_pr_1',
+        scanId: 'scan_1',
+        filePath: 'src/routes/admin.ts',
+        diffContent: '+ requireAdmin',
+        status: 'APPROVED',
+        prNumber: 7,
+        prUrl: 'https://github.com/Mayuresh1004/owasp-vuln-lab/pull/7',
+        prBranch: 'amass/remediation/patch_pr_1',
+        prCommitSha: 'a7b3c9f1234',
+        prStatus: 'OPEN',
+      },
+    ];
+
+    render(<PullRequestPanel patches={mockPatches} />);
+    expect(screen.getByText('Pull Request Remediation Delivery')).toBeInTheDocument();
+    expect(screen.getByText('✓ PR CREATED #7')).toBeInTheDocument();
+    expect(screen.getByText('amass/remediation/patch_pr_1')).toBeInTheDocument();
+
+    const prButton = screen.getByText('View Pull Request ↗');
+    expect(prButton).toHaveAttribute('href', 'https://github.com/Mayuresh1004/owasp-vuln-lab/pull/7');
+    expect(prButton).toHaveAttribute('target', '_blank');
   });
 
   it('renders ValidationMatrix with per-vulnerability QA matrix', () => {

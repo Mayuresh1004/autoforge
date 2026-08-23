@@ -467,4 +467,197 @@ describe('useScanStore hook', () => {
     expect(patch?.filePath).toBe('src/routes/search.ts');
     expect(patch?.diffContent).toContain('--- a/src/routes/search.ts');
   });
+
+  it('updates patch model with PR details when REMEDIATION_PR_CREATED event arrives', async () => {
+    const { result } = renderHook(() => useScanStore('scan_1'));
+
+    await waitFor(() => {
+      expect(result.current.findings.length).toBeGreaterThan(0);
+    });
+
+    const patchEvt: AmassEvent = {
+      eventId: 'evt_eng_patch',
+      scanId: 'scan_1',
+      sequence: 21,
+      timestamp: new Date().toISOString(),
+      eventType: 'ENGINEER_PATCH_GENERATED',
+      agentType: 'ENGINEER',
+      phase: 'remediation',
+      level: 'INFO',
+      status: 'SUCCEEDED',
+      message: 'patch generated: patch_123',
+      metadata: {
+        vulnerabilityId: 'vuln_1',
+        patchId: 'patch_123',
+        filePath: 'src/routes/search.ts',
+        diffContent: '--- a/src/routes/search.ts\n+++ b/src/routes/search.ts\n@@ -1 +1 @@\n-old\n+new',
+        explanation: 'Fixed query',
+        status: 'GENERATED',
+      },
+    };
+
+    act(() => {
+      sseHandler?.(patchEvt);
+    });
+
+    const prEvt: AmassEvent = {
+      eventId: 'evt_pr_created',
+      scanId: 'scan_1',
+      sequence: 22,
+      timestamp: new Date().toISOString(),
+      eventType: 'REMEDIATION_PR_CREATED',
+      agentType: 'SYSTEM',
+      phase: 'remediation',
+      level: 'INFO',
+      status: 'SUCCEEDED',
+      message: 'PR #42 created',
+      metadata: {
+        vulnerabilityId: 'vuln_1',
+        patchId: 'patch_123',
+        prNumber: 42,
+        prUrl: 'https://github.com/test/repo/pull/42',
+        prBranch: 'amass/remediation/patch_123',
+        prStatus: 'OPEN',
+      },
+    };
+
+    act(() => {
+      sseHandler?.(prEvt);
+    });
+
+    const patch = result.current.patches.find((p) => p.findingId === 'vuln_1');
+    expect(patch).toBeDefined();
+    expect(patch?.prNumber).toBe(42);
+    expect(patch?.prUrl).toBe('https://github.com/test/repo/pull/42');
+    expect(patch?.prBranch).toBe('amass/remediation/patch_123');
+    expect(patch?.prStatus).toBe('OPEN');
+  });
+
+  it('CRITIC_APPROVED alone does not mark REMEDIATION_DELIVERY stage as COMPLETED', async () => {
+    const { result } = renderHook(() => useScanStore('scan_1'));
+
+    await waitFor(() => {
+      expect(result.current.findings.length).toBeGreaterThan(0);
+    });
+
+    const criticApproveEvt: AmassEvent = {
+      eventId: 'evt_critic_app',
+      scanId: 'scan_1',
+      sequence: 30,
+      timestamp: new Date().toISOString(),
+      eventType: 'CRITIC_APPROVED',
+      agentType: 'CRITIC',
+      phase: 'validation',
+      level: 'INFO',
+      status: 'SUCCEEDED',
+      message: 'Critic APPROVED patch for vuln_1',
+      metadata: { findingId: 'vuln_1', patchId: 'patch_1' },
+    };
+
+    act(() => {
+      sseHandler?.(criticApproveEvt);
+    });
+
+    expect(result.current.agents.CRITIC.status).toBe('COMPLETED');
+    expect(result.current.agents.REMEDIATION_DELIVERY.status).not.toBe('COMPLETED');
+
+    const finding = result.current.findings.find((f) => f.id === 'vuln_1');
+    expect(finding?.patch?.prNumber).toBeUndefined();
+    expect(finding?.patch?.prUrl).toBeUndefined();
+  });
+
+  it('REMEDIATION_DELIVERY_FAILED marks stage as FAILED, displays error, and preserves Critic APPROVED state without fabricating PR metadata', async () => {
+    const { result } = renderHook(() => useScanStore('scan_1'));
+
+    await waitFor(() => {
+      expect(result.current.findings.length).toBeGreaterThan(0);
+    });
+
+    const criticApproveEvt: AmassEvent = {
+      eventId: 'evt_critic_app_2',
+      scanId: 'scan_1',
+      sequence: 31,
+      timestamp: new Date().toISOString(),
+      eventType: 'CRITIC_APPROVED',
+      agentType: 'CRITIC',
+      phase: 'validation',
+      level: 'INFO',
+      status: 'SUCCEEDED',
+      message: 'Critic APPROVED patch',
+      metadata: { findingId: 'vuln_1', patchId: 'patch_1' },
+    };
+
+    act(() => {
+      sseHandler?.(criticApproveEvt);
+    });
+
+    const prFailEvt: AmassEvent = {
+      eventId: 'evt_pr_fail',
+      scanId: 'scan_1',
+      sequence: 32,
+      timestamp: new Date().toISOString(),
+      eventType: 'REMEDIATION_DELIVERY_FAILED',
+      agentType: 'SYSTEM',
+      phase: 'remediation',
+      level: 'ERROR',
+      status: 'FAILED',
+      message: 'GitHub API HTTP 403 Forbidden: Insufficient OAuth scopes',
+      metadata: {
+        findingId: 'vuln_1',
+        patchId: 'patch_1',
+        error: 'GitHub API HTTP 403 Forbidden: Insufficient OAuth scopes',
+      },
+    };
+
+    act(() => {
+      sseHandler?.(prFailEvt);
+    });
+
+    expect(result.current.agents.CRITIC.status).toBe('COMPLETED');
+    expect(result.current.agents.REMEDIATION_DELIVERY.status).toBe('FAILED');
+
+    const finding = result.current.findings.find((f) => f.id === 'vuln_1');
+    expect(finding?.patch?.prError).toBe('GitHub API HTTP 403 Forbidden: Insufficient OAuth scopes');
+    expect(finding?.patch?.prNumber).toBeUndefined();
+    expect(finding?.patch?.prUrl).toBeUndefined();
+  });
+
+  it('restores PR metadata and REMEDIATION_DELIVERY agent status via REST hydration upon loading scan', async () => {
+    mockProvider.getScanResults.mockResolvedValueOnce({
+      success: true,
+      data: {
+        scanId: 'scan_rest_pr',
+        findings: [
+          {
+            id: 'vuln_rest_1',
+            findingId: 'vuln_rest_1',
+            title: 'SQL Injection in search',
+            severity: 'HIGH',
+            patch: {
+              id: 'patch_rest_1',
+              filePath: 'src/routes/search.ts',
+              diffContent: 'diff',
+              status: 'APPROVED',
+              prNumber: 7,
+              prUrl: 'https://github.com/test/repo/pull/7',
+              prBranch: 'amass/remediation/patch_rest_1',
+              prStatus: 'OPEN',
+            },
+          },
+        ],
+      },
+    });
+
+    const { result } = renderHook(() => useScanStore('scan_rest_pr'));
+
+    await waitFor(() => {
+      expect(result.current.findings.length).toBeGreaterThan(0);
+    });
+
+    const finding = result.current.findings[0];
+    expect(finding.patch?.prNumber).toBe(7);
+    expect(finding.patch?.prUrl).toBe('https://github.com/test/repo/pull/7');
+    expect(result.current.agents.REMEDIATION_DELIVERY.status).toBe('COMPLETED');
+    expect(result.current.agents.REMEDIATION_DELIVERY.prNumber).toBe(7);
+  });
 });

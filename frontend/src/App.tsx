@@ -8,6 +8,7 @@ import { FindingsList } from './components/findings/FindingsList';
 import { PlanPanel } from './components/planner/PlanPanel';
 import { ExploitPanel } from './components/evidence/ExploitPanel';
 import { PatchView } from './components/remediation/PatchView';
+import { PullRequestPanel } from './components/remediation/PullRequestPanel';
 import { ValidationMatrix } from './components/critic/ValidationMatrix';
 import { Tabs, type TabItem } from './components/ui/Tabs';
 import { Button } from './components/ui/Button';
@@ -26,12 +27,17 @@ export default function App() {
     (f) => f.status === 'CRITIC_VERIFIED' || f.status === 'EXPLOIT_REJECTED'
   ).length;
 
+  const prDeliveredCount = store.patches.filter(
+    (p) => Boolean(p.prUrl || p.prNumber)
+  ).length;
+
   const centerTabs: TabItem[] = [
     { id: 'plan', label: 'Plan & Targets', count: store.targets.length },
     { id: 'sandbox', label: 'Live Sandbox & Recon', count: store.endpoints.length },
     { id: 'exploitation', label: 'Exploitation Evidence', count: store.exploits.length },
     { id: 'patch', label: 'Remediation Patch', count: store.patches.length },
     { id: 'critic', label: 'Critic QA Matrix', count: criticValidatedCount },
+    { id: 'pr', label: 'Pull Request', count: prDeliveredCount },
   ];
 
   const selectedPlan = (store.scan as { plan?: PlanModel } | null | undefined)?.plan ?? null;
@@ -111,6 +117,14 @@ export default function App() {
                 stages={store.criticStages}
                 criticMatrix={store.criticMatrix}
                 findings={store.findings}
+                activeFinding={activeFocusFinding}
+                onSelectFindingId={handleSelectFindingId}
+              />
+            )}
+
+            {activeCenterTab === 'pr' && (
+              <PullRequestPanel
+                patches={store.patches}
                 activeFinding={activeFocusFinding}
                 onSelectFindingId={handleSelectFindingId}
               />

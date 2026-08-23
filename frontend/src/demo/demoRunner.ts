@@ -617,6 +617,27 @@ export class DemoRunner {
             metadata: { findingId: fId, patchId: patch.patchId },
           },
         });
+        eventsToSchedule.push({
+          delaySec: cTime + 4.2,
+          event: {
+            scanId,
+            eventType: 'REMEDIATION_PR_CREATED',
+            agentType: 'SYSTEM',
+            phase: 'remediation',
+            level: 'INFO',
+            status: 'SUCCEEDED',
+            message: `GitHub Pull Request #7 created: https://github.com/Mayuresh1004/owasp-vuln-lab/pull/7`,
+            metadata: {
+              findingId: fId,
+              patchId: patch.patchId,
+              prNumber: 7,
+              prUrl: 'https://github.com/Mayuresh1004/owasp-vuln-lab/pull/7',
+              prBranch: `amass/remediation/${patch.patchId}`,
+              prCommitSha: 'a7b3c9f1234567890abcdef',
+              prStatus: 'OPEN',
+            },
+          },
+        });
       }
     });
 

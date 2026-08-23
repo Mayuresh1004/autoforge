@@ -87,7 +87,8 @@ export function ValidationMatrix({
                   <th className="p-2.5 text-center">Build</th>
                   <th className="p-2.5 text-center">Tests</th>
                   <th className="p-2.5 text-center">Retest</th>
-                  <th className="p-2.5 text-center rounded-r">Verdict</th>
+                  <th className="p-2.5 text-center">Verdict</th>
+                  <th className="p-2.5 text-center rounded-r">PR Delivery</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-zinc-800/60">
@@ -151,6 +152,24 @@ export function ValidationMatrix({
                           <Badge variant="danger" size="sm">REJECTED</Badge>
                         ) : (
                           <span className="text-zinc-500 text-[10px]">PENDING</span>
+                        )}
+                      </td>
+
+                      <td className="p-2.5 text-center font-mono text-[11px]">
+                        {f.patch?.prUrl || f.patch?.prNumber ? (
+                          <a
+                            href={f.patch.prUrl ?? undefined}
+                            target="_blank"
+                            rel="noreferrer"
+                            onClick={(e) => e.stopPropagation()}
+                            className="text-sky-400 hover:text-sky-300 underline font-bold"
+                          >
+                            ✓ PR #{f.patch.prNumber ?? ''} ↗
+                          </a>
+                        ) : f.patch?.prError ? (
+                          <span className="font-bold text-rose-400 text-[10px]">FAILED</span>
+                        ) : (
+                          <span className="text-zinc-600 text-[10px]">PENDING</span>
                         )}
                       </td>
                     </tr>

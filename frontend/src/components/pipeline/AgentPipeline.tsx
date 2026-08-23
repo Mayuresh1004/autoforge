@@ -15,6 +15,7 @@ const PIPELINE_STEPS: Array<{ type: AmassAgentType; label: string }> = [
   { type: 'SNIPER', label: 'Sniper' },
   { type: 'ENGINEER', label: 'Engineer' },
   { type: 'CRITIC', label: 'Critic' },
+  { type: 'REMEDIATION_DELIVERY', label: 'PR Created' },
 ];
 
 export function AgentPipeline({ agents }: AgentPipelineProps) {

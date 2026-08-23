@@ -30,6 +30,8 @@ export interface AgentState {
   status: AgentStatus;
   lastMessage?: string;
   updatedAt?: string;
+  prNumber?: number;
+  prUrl?: string;
 }
 
 export interface CriticStageState {
@@ -80,6 +82,7 @@ const INITIAL_AGENTS: Record<AmassAgentType, AgentState> = {
   SNIPER: { type: 'SNIPER', status: 'IDLE' },
   ENGINEER: { type: 'ENGINEER', status: 'IDLE' },
   CRITIC: { type: 'CRITIC', status: 'IDLE' },
+  REMEDIATION_DELIVERY: { type: 'REMEDIATION_DELIVERY', status: 'IDLE' },
   BROWSER: { type: 'BROWSER', status: 'IDLE' },
   SYSTEM: { type: 'SYSTEM', status: 'IDLE' },
 };
@@ -120,6 +123,7 @@ export function useScanStore(initialScanId: string | null = null) {
   const findings = useMemo(() => {
     return Object.values(findingsById).map((record) => ({
       ...record.finding,
+      patch: record.patch ?? record.finding.patch,
       status: record.finding.status,
     }));
   }, [findingsById]);
@@ -740,6 +744,107 @@ export function useScanStore(initialScanId: string | null = null) {
             });
           }
           break;
+
+        // REMEDIATION PR DELIVERY OBSERVABILITY
+        case 'REMEDIATION_PR_CREATED': {
+          const pId = event.metadata?.patchId as string | undefined;
+          const prNum = event.metadata?.prNumber as number | undefined;
+          const prUrl = event.metadata?.prUrl as string | undefined;
+          const prBranch = event.metadata?.prBranch as string | undefined;
+          const prCommitSha = event.metadata?.prCommitSha as string | undefined;
+          const prStatus = (event.metadata?.prStatus as string) ?? 'OPEN';
+
+          setFindingsById((prev) => {
+            const key = Object.keys(prev).find(
+              (k) => k === targetFindingId || prev[k].patch?.patchId === pId || prev[k].finding.id === targetFindingId || prev[k].target?.targetId === targetFindingId
+            ) || targetFindingId;
+            const record = prev[key];
+            if (!record) return prev;
+
+            const existingPatch = record.patch ?? {
+              patchId: pId || `patch_${key}`,
+              findingId: key,
+              scanId: event.scanId,
+              filePath: (event.metadata?.filePath as string) || record.finding.filePath || '',
+              diffContent: (event.metadata?.diffContent as string) || '',
+              status: 'APPROVED',
+            };
+
+            return {
+              ...prev,
+              [key]: {
+                ...record,
+                patch: {
+                  ...existingPatch,
+                  prNumber: prNum ?? existingPatch.prNumber,
+                  prUrl: prUrl ?? existingPatch.prUrl,
+                  prBranch: prBranch ?? existingPatch.prBranch,
+                  prCommitSha: prCommitSha ?? existingPatch.prCommitSha,
+                  prStatus: prStatus ?? existingPatch.prStatus,
+                  prDeliveredAt: event.timestamp,
+                  prError: null,
+                },
+              },
+            };
+          });
+
+          setAgents((prev) => ({
+            ...prev,
+            REMEDIATION_DELIVERY: {
+              type: 'REMEDIATION_DELIVERY',
+              status: 'COMPLETED',
+              lastMessage: event.message,
+              updatedAt: event.timestamp,
+              prNumber: prNum,
+              prUrl: prUrl,
+            },
+          }));
+          break;
+        }
+
+        case 'REMEDIATION_DELIVERY_FAILED': {
+          const pId = event.metadata?.patchId as string | undefined;
+          const err = (event.metadata?.error as string) || event.message;
+
+          setFindingsById((prev) => {
+            const key = Object.keys(prev).find(
+              (k) => k === targetFindingId || prev[k].patch?.patchId === pId || prev[k].finding.id === targetFindingId || prev[k].target?.targetId === targetFindingId
+            ) || targetFindingId;
+            const record = prev[key];
+            if (!record) return prev;
+
+            const existingPatch = record.patch ?? {
+              patchId: pId || `patch_${key}`,
+              findingId: key,
+              scanId: event.scanId,
+              filePath: record.finding.filePath || '',
+              diffContent: '',
+              status: 'APPROVED',
+            };
+
+            return {
+              ...prev,
+              [key]: {
+                ...record,
+                patch: {
+                  ...existingPatch,
+                  prError: err,
+                },
+              },
+            };
+          });
+
+          setAgents((prev) => ({
+            ...prev,
+            REMEDIATION_DELIVERY: {
+              type: 'REMEDIATION_DELIVERY',
+              status: 'FAILED',
+              lastMessage: event.message,
+              updatedAt: event.timestamp,
+            },
+          }));
+          break;
+        }
       }
     },
     [provider]
@@ -789,6 +894,13 @@ export function useScanStore(initialScanId: string | null = null) {
                     diffContent: f.patch.diffContent || '',
                     status: f.patch.status || 'GENERATED',
                     explanation: f.patch.explanation || 'Automated defensive code patch.',
+                    prNumber: (f.patch as any).prNumber ?? null,
+                    prUrl: (f.patch as any).prUrl ?? null,
+                    prBranch: (f.patch as any).prBranch ?? null,
+                    prCommitSha: (f.patch as any).prCommitSha ?? null,
+                    prStatus: (f.patch as any).prStatus ?? null,
+                    prDeliveredAt: (f.patch as any).prDeliveredAt ?? null,
+                    prError: (f.patch as any).prError ?? null,
                   }
                 : undefined;
 
@@ -808,8 +920,16 @@ export function useScanStore(initialScanId: string | null = null) {
                 const existingPatch = map[fId].patch;
                 const mergedPatch = restPatch
                   ? {
+                      ...existingPatch,
                       ...restPatch,
                       diffContent: restPatch.diffContent || existingPatch?.diffContent || '',
+                      prNumber: restPatch.prNumber ?? existingPatch?.prNumber,
+                      prUrl: restPatch.prUrl ?? existingPatch?.prUrl,
+                      prBranch: restPatch.prBranch ?? existingPatch?.prBranch,
+                      prCommitSha: restPatch.prCommitSha ?? existingPatch?.prCommitSha,
+                      prStatus: restPatch.prStatus ?? existingPatch?.prStatus,
+                      prDeliveredAt: restPatch.prDeliveredAt ?? existingPatch?.prDeliveredAt,
+                      prError: restPatch.prError ?? existingPatch?.prError,
                     }
                   : existingPatch;
 
@@ -903,6 +1023,37 @@ export function useScanStore(initialScanId: string | null = null) {
                 };
               }
             });
+
+            // Restore REMEDIATION_DELIVERY agent status from hydrated patch metadata if present
+            const deliveredPatch = rawFindings
+              .map((f) => f.patch)
+              .find((p) => p && (p.prUrl || (p as any).prNumber));
+
+            const failedPatch = rawFindings
+              .map((f) => f.patch)
+              .find((p) => p && (p as any).prError && !p.prUrl);
+
+            if (deliveredPatch) {
+              setAgents((prev) => ({
+                ...prev,
+                REMEDIATION_DELIVERY: {
+                  type: 'REMEDIATION_DELIVERY',
+                  status: 'COMPLETED',
+                  lastMessage: `PR #${(deliveredPatch as any).prNumber} created`,
+                  prNumber: (deliveredPatch as any).prNumber ?? undefined,
+                  prUrl: (deliveredPatch as any).prUrl ?? undefined,
+                },
+              }));
+            } else if (failedPatch) {
+              setAgents((prev) => ({
+                ...prev,
+                REMEDIATION_DELIVERY: {
+                  type: 'REMEDIATION_DELIVERY',
+                  status: 'FAILED',
+                  lastMessage: (failedPatch as any).prError ?? 'Remediation delivery failed',
+                },
+              }));
+            }
 
             return map;
           });

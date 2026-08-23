@@ -401,9 +401,15 @@ export const ASKBIT_FIXTURE: DemoTargetFixture = {
       findingId: 'fnd-askbit-a01',
       scanId: 'scan_8f4a29c1',
       filePath: 'src/routes/admin.ts',
-      status: 'GENERATED',
+      status: 'APPROVED',
       ragContextCount: 4,
       explanation: 'Added requireAuth and requireAdmin middleware to /api/admin/users/role route to strictly enforce authorization check before handling role mutations.',
+      prNumber: 7,
+      prUrl: 'https://github.com/Mayuresh1004/owasp-vuln-lab/pull/7',
+      prBranch: 'amass/remediation/patch-fnd-askbit-a01',
+      prCommitSha: 'a7b3c9f1234567890abcdef',
+      prStatus: 'OPEN',
+      prDeliveredAt: new Date().toISOString(),
       diffContent: `--- a/src/routes/admin.ts
 +++ b/src/routes/admin.ts
 @@ -42,7 +42,7 @@

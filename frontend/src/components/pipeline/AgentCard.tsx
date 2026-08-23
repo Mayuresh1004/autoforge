@@ -42,10 +42,25 @@ export function AgentCard({ label, state, isLast = false }: AgentCardProps) {
         </span>
 
         <div className="flex flex-col">
-          <span className="font-medium tracking-tight">{label}</span>
-          <span className="font-mono text-[9px] uppercase tracking-wider opacity-75">
-            {state.status}
+          <span className="font-medium tracking-tight flex items-center gap-1">
+            {label}
+            {state.prNumber ? <span className="font-mono text-emerald-300 font-bold">#{state.prNumber}</span> : null}
           </span>
+          {state.prUrl ? (
+            <a
+              href={state.prUrl}
+              target="_blank"
+              rel="noreferrer"
+              onClick={(e) => e.stopPropagation()}
+              className="font-mono text-[9px] text-sky-400 hover:text-sky-300 underline font-semibold flex items-center gap-0.5"
+            >
+              View PR ↗
+            </a>
+          ) : (
+            <span className="font-mono text-[9px] uppercase tracking-wider opacity-75">
+              {state.status}
+            </span>
+          )}
         </div>
       </div>
 

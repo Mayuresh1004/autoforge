@@ -84,14 +84,7 @@ export interface FindingModel {
   readonly status?: FindingStatus;
   readonly isConfirmed?: boolean;
   readonly isDemo?: boolean;
-  readonly patch?: {
-    readonly id?: string;
-    readonly patchId?: string;
-    readonly filePath?: string | null;
-    readonly diffContent?: string | null;
-    readonly explanation?: string | null;
-    readonly status?: string;
-  } | null;
+  readonly patch?: PatchModel | null;
 }
 
 export interface ScanStatistics {
