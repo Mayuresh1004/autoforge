@@ -11,6 +11,7 @@ import type { EngineerService } from '../../engineer/application/services/engine
 import type { CriticService } from '../../critic/application/services/critic.service';
 import type { RemediationDeliveryService } from '../../remediation/application/services/remediation-delivery.service';
 import type { AmassEventPublisher, AmassEventInput } from '../../observability/domain/ports/event-bus';
+import { PrismaConfirmedFindingSource } from '../../remediation/infrastructure/prisma-confirmed-finding-source';
 
 export interface AutonomousPipelineDeps {
   readonly manager: SandboxManager;
@@ -204,7 +205,6 @@ export class AutonomousPipelineService {
 
   // -------------------------------------------------------------------------
   // Stage 5: Engineer Patch Generation
-  // -------------------------------------------------------------------------
   private async runEngineerStage(scanId: string): Promise<void> {
     logger.info({ scanId }, 'autonomous_pipeline:stage5_engineer:start');
     if (!this.deps.prisma) {
@@ -213,14 +213,26 @@ export class AutonomousPipelineService {
     }
 
     try {
-      // Find vulnerabilities that have confirmed exploits
-      const confirmedExploits = await this.deps.prisma.exploit.findMany({
-        where: { scanId, status: 'CONFIRMED' },
-        select: { vulnerabilityId: true },
-      });
+      const findingSource = new PrismaConfirmedFindingSource(this.deps.prisma);
+      const confirmedFindings = await findingSource.listConfirmed(scanId);
 
+      // Unique confirmed vulnerability IDs derived from confirmed findings
       const confirmedVulnIds = Array.from(
-        new Set(confirmedExploits.map((e) => e.vulnerabilityId).filter((id): id is string => Boolean(id)))
+        new Set(confirmedFindings.map((f) => f.vulnerabilityId).filter((id): id is string => Boolean(id)))
+      );
+
+      logger.info(
+        {
+          scanId,
+          findings: confirmedFindings.map((f) => ({
+            vulnerabilityId: f.vulnerabilityId,
+            type: f.type,
+            targetUrl: f.endpoint,
+          })),
+          confirmedVulnIds,
+          confirmedCount: confirmedVulnIds.length,
+        },
+        'autonomous_pipeline:stage5_engineer:confirmed_findings'
       );
 
       if (confirmedVulnIds.length === 0) {
@@ -228,16 +240,52 @@ export class AutonomousPipelineService {
         return;
       }
 
-      for (const vulnId of confirmedVulnIds) {
+      let attemptedCount = 0;
+      let generatedCount = 0;
+      let failedCount = 0;
+
+      for (let i = 0; i < confirmedVulnIds.length; i++) {
+        if (i > 0) {
+          logger.info({ scanId, index: i, total: confirmedVulnIds.length }, 'autonomous_pipeline:stage5_engineer:pacing_delay');
+          await new Promise((resolve) => setTimeout(resolve, 15_000));
+        }
+        const vulnId = confirmedVulnIds[i];
+        attemptedCount += 1;
         try {
-          await this.deps.engineer.run({ scanId, vulnerabilityId: vulnId });
+          const result = await this.deps.engineer.run({ scanId, vulnerabilityId: vulnId });
+          if ((!result.status || result.status === 'GENERATED') && result.patchId) {
+            generatedCount += 1;
+          } else {
+            failedCount += 1;
+            logger.warn({ scanId, vulnId, status: result.status, reason: result.summary?.reason }, 'autonomous_pipeline:stage5_engineer:patch_rejected');
+          }
         } catch (err) {
+          failedCount += 1;
           logger.error({ scanId, vulnId, err }, 'autonomous_pipeline:stage5_engineer:vulnerability_error');
         }
       }
-      logger.info({ scanId, count: confirmedVulnIds.length }, 'autonomous_pipeline:stage5_engineer:completed');
+
+      logger.info(
+        {
+          scanId,
+          confirmedCount: confirmedVulnIds.length,
+          attemptedCount,
+          generatedCount,
+          failedCount,
+        },
+        'autonomous_pipeline:stage5_engineer:completed'
+      );
+
+      if (generatedCount === 0 && attemptedCount > 0) {
+        logger.error(
+          { scanId, confirmedCount: confirmedVulnIds.length, attemptedCount, failedCount },
+          'autonomous_pipeline:stage5_engineer:failed'
+        );
+        throw new Error(`Engineer stage failed: all ${attemptedCount}/${confirmedVulnIds.length} confirmed vulnerability attempts failed to generate a patch`);
+      }
     } catch (err) {
       logger.error({ scanId, err }, 'autonomous_pipeline:stage5_engineer:error');
+      throw err;
     }
   }
 

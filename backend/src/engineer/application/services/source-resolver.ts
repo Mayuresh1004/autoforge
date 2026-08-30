@@ -301,7 +301,11 @@ export function scoreCandidateFile(
   let score = 0;
   const matches: string[] = [];
 
+  const codeOnly = content
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/\/\/.*/g, '');
   const lowerContent = content.toLowerCase();
+  const lowerCode = codeOnly.toLowerCase();
   const lowerPath = endpointPath.toLowerCase();
 
   // Extract path segments (e.g. /api/products/search -> ["api", "products", "search"])
@@ -309,13 +313,20 @@ export function scoreCandidateFile(
 
   // 1. Path Match
   let pathMatched = false;
-  if (lowerContent.includes(lowerPath)) {
+  const strippedPath = lowerPath.replace(/^\/api(\/v\d+)?/i, '');
+
+  if (lowerCode.includes(lowerPath)) {
     score += 45;
     matches.push(`exact path match '${lowerPath}'`);
     pathMatched = true;
+  } else if (strippedPath && strippedPath !== lowerPath && strippedPath.split('/').filter(Boolean).length >= 2 && lowerCode.includes(strippedPath)) {
+    score += 45;
+    matches.push(`stripped route match '${strippedPath}'`);
+    pathMatched = true;
   } else if (segments.length > 0) {
     const lastSegment = segments[segments.length - 1];
-    if (lowerContent.includes(`'/${lastSegment}'`) || lowerContent.includes(`"/${lastSegment}"`) || lowerContent.includes(`\`/${lastSegment}\``) || lowerContent.includes(`/${lastSegment}`)) {
+    const segmentRegex = new RegExp(`['"\`]\\/${lastSegment}['"\`]`, 'i');
+    if (segmentRegex.test(codeOnly)) {
       score += 35;
       matches.push(`segment match '/${lastSegment}'`);
       pathMatched = true;
@@ -368,6 +379,30 @@ export function scoreCandidateFile(
   ) {
     score += 15;
     matches.push('database query sink');
+  }
+
+  // 5. Backend Server Route Preference for HTTP Endpoints
+  const normFilePath = filePath.toLowerCase();
+  const isBackendFile =
+    /(^|\/)(server|routes|controllers|backend|api)(\/|$)/.test(normFilePath) ||
+    (!normFilePath.endsWith('.jsx') &&
+      !normFilePath.endsWith('.tsx') &&
+      !normFilePath.includes('client/') &&
+      !normFilePath.includes('frontend/') &&
+      !normFilePath.includes('src/pages/') &&
+      !normFilePath.includes('src/components/'));
+
+  const isFrontendFile =
+    /(^|\/)(client|frontend|src\/pages|src\/components)(\/|$)/.test(normFilePath) ||
+    normFilePath.endsWith('.jsx') ||
+    normFilePath.endsWith('.tsx');
+
+  if (isBackendFile && !isFrontendFile) {
+    score += 20;
+    matches.push('backend server file preference');
+  } else if (isFrontendFile) {
+    score -= 10;
+    matches.push('frontend UI file penalty');
   }
 
   return { filePath, score, matches };

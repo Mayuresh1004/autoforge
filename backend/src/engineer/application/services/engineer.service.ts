@@ -214,7 +214,7 @@ export class DefaultEngineerService implements EngineerService {
       const llmResponse = await this.deps.llm.generate({
         messages: assembly.messages,
         temperature: 0.2,
-        maxTokens: 2_000,
+        maxTokens: 4_000,
         responseFormat: 'json_object',
       });
       this.emit(scanId, {
@@ -234,6 +234,7 @@ export class DefaultEngineerService implements EngineerService {
       );
 
       if (!validated.ok) {
+        logger.warn({ rawText: llmResponse.text.slice(0, 500), failures: validated.failures }, 'engineer.validate: model response failed validation');
         throw new InvalidEngineerResponseError('model response failed structural validation', {
           failures: validated.failures,
           model: llmResponse.model,

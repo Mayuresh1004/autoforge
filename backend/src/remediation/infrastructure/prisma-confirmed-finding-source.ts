@@ -13,7 +13,7 @@ import type { ConfirmedFindingPayload } from '../domain/models/confirmed-finding
 import type { ConfirmedFindingSource } from '../domain/ports/confirmed-finding-source';
 import {
   REMEDIATION_CONFIRMED_STATUS,
-  REMEDIATION_SUPPORTED_TYPE,
+  REMEDIATION_SUPPORTED_TYPES,
 } from '../domain/ports/confirmed-finding-source';
 
 export class PrismaConfirmedFindingSource implements ConfirmedFindingSource {
@@ -53,7 +53,7 @@ export class PrismaConfirmedFindingSource implements ConfirmedFindingSource {
         ...(where.scanId !== undefined ? { scanId: where.scanId } : {}),
         ...(where.vulnerabilityId !== undefined ? { vulnerabilityId: where.vulnerabilityId } : {}),
         status: REMEDIATION_CONFIRMED_STATUS,
-        vulnerabilityType: REMEDIATION_SUPPORTED_TYPE,
+        vulnerabilityType: { in: Array.from(REMEDIATION_SUPPORTED_TYPES) },
       },
       include: {
         vulnerability: true,
@@ -133,7 +133,9 @@ export function normalizeTargetEndpoint(
 /** Pure mapping (exported for tests): exploit + vulnerability → payload. */
 export function mapConfirmedFinding(row: MappingRow): ConfirmedFindingPayload {
   const vuln = row.vulnerability ?? {};
-  const evidence = row.evidence
+  const evidenceList = row.evidence ?? [];
+  const attemptList = row.attempts ?? [];
+  const evidence = evidenceList
     .map((e) => `${e.indicator}${e.detail ? `: ${e.detail.slice(0, 300)}` : ''}`)
     .slice(0, 5)
     .join('; ');
@@ -143,7 +145,7 @@ export function mapConfirmedFinding(row: MappingRow): ConfirmedFindingPayload {
     vulnerabilityId: row.vulnerabilityId,
     scanId: row.scanId,
     exploitId: row.id,
-    type: 'SQL_INJECTION',
+    type: (row.vulnerabilityType as ConfirmedFindingPayload['type']) ?? 'SQL_INJECTION',
     status: 'CONFIRMED',
     severity: (vuln.severity ?? 'MEDIUM') as ConfirmedFindingPayload['severity'],
     confidence: row.confidence ?? 0,
@@ -158,8 +160,8 @@ export function mapConfirmedFinding(row: MappingRow): ConfirmedFindingPayload {
     parameter: normalized.parameter,
     evidence: evidence.length > 0 ? evidence.slice(0, 1_000) : null,
     reason: row.reason ? row.reason.slice(0, 500) : null,
-    exploitDepth: row.attempts.length,
-    confirmedAt: (row.completedAt ?? row.createdAt).toISOString(),
+    exploitDepth: attemptList.length,
+    confirmedAt: (row.completedAt ?? row.createdAt ?? new Date()).toISOString(),
     exploitTargetId: row.targetId ?? '',
     vulnerabilityStatus: vuln.status ?? null,
   };

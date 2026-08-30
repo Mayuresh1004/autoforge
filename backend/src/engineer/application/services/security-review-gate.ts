@@ -102,13 +102,15 @@ export class SecurityReviewGate {
       ),
     );
 
-    // 2) Supported type class — SQL injection only.
+    // 2) Supported type class.
+    const SUPPORTED_ENGINEER_TYPES = ['SQL_INJECTION', 'SECURITY_MISCONFIGURATION', 'BROKEN_ACCESS_CONTROL'];
+    const isSupported = SUPPORTED_ENGINEER_TYPES.includes(input.finding.type);
     checks.push(
       check(
         'supported-type',
-        'Only SQL_INJECTION is patched',
-        input.finding.type === 'SQL_INJECTION',
-        input.finding.type === 'SQL_INJECTION' ? undefined : `unsupported ${input.finding.type}`,
+        'Supported vulnerability type class',
+        isSupported,
+        isSupported ? undefined : `unsupported ${input.finding.type}`,
       ),
     );
 

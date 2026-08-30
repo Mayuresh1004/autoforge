@@ -13,6 +13,7 @@ export interface StaticVulnInput {
   readonly cve: string | null;
   readonly confidence: number;
   readonly message: string;
+  readonly filePath?: string | null;
 }
 
 export interface SurfaceInput {

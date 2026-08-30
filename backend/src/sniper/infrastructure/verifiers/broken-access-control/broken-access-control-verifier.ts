@@ -79,13 +79,27 @@ export class BrokenAccessControlVerifier implements VulnerabilityVerifier {
       };
     }
 
-    // 2. Baseline Probe (User A / Owner Session)
-    const ownerHeader = target.credentials?.header || 'Authorization: Bearer token_user_A';
+    // 2. Target Endpoint Path Substitution & Baseline Probe (User A / Owner Session)
+    let probeUrl = endpoint;
+    if (probeUrl.includes(':id')) probeUrl = probeUrl.replace(':id', '1');
+    if (probeUrl.includes('{id}')) probeUrl = probeUrl.replace('{id}', '1');
+    if (probeUrl.includes(':userId')) probeUrl = probeUrl.replace(':userId', '1');
+    if (probeUrl.includes('{userId}')) probeUrl = probeUrl.replace('{userId}', '1');
+
+    const hasExplicitAuth = Boolean(
+      target.credentials?.header ||
+      target.credentials?.cookie ||
+      target.attackerCredentials?.header ||
+      target.attackerCredentials?.cookie
+    );
+
+    const ownerHeader = target.credentials?.header || (hasExplicitAuth ? 'Authorization: Bearer token_user_A' : null);
     const ownerCookie = target.credentials?.cookie ? `Cookie: ${target.credentials.cookie}` : '';
 
-    const baselineArgv = ['curl', '-s', '-i', '-X', method, '-H', ownerHeader];
+    const baselineArgv = ['curl', '-s', '-i', '-X', method];
+    if (ownerHeader) baselineArgv.push('-H', ownerHeader);
     if (ownerCookie) baselineArgv.push('-H', ownerCookie);
-    baselineArgv.push(endpoint);
+    baselineArgv.push(probeUrl);
 
     const baseline = await context.runtime.execute({
       argv: baselineArgv,
@@ -93,14 +107,17 @@ export class BrokenAccessControlVerifier implements VulnerabilityVerifier {
       network: 'internal',
     });
 
-    if (baseline.exitCode !== 0 && !baseline.stdout) {
+    const baselineResponse = baseline.stdout ?? '';
+    const baselineSuccess = /HTTP\/\d\.\d (200|204)/i.test(baselineResponse);
+
+    if (baseline.exitCode !== 0 && !baselineResponse) {
       return {
         status: 'INCONCLUSIVE',
         confidence: { score: 0, weighted: true, factors: [] },
         evidence: [],
         verifier: this.id,
         tool: this.tool,
-        toolSummary: summarizeOutput(baseline.stdout, this.summarizeBytes),
+        toolSummary: summarizeOutput(baselineResponse, this.summarizeBytes),
         toolStderr: summarizeOutput(baseline.stderr, this.summarizeBytes),
         reason: 'Failed to reach access control target endpoint during baseline check',
         retryable: true,
@@ -112,11 +129,14 @@ export class BrokenAccessControlVerifier implements VulnerabilityVerifier {
       target.attackerCredentials?.header ||
       (target.credentials?.header?.includes('user_B')
         ? target.credentials.header
-        : 'Authorization: Bearer token_user_B');
+        : hasExplicitAuth
+          ? 'Authorization: Bearer token_user_B'
+          : null);
 
-    const probeArgv = ['curl', '-s', '-i', '-X', method, '-H', attackerHeader];
+    const probeArgv = ['curl', '-s', '-i', '-X', method];
+    if (attackerHeader) probeArgv.push('-H', attackerHeader);
     if (ownerCookie) probeArgv.push('-H', ownerCookie.replace('user_A', 'user_B'));
-    probeArgv.push(endpoint);
+    probeArgv.push(probeUrl);
 
     const probeExec = await context.runtime.execute({
       argv: probeArgv,
@@ -124,19 +144,28 @@ export class BrokenAccessControlVerifier implements VulnerabilityVerifier {
       network: 'internal',
     });
 
-    const probeResponse = probeExec.stdout;
+    const probeResponse = probeExec.stdout ?? '';
 
-    // 4. Verification Criteria Evaluation (RAG Standard):
-    // Condition 1: HTTP 200/204 response returning victim data to unauthorized User B
-    const isSuccessStatus = /HTTP\/\d\.\d (200|204)/i.test(probeResponse);
-    const returnsVictimData =
-      probeResponse.includes('"id"') ||
-      probeResponse.includes('owner') ||
+    // 4. Verification Criteria Evaluation:
+    // Requires successful response from both baseline (User A) and probe (User B)
+    const isSuccessStatus = /HTTP\/\d\.\d (200|204)/i.test(probeResponse) && baselineSuccess;
+
+    // Protection check (401 / 403 / 404 / forbidden)
+    const isProtected =
+      /HTTP\/\d\.\d (403|404|401)/i.test(probeResponse) ||
+      /forbidden|unauthorized|access denied/i.test(probeResponse);
+
+    // Victim / Resource Ownership Evidence Check:
+    // Requires explicit authentication context and victim resource markers (e.g. user_A, owner, doc_user_A)
+    const hasVictimMarker =
       probeResponse.includes('user_A') ||
-      /document_data|profile|private_record/i.test(probeResponse);
+      probeResponse.includes('doc_user_A') ||
+      /owner["']?\s*:\s*["']?user_A/i.test(probeResponse) ||
+      /["']owner["']\s*:\s*["'][^"']+["']/i.test(probeResponse);
 
-    // Condition 2: Access Control Protection (HTTP 403 Forbidden or HTTP 404 Not Found)
-    const isProtected = /HTTP\/\d\.\d (403|404|401)/i.test(probeResponse) || /forbidden|unauthorized|access denied|not found/i.test(probeResponse);
+    const hasPrivatePii = /ssn|credit_card|private_record|passport_number/i.test(probeResponse);
+
+    const returnsVictimData = hasExplicitAuth && (hasVictimMarker || hasPrivatePii);
 
     const isConfirmed = isSuccessStatus && returnsVictimData && !isProtected;
 

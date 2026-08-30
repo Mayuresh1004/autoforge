@@ -16,7 +16,7 @@ import {
   EngineerSourceError,
   UnsupportedVulnerabilityError,
 } from '../../domain/errors/engineer.errors';
-import { isSupportedConfirmedFinding, selectConfirmedSqlInjection } from './engineer-selection';
+import { isSupportedConfirmedFinding, selectConfirmedCandidate } from './engineer-selection';
 import { resolveWindow } from './source-window';
 import { buildRagQuery, ragDocumentsToAdvisory } from './rag-query-builder';
 import { SourceResolver, type SourceResolutionResult } from './source-resolver';
@@ -49,9 +49,9 @@ export async function resolveFinding(
     return found;
   }
   const all = await deps.findings.listConfirmed(input.scanId);
-  const selected = selectConfirmedSqlInjection(all);
+  const selected = selectConfirmedCandidate(all);
   if (!selected) {
-    throw new ConfirmedFindingNotFoundError(`scan ${input.scanId} has no CONFIRMED SQL_INJECTION finding`);
+    throw new ConfirmedFindingNotFoundError(`scan ${input.scanId} has no CONFIRMED supported finding`);
   }
   return selected;
 }
@@ -143,9 +143,10 @@ export async function prepareEngineerRun(
 
 /** Parse a JSON object from model text (tolerating code fences). */
 export function tryParseJsonObject(text: string): unknown {
+  if (!text) return null;
   const trimmed = text.trim();
 
-  // 1. Try direct parse
+  // 1. Direct parse
   try {
     return JSON.parse(trimmed);
   } catch {}
@@ -164,11 +165,57 @@ export function tryParseJsonObject(text: string): unknown {
   // 3. Extract from first '{' to last '}'
   const firstBrace = trimmed.indexOf('{');
   const lastBrace = trimmed.lastIndexOf('}');
-  if (firstBrace !== -1 && lastBrace > firstBrace) {
-    try {
-      return JSON.parse(trimmed.slice(firstBrace, lastBrace + 1));
-    } catch {}
-  }
+  if (firstBrace === -1 || lastBrace <= firstBrace) return null;
+
+  const candidate = trimmed.slice(firstBrace, lastBrace + 1);
+  try {
+    return JSON.parse(candidate);
+  } catch {}
+
+  // 4. Character-by-character scan to escape unescaped control characters inside JSON strings
+  try {
+    let inString = false;
+    let escaped = false;
+    let result = '';
+
+    for (let i = 0; i < candidate.length; i++) {
+      const char = candidate[i];
+
+      if (escaped) {
+        result += char;
+        escaped = false;
+        continue;
+      }
+
+      if (char === '\\') {
+        result += char;
+        escaped = true;
+        continue;
+      }
+
+      if (char === '"') {
+        inString = !inString;
+        result += char;
+        continue;
+      }
+
+      if (inString) {
+        if (char === '\n') {
+          result += '\\n';
+        } else if (char === '\r') {
+          result += '\\r';
+        } else if (char === '\t') {
+          result += '\\t';
+        } else {
+          result += char;
+        }
+      } else {
+        result += char;
+      }
+    }
+
+    return JSON.parse(result);
+  } catch {}
 
   return null;
 }

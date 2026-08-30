@@ -90,7 +90,8 @@ export class DefaultCriticService implements CriticService {
 
     const context = await this.deps.findings.resolveForPatch(input.patchId);
     if (!context) throw new UnsupportedVulnerabilityError(input.patchId, 'n/a', 'n/a');
-    if (context.finding.status !== 'CONFIRMED' || context.finding.type !== 'SQL_INJECTION') {
+    const SUPPORTED_CRITIC_TYPES = ['SQL_INJECTION', 'SECURITY_MISCONFIGURATION', 'BROKEN_ACCESS_CONTROL'];
+    if (context.finding.status !== 'CONFIRMED' || !SUPPORTED_CRITIC_TYPES.includes(context.finding.type)) {
       throw new UnsupportedVulnerabilityError(input.patchId, context.finding.status, context.finding.type);
     }
     if (!patch.filePath || !patch.diffContent) {

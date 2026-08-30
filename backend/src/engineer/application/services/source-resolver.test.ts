@@ -91,4 +91,97 @@ describe('SourceResolver', () => {
     const result = await resolver.resolve(finding, null, null, undefined, fileContents);
     expect(result).toBeNull();
   });
+
+  it('resolves GET /api/debug/config to server/routes/misconfig.js when source contains /debug/config', async () => {
+    const finding = confirmedFinding({
+      vulnerabilityId: 'misconfig-1',
+      filePath: null,
+      endpoint: 'http://172.23.0.2:3000/api/debug/config',
+      method: 'GET',
+      type: 'SECURITY_MISCONFIGURATION',
+    });
+
+    const fileContents = {
+      'server/routes/misconfig.js': `
+        const router = require('express').Router();
+        router.get('/debug/config', (req, res) => {
+          res.json({ env: process.env, debug: true });
+        });
+        module.exports = router;
+      `,
+      'client/src/pages/Misconfig.jsx': `
+        import React from 'react';
+        export function Misconfig() {
+          fetch('/api/debug/config').then(r => r.json());
+          return <div>Debug Config Page</div>;
+        }
+      `,
+    };
+
+    const result = await resolver.resolve(finding, null, null, undefined, fileContents);
+    expect(result).not.toBeNull();
+    expect(result?.filePath).toBe('server/routes/misconfig.js');
+  });
+
+  it('ensures multi-segment /debug/config route in misconfig.js cleanly beats generic /config route in auth.js', async () => {
+    const finding = confirmedFinding({
+      vulnerabilityId: 'misconfig-vs-auth',
+      filePath: null,
+      endpoint: 'http://172.23.0.2:3000/api/debug/config',
+      method: 'GET',
+      type: 'SECURITY_MISCONFIGURATION',
+    });
+
+    const fileContents = {
+      'server/routes/misconfig.js': `
+        router.get('/debug/config', (req, res) => {
+          res.json({ env: process.env });
+        });
+      `,
+      'server/routes/auth.js': `
+        router.get('/config', (req, res) => {
+          res.json({ auth: true });
+        });
+      `,
+    };
+
+    const result = await resolver.resolve(finding, null, null, undefined, fileContents);
+    expect(result).not.toBeNull();
+    expect(result?.filePath).toBe('server/routes/misconfig.js');
+  });
+
+  it('prefers backend route when backend and frontend candidates have otherwise equal scores', async () => {
+    const finding = confirmedFinding({
+      vulnerabilityId: 'equal-score',
+      filePath: null,
+      endpoint: 'http://172.23.0.2:3000/api/users',
+      method: 'GET',
+    });
+
+    const fileContents = {
+      'routes/users.js': `router.get('/api/users', (req, res) => res.json([]));`,
+      'client/src/pages/Users.jsx': `fetch('/api/users');`,
+    };
+
+    const result = await resolver.resolve(finding, null, null, undefined, fileContents);
+    expect(result).not.toBeNull();
+    expect(result?.filePath).toBe('routes/users.js');
+  });
+
+  it('maintains ambiguity protection for two genuinely ambiguous backend candidate routes containing same /debug/config route', async () => {
+    const finding = confirmedFinding({
+      vulnerabilityId: 'ambiguous-backend',
+      filePath: null,
+      endpoint: 'http://172.23.0.2:3000/api/debug/config',
+      method: 'GET',
+    });
+
+    const fileContents = {
+      'server/routes/misconfigA.js': `router.get('/debug/config', (req, res) => res.json({}));`,
+      'server/routes/misconfigB.js': `router.get('/debug/config', (req, res) => res.json({}));`,
+    };
+
+    const result = await resolver.resolve(finding, null, null, undefined, fileContents);
+    expect(result).toBeNull();
+  });
 });

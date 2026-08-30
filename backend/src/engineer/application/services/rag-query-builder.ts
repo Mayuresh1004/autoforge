@@ -34,18 +34,19 @@ export function buildRagQuery(
   options?: { readonly topK?: number },
 ): RagQuery {
   const language = languageFromPath(finding.filePath);
-  const hintParts = [language, 'sql injection', 'remediation'].filter(Boolean);
+  const typeLabel = (finding.type ?? 'SQL_INJECTION').toLowerCase().replace(/_/g, ' ');
+  const hintParts = [language, typeLabel, 'remediation'].filter(Boolean);
   const subject = (finding.message ?? '').slice(0, 300);
   const file = finding.filePath ?? '';
 
   const parts = [...hintParts, subject, file ? `in ${file}` : ''].filter(Boolean);
 
   const filters: RagFilters = KNOWLEDGE_SEVERITIES.has(finding.severity)
-    ? { vulnerabilityType: 'SQL_INJECTION', severity: finding.severity as RagFilters['severity'] }
-    : { vulnerabilityType: 'SQL_INJECTION' };
+    ? { vulnerabilityType: (finding.type as RagFilters['vulnerabilityType']) ?? 'SQL_INJECTION', severity: finding.severity as RagFilters['severity'] }
+    : { vulnerabilityType: (finding.type as RagFilters['vulnerabilityType']) ?? 'SQL_INJECTION' };
 
   return {
-    query: parts.join(' ').slice(0, 1_000) || 'sql injection remediation',
+    query: parts.join(' ').slice(0, 1_000) || `${typeLabel} remediation`,
     topK: options?.topK ?? 4,
     filters,
   };

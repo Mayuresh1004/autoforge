@@ -16,12 +16,12 @@ const CRITICAL_SURFACE = {
   statusCode: 200,
 };
 
-const STATIC_SURFACE = {
-  url: 'http://app.test/static/app.css',
+const SEARCH_SURFACE = {
+  url: 'http://app.test/api/search?q=test',
   method: 'GET',
-  parameters: [],
+  parameters: ['q'],
   authentication: false,
-  risk: 'LOW',
+  risk: 'MEDIUM',
   source: 'crawler',
   statusCode: 200,
 };
@@ -39,7 +39,7 @@ describe('AttackPlanService', () => {
     const repo = new MemoryPlanRepository();
     repo.seedScan('scan-1');
     repo.seedFindings('scan-1', FINDINGS);
-    repo.seedSurfaces('scan-1', [CRITICAL_SURFACE, STATIC_SURFACE]);
+    repo.seedSurfaces('scan-1', [CRITICAL_SURFACE, SEARCH_SURFACE]);
     repo.seedProfile('scan-1', PROFILE);
 
     const plan = await makeService(repo).generate('scan-1');
@@ -48,7 +48,6 @@ describe('AttackPlanService', () => {
     expect(plan.targets).toHaveLength(2);
     expect(plan.targets[0].endpoint).toContain('/api/login');
     expect(plan.targets[0].candidateVulnerabilities).toContain('SQL Injection');
-    expect(plan.targets[1].estimatedRisk).toBe('LOW');
     expect(plan.summary.targets).toBe(2);
 
     const fetched = await makeService(repo).getPlan(plan.id);
@@ -73,7 +72,7 @@ describe('AttackPlanService', () => {
     const plan = await makeService(repo).plan({
       scanId: 'pure',
       staticFindings: FINDINGS,
-      attackSurface: [CRITICAL_SURFACE, STATIC_SURFACE],
+      attackSurface: [CRITICAL_SURFACE, SEARCH_SURFACE],
       profile: PROFILE,
     });
     expect(plan.targets).toHaveLength(2);

@@ -77,6 +77,66 @@ describe('BrokenAccessControlVerifier', () => {
     expect(outcome.evidence[0].indicator).toBe('access_control:protected_with_403_or_404');
   });
 
+  it('CASE 1: Public endpoint returns HTTP 200 with {"id":1,"author":"admin","body":"Hello"} -> NOT_CONFIRMED', async () => {
+    const runtime = new FakeToolRuntime();
+    runtime.script(execResult({ stdout: 'HTTP/1.1 200 OK\r\n\r\n[{"id":1,"author":"admin","body":"Hello"}]' }));
+    runtime.script(execResult({ stdout: 'HTTP/1.1 200 OK\r\n\r\n[{"id":1,"author":"admin","body":"Hello"}]' }));
+
+    const publicTarget: VerificationTarget = {
+      targetId: 't-pub-1',
+      type: BROKEN_ACCESS_CONTROL,
+      endpoint: 'http://app:8080/api/comments',
+      method: 'GET',
+      requiresAuthentication: false,
+    };
+    const publicCtx: VerificationContext = {
+      scanId: 'scan-pub-1',
+      sandboxId: 'sbx-pub-1',
+      baseUrl: 'http://app:8080',
+      target: publicTarget,
+      runtime,
+      timeoutMs: 10_000,
+    };
+
+    const v = new BrokenAccessControlVerifier();
+    const outcome = await v.verify(publicTarget, publicCtx);
+
+    expect(outcome.status).toBe('NOT_CONFIRMED');
+  });
+
+  it('CASE 2: Authenticated User A accesses resource A. User B accesses resource A. Response identifies victim -> CONFIRMED', async () => {
+    const runtime = new FakeToolRuntime();
+    runtime.script(execResult({ stdout: 'HTTP/1.1 200 OK\r\n\r\n{"id":1,"name":"Alice","owner":"user_A","email":"alice@example.com"}' }));
+    runtime.script(execResult({ stdout: 'HTTP/1.1 200 OK\r\n\r\n{"id":1,"name":"Alice","owner":"user_A","email":"alice@example.com"}' }));
+
+    const v = new BrokenAccessControlVerifier();
+    const outcome = await v.verify(target(), ctx(runtime));
+
+    expect(outcome.status).toBe('CONFIRMED');
+  });
+
+  it('CASE 3: User B receives HTTP 403 Forbidden -> NOT_CONFIRMED', async () => {
+    const runtime = new FakeToolRuntime();
+    runtime.script(execResult({ stdout: 'HTTP/1.1 200 OK\r\n\r\n{"id":1,"owner":"user_A"}' }));
+    runtime.script(execResult({ stdout: 'HTTP/1.1 403 Forbidden\r\n\r\n{"error":"Forbidden"}' }));
+
+    const v = new BrokenAccessControlVerifier();
+    const outcome = await v.verify(target(), ctx(runtime));
+
+    expect(outcome.status).toBe('NOT_CONFIRMED');
+  });
+
+  it('CASE 4: Both users receive public resource with no ownership evidence -> NOT_CONFIRMED', async () => {
+    const runtime = new FakeToolRuntime();
+    runtime.script(execResult({ stdout: 'HTTP/1.1 200 OK\r\n\r\n[{"id":1,"name":"Widget"}]' }));
+    runtime.script(execResult({ stdout: 'HTTP/1.1 200 OK\r\n\r\n[{"id":1,"name":"Widget"}]' }));
+
+    const v = new BrokenAccessControlVerifier();
+    const outcome = await v.verify(target(), ctx(runtime));
+
+    expect(outcome.status).toBe('NOT_CONFIRMED');
+  });
+
   it('returns NOT_TESTED if target requires authentication but credentials are missing', async () => {
     const runtime = new FakeToolRuntime();
     const unauthTarget: VerificationTarget = {

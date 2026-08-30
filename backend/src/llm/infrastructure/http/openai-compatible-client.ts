@@ -156,7 +156,11 @@ export class OpenAICompatibleClient implements LLMProvider {
       if (attempt >= this.o.maxRetries || !(error instanceof LLMError) || !this.retryable(error)) {
         throw error;
       }
-      const waitMs = Math.min(RETRY_BACKOFF_BASE_MS * (attempt + 1), MAX_BACKOFF_MS);
+      const isRateLimit = error.code === 'RATE_LIMIT';
+      const baseWait = isRateLimit ? 25_000 : RETRY_BACKOFF_BASE_MS;
+      const waitMs = isRateLimit
+        ? Math.min(baseWait * (attempt + 1), 60_000)
+        : Math.min(baseWait * (attempt + 1), MAX_BACKOFF_MS);
       logger.debug(
         { llm: { provider: this.o.provider, model, attempt: attempt + 1, waitMs, code: error.code } },
         'llm_retry',

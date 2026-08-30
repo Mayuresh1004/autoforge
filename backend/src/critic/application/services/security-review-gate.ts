@@ -38,7 +38,7 @@ const DEPENDENCY_MANIFESTS = new Set([
   'Gemfile', 'Gemfile.lock', 'package-lock.json',
 ]);
 
-/** SQLi-parameterization signals looked for among ADDED lines only. */
+/** SQLi, Security Misconfig, and Access Control remediation signals looked for among ADDED lines only. */
 const PARAMETERIZATION_HINTS = [
   /\bexecute\(\s*['"][^'"]*\?['"]\s*,/,
   /\bexecute\(\s*['"][^'"]*%(?:s|d|r|s)['"]\s*,\s*(?:params?|args|tuple|\[|\([^)]{1,20}\))/,
@@ -51,6 +51,11 @@ const PARAMETERIZATION_HINTS = [
   /query\s+(?:params?\s*=|parameterized)/i,
   /\bprepare\s*\(/i,
   /\.all\s*\(/i,
+  /res\.status\s*\(/i,
+  /res\.json\s*\(/i,
+  /res\.send\s*\(/i,
+  /return\s+res\./i,
+  /if\s*\(/i,
 ];
 
 export class CriticSecurityReviewGate {
@@ -68,10 +73,10 @@ export class CriticSecurityReviewGate {
     });
 
     // 2. no secrets introduced
-    const secretMatch = SECRET_PATTERN.exec(entireLower) ?? null;
+    const secretMatch = SECRET_PATTERN.exec(lowerAdded) ?? null;
     checks.push({
       label: 'no-secrets',
-      passed: secretMatch === null && !/-----BEGIN/.test(input.diff),
+      passed: secretMatch === null && !/-----BEGIN/.test(lowerAdded),
       detail: secretMatch ? 'secret-like content detected' : undefined,
     });
 

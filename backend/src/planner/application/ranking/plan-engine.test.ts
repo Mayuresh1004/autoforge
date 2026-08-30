@@ -73,8 +73,21 @@ describe('PlanEngine', () => {
         surface({ url: 'http://a.test/health', risk: 'LOW', authentication: false, parameters: [] }),
       ]),
     );
-    expect(plan.summary.targets).toBe(3);
-    expect(plan.summary.critical + plan.summary.high + plan.summary.medium + plan.summary.low).toBe(3);
+    expect(plan.summary.targets).toBe(2);
+    expect(plan.summary.critical + plan.summary.high + plan.summary.medium + plan.summary.low).toBe(2);
+  });
+
+  it('filters out ungrounded discovered endpoints without candidate vulnerabilities', () => {
+    const plan = engine.build(
+      'plan-grounding',
+      req([
+        surface({ url: 'http://a.test/health', risk: 'LOW', authentication: false, parameters: [] }),
+        surface({ url: 'http://a.test/css/style.css', risk: 'LOW', authentication: false, parameters: [] }),
+        surface({ url: 'http://a.test/api/search?q=1', method: 'GET', parameters: ['q'] }),
+      ]),
+    );
+    expect(plan.targets).toHaveLength(1);
+    expect(plan.targets[0].endpoint).toContain('/api/search');
   });
 
   it('empty surface yields an empty (valid) plan', () => {
