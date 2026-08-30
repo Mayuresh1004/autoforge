@@ -24,9 +24,12 @@ const SEVERITY_RANK: Readonly<Record<string, number>> = {
   INFO: 1,
 };
 
-/** Only ever select a CONFIRMED SQL injection finding. */
+/** Only ever select a CONFIRMED supported vulnerability finding. */
 export function isSupportedConfirmedFinding(f: ConfirmedVulnerabilityFinding): boolean {
-  return f.status === 'CONFIRMED' && f.type === 'SQL_INJECTION';
+  return (
+    f.status === 'CONFIRMED' &&
+    (f.type === 'SQL_INJECTION' || f.type === 'SECURITY_MISCONFIGURATION' || f.type === 'BROKEN_ACCESS_CONTROL')
+  );
 }
 
 export function compareCandidates(a: ConfirmedVulnerabilityFinding, b: ConfirmedVulnerabilityFinding): number {
@@ -54,3 +57,5 @@ export function selectConfirmedSqlInjection(
   const sorted = [...supported].sort(compareCandidates);
   return sorted[0];
 }
+
+export const selectConfirmedCandidate = selectConfirmedSqlInjection;

@@ -596,10 +596,27 @@ export function useScanStore(initialScanId: string | null = null) {
 
               setFindingsById((prev) => {
                 const key = Object.keys(prev).find(
-                  (k) => k === targetFindingId || prev[k].finding.id === targetFindingId || prev[k].target?.targetId === targetFindingId
+                  (k) => k === targetFindingId || prev[k].finding.id === targetFindingId || prev[k].target?.targetId === targetFindingId || (event.metadata?.patchId && prev[k].patch?.patchId === event.metadata.patchId)
                 ) || targetFindingId;
                 const record = prev[key];
-                if (!record) return prev;
+                if (!record) {
+                  const fallbackFinding: FindingModel = {
+                    id: key,
+                    findingId: key,
+                    title: `Defensive Fix for ${rawPath}`,
+                    severity: 'HIGH',
+                    status: 'PATCHED',
+                    isConfirmed: true,
+                  };
+                  return {
+                    ...prev,
+                    [key]: {
+                      finding: fallbackFinding,
+                      patch: patchMeta,
+                      criticStages: createInitialCriticStages(),
+                    },
+                  };
+                }
                 return {
                   ...prev,
                   [key]: {
@@ -699,20 +716,25 @@ export function useScanStore(initialScanId: string | null = null) {
         }
 
         case 'CRITIC_APPROVED':
-          if (targetFindingId) {
+          if (targetFindingId || event.metadata?.patchId) {
+            const pId = event.metadata?.patchId as string | undefined;
             setFindingsById((prev) => {
               const key = Object.keys(prev).find(
-                (k) => k === targetFindingId || prev[k].finding.id === targetFindingId || prev[k].target?.targetId === targetFindingId
-              ) || targetFindingId;
+                (k) => (targetFindingId && (k === targetFindingId || prev[k].finding.id === targetFindingId || prev[k].target?.targetId === targetFindingId)) || (pId && prev[k].patch?.patchId === pId)
+              ) || targetFindingId || pId!;
               const record = prev[key];
               if (!record) return prev;
               const nextStages = record.criticStages.map((s) =>
                 s.key === 'approval' ? { ...s, status: 'PASSED' as const, message: event.message } : s
               );
+              const updatedPatch: PatchModel | undefined = record.patch
+                ? { ...record.patch, status: 'APPROVED' }
+                : undefined;
               return {
                 ...prev,
                 [key]: {
                   ...record,
+                  patch: updatedPatch,
                   criticStages: nextStages,
                   finding: { ...record.finding, status: 'CRITIC_VERIFIED' },
                 },
@@ -756,10 +778,43 @@ export function useScanStore(initialScanId: string | null = null) {
 
           setFindingsById((prev) => {
             const key = Object.keys(prev).find(
-              (k) => k === targetFindingId || prev[k].patch?.patchId === pId || prev[k].finding.id === targetFindingId || prev[k].target?.targetId === targetFindingId
-            ) || targetFindingId;
+              (k) => (targetFindingId && (k === targetFindingId || prev[k].finding.id === targetFindingId || prev[k].target?.targetId === targetFindingId)) || (pId && prev[k].patch?.patchId === pId)
+            ) || targetFindingId || pId!;
             const record = prev[key];
-            if (!record) return prev;
+
+            if (!record) {
+              const fallbackFinding: FindingModel = {
+                id: key,
+                findingId: key,
+                title: `Delivered Patch ${pId ?? key}`,
+                severity: 'HIGH',
+                status: 'CRITIC_VERIFIED',
+                isConfirmed: true,
+              };
+              const newPatch: PatchModel = {
+                patchId: pId || `patch_${key}`,
+                findingId: key,
+                scanId: event.scanId,
+                filePath: (event.metadata?.filePath as string) || '',
+                diffContent: (event.metadata?.diffContent as string) || '',
+                status: 'APPROVED',
+                prNumber: prNum ?? null,
+                prUrl: prUrl ?? null,
+                prBranch: prBranch ?? null,
+                prCommitSha: prCommitSha ?? null,
+                prStatus: prStatus ?? 'OPEN',
+                prDeliveredAt: event.timestamp,
+                prError: null,
+              };
+              return {
+                ...prev,
+                [key]: {
+                  finding: fallbackFinding,
+                  patch: newPatch,
+                  criticStages: createInitialCriticStages().map((s) => ({ ...s, status: 'PASSED' })),
+                },
+              };
+            }
 
             const existingPatch = record.patch ?? {
               patchId: pId || `patch_${key}`,
@@ -776,6 +831,7 @@ export function useScanStore(initialScanId: string | null = null) {
                 ...record,
                 patch: {
                   ...existingPatch,
+                  status: 'APPROVED',
                   prNumber: prNum ?? existingPatch.prNumber,
                   prUrl: prUrl ?? existingPatch.prUrl,
                   prBranch: prBranch ?? existingPatch.prBranch,
@@ -784,6 +840,7 @@ export function useScanStore(initialScanId: string | null = null) {
                   prDeliveredAt: event.timestamp,
                   prError: null,
                 },
+                finding: { ...record.finding, status: 'CRITIC_VERIFIED' },
               },
             };
           });
@@ -904,17 +961,22 @@ export function useScanStore(initialScanId: string | null = null) {
                   }
                 : undefined;
 
+              const isApproved = restPatch?.status === 'APPROVED' || restPatch?.status === 'CRITIC_VERIFIED' || Boolean(restPatch?.prUrl || restPatch?.prNumber);
+              const hydratedStages = isApproved
+                ? createInitialCriticStages().map((s) => ({ ...s, status: 'PASSED' as const }))
+                : createInitialCriticStages();
+
               if (!map[fId]) {
                 map[fId] = {
                   finding: {
                     ...f,
                     id: fId,
                     findingId: fId,
-                    status: f.status ?? 'DISCOVERED',
+                    status: f.status ?? (isApproved ? 'CRITIC_VERIFIED' : 'DISCOVERED'),
                     isConfirmed,
                   },
                   patch: restPatch,
-                  criticStages: createInitialCriticStages(),
+                  criticStages: hydratedStages,
                 };
               } else {
                 const existingPatch = map[fId].patch;
@@ -940,10 +1002,11 @@ export function useScanStore(initialScanId: string | null = null) {
                     ...f,
                     id: fId,
                     findingId: fId,
-                    status: f.status ?? map[fId].finding.status,
+                    status: isApproved ? 'CRITIC_VERIFIED' : (f.status ?? map[fId].finding.status),
                     isConfirmed: isConfirmed || map[fId].finding.isConfirmed,
                   },
                   patch: mergedPatch,
+                  criticStages: isApproved ? hydratedStages : map[fId].criticStages,
                 };
               }
             });

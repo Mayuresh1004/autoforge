@@ -69,20 +69,39 @@ export class PrismaSniperRepository implements SniperRepository {
     let vulnerabilityId = payload.vulnerabilityId ?? null;
 
     if (payload.status === 'CONFIRMED') {
+      // Disambiguate vulnerabilityId: ensure vulnerabilityId is NOT shared across different endpoints
       if (vulnerabilityId) {
-        await prisma.vulnerability.update({
+        const otherExploit = await prisma.exploit.findFirst({
+          where: {
+            scanId: payload.scanId,
+            vulnerabilityId,
+            endpoint: { not: payload.endpoint },
+          },
+        });
+        if (otherExploit) {
+          vulnerabilityId = null;
+        }
+      }
+
+      if (vulnerabilityId) {
+        const updated = await prisma.vulnerability.update({
           where: { id: vulnerabilityId },
           data: { status: 'CONFIRMED' },
-        }).catch(() => undefined);
-      } else {
+        }).catch(() => null);
+        if (!updated) {
+          vulnerabilityId = null;
+        }
+      }
+      if (!vulnerabilityId) {
+        const typeConditions: { vulnType: string }[] = [{ vulnType: payload.type }];
+        if (payload.type === 'SQL_INJECTION') {
+          typeConditions.push({ vulnType: 'sqli' }, { vulnType: 'SQL_INJECTION' });
+        }
         const existingVuln = await prisma.vulnerability.findFirst({
           where: {
             scanId: payload.scanId,
-            OR: [
-              { vulnType: payload.type },
-              { vulnType: 'sqli' },
-              { vulnType: 'SQL_INJECTION' },
-            ],
+            OR: typeConditions,
+            filePath: payload.endpoint,
           },
         });
         if (existingVuln) {
@@ -95,12 +114,13 @@ export class PrismaSniperRepository implements SniperRepository {
           const createdVuln = await prisma.vulnerability.create({
             data: {
               scanId: payload.scanId,
-              title: `SQL Injection at ${payload.endpoint}`,
+              title: `${payload.type} at ${payload.endpoint}`,
               severity: 'HIGH',
               status: 'CONFIRMED',
               scanner: 'sniper',
               vulnType: payload.type,
-              message: payload.reason ?? 'SQL injection confirmed by sqlmap',
+              filePath: payload.endpoint,
+              message: payload.reason ?? `${payload.type} confirmed by verifier`,
               evidence: JSON.stringify({
                 endpoint: payload.endpoint,
                 method: payload.method,

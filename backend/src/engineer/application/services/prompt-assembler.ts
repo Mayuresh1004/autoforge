@@ -67,11 +67,18 @@ export async function assembleEngineerRequest(
 
   const f = input.finding;
 
+  const typeLabel =
+    f.type === 'SECURITY_MISCONFIGURATION'
+      ? 'security misconfiguration'
+      : f.type === 'BROKEN_ACCESS_CONTROL'
+        ? 'broken access control'
+        : 'SQL injection';
+
   const sections: EngineerPromptAssembly['sections'] = [
     {
       key: 'task',
       title: '1. Task',
-      body: 'Generate a remediation patch for the CONFIRMED SQL injection vulnerability below. Respond with JSON only, matching the output schema exactly.',
+      body: `Generate a remediation patch for the CONFIRMED ${typeLabel} vulnerability below. Respond with JSON only, matching the output schema exactly.`,
     },
     {
       key: 'vulnerability',
@@ -136,7 +143,7 @@ export async function assembleEngineerRequest(
       key: 'constraints',
       title: '9. Patch constraints',
       body: [
-        '- Fix ONLY the confirmed SQL injection vulnerability.',
+        `- Fix ONLY the confirmed ${typeLabel} vulnerability.`,
         '- Minimize unrelated changes; preserve existing behavior.',
         '- Do not invent dependencies or APIs. No new packages unless strictly required.',
         '- Do not change unrelated files.',

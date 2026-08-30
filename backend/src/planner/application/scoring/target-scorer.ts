@@ -69,6 +69,7 @@ export class TargetScorer {
     add('user-input query parameter', W.queryParam, features.hasQuery);
     add('user-supplied parameters', W.hasParam, features.hasParameters && !features.hasQuery);
     add('db-interacting surface', W.dbRelated, features.isDbRelated);
+    add('debug/config exposure', 40, /debug|config|env/i.test(features.url));
 
     // 3. Static findings.
     const sev = staticSummary.maxSeverity;
@@ -109,7 +110,30 @@ export class TargetScorer {
     const out: string[] = [];
     const inputDriven = features.hasParameters || features.hasQuery;
 
-    // 1. Static scanner findings correlation
+    // 1. Surface heuristic indicators (high-confidence endpoint shape signals)
+    if (/debug|config|env|actuator|phpinfo|server-info/i.test(features.url)) {
+      out.push('Security Misconfiguration');
+    }
+    if (features.isUpload) {
+      out.push('Insecure File Upload');
+    }
+    if (features.isDbRelated && inputDriven) {
+      out.push('SQL Injection');
+    }
+    if (features.isSearch || (features.hasQuery && features.isApi)) {
+      out.push('Cross-Site Scripting');
+    }
+    if (
+      (features.authentication || features.isApi || features.isAdmin) &&
+      (features.hasParameters || features.url.includes(':') || features.url.includes('{') || /\/(users?|profile|account|admin)\/\d+/i.test(features.url))
+    ) {
+      out.push('Broken Access Control');
+    }
+    if (features.hasQuery && /url|target|redirect|fetch/i.test(features.url)) {
+      out.push('Server-Side Request Forgery');
+    }
+
+    // 2. Static scanner findings correlation (broad category matches)
     for (const cat of summary.categories) {
       if (cat === 'SQL Injection' && (inputDriven || features.isDbRelated || features.isApi)) {
         out.push('SQL Injection');
@@ -126,23 +150,6 @@ export class TargetScorer {
       if ((cat === 'Authentication Bypass' || cat === 'Broken Access Control') && (features.authentication || features.isLogin || features.isApi)) {
         out.push('Broken Access Control');
       }
-    }
-
-    // 2. Surface heuristic indicators
-    if (features.isUpload) {
-      out.push('Insecure File Upload');
-    }
-    if (features.isDbRelated && inputDriven) {
-      out.push('SQL Injection');
-    }
-    if (features.isSearch || (features.hasQuery && features.isApi)) {
-      out.push('Cross-Site Scripting');
-    }
-    if (features.authentication && (features.hasParameters || features.url.includes(':') || features.url.includes('{'))) {
-      out.push('Broken Access Control');
-    }
-    if (features.hasQuery && /url|target|redirect|fetch/i.test(features.url)) {
-      out.push('Server-Side Request Forgery');
     }
 
     return [...new Set(out)].slice(0, 4);

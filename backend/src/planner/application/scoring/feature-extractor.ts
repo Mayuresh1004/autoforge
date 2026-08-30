@@ -115,6 +115,7 @@ export function categorizeFinding(f: StaticVulnInput): readonly string[] {
   if (/(upload|file upload)/i.test(hay)) out.push('Insecure File Upload');
   if (/(traversal|path traversal|\.\.\/)/i.test(hay)) out.push('Path Traversal');
   if (/(deserial)/i.test(hay)) out.push('Insecure Deserialization');
+  if (/(misconfig|security.?misconfig|debug|config.?expos|information.?disclos|cwe-16\b|cwe-200\b)/i.test(hay)) out.push('Security Misconfiguration');
   return [...new Set(out)];
 }
 

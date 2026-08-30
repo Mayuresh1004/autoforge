@@ -18,12 +18,21 @@ export class PlanEngine {
 
     const validSurfaces = request.attackSurface.filter((surface) => !isExternalDocUrl(surface.url));
 
-    const targets: PlannedTarget[] = validSurfaces.map((surface) => {
+    const rawTargets: PlannedTarget[] = validSurfaces.map((surface) => {
       const features = extractFeatures(surface, request.profile);
       const scored = this.scorer.score(features, staticSummary);
       const targetId = randomUUID();
 
       const matchingFinding = request.staticFindings.find((f) => {
+        if (f.filePath) {
+          const normFile = f.filePath.toLowerCase().replace(/\\/g, '/');
+          let normPath = surface.url.toLowerCase();
+          try {
+            normPath = new URL(surface.url.startsWith('http') ? surface.url : `http://localhost${surface.url}`).pathname.toLowerCase();
+          } catch {}
+          const pathMatch = normPath.includes(normFile) || normFile.includes(normPath);
+          if (!pathMatch) return false;
+        }
         const categories = categorizeFinding(f);
         return scored.candidateVulnerabilities.some(
           (c) =>
@@ -49,6 +58,16 @@ export class PlanEngine {
         breakdown: scored.breakdown,
         verificationHints,
       };
+    });
+
+    // Grounding filter: Retain targets with candidate vulnerabilities or static finding correlation; exclude ungrounded static assets.
+    const targets = rawTargets.filter((t, i) => {
+      const surface = validSurfaces[i];
+      const features = extractFeatures(surface, request.profile);
+      if (features.isStatic && !features.hasParameters && !t.vulnerabilityId) {
+        return false;
+      }
+      return t.candidateVulnerabilities.length > 0 || Boolean(t.vulnerabilityId);
     });
 
     targets.sort(compareTargets);

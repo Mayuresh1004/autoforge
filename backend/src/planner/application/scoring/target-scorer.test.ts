@@ -92,4 +92,67 @@ describe('TargetScorer', () => {
     expect(categorizeFinding(finding({ cwe: 'CWE-79', type: 'XSS' }))).toContain('Cross-Site Scripting');
     expect(categorizeFinding(finding({ message: 'SSRF via user url' }))).toContain('Server-Side Request Forgery');
   });
+
+  it('candidates() prioritizes Security Misconfiguration as FIRST candidate for GET /api/debug/config', () => {
+    const features = extractFeatures(
+      surface({ url: 'http://app.test/api/debug/config', method: 'GET', parameters: [], authentication: false, risk: 'MEDIUM' }),
+      profile,
+    );
+    // Include 4 generic static findings to test displacement protection
+    const summary = summarizeFindings([
+      finding({ message: 'SQL injection vulnerability', cwe: 'CWE-89' }),
+      finding({ message: 'Broken access control bypass', cwe: 'CWE-284' }),
+      finding({ message: 'Server-side request forgery', cwe: 'CWE-918' }),
+      finding({ message: 'Insecure file upload', cwe: 'CWE-434' }),
+    ]);
+    const scored = scorer.score(features, summary);
+    expect(scored.candidateVulnerabilities[0]).toBe('Security Misconfiguration');
+  });
+
+  it('candidates() prioritizes Security Misconfiguration as FIRST candidate for GET /api/actuator', () => {
+    const features = extractFeatures(
+      surface({ url: 'http://app.test/api/actuator', method: 'GET', parameters: [], authentication: false, risk: 'LOW' }),
+      profile,
+    );
+    const summary = summarizeFindings([
+      finding({ message: 'SQL injection vulnerability', cwe: 'CWE-89' }),
+      finding({ message: 'Broken access control bypass', cwe: 'CWE-284' }),
+    ]);
+    const scored = scorer.score(features, summary);
+    expect(scored.candidateVulnerabilities[0]).toBe('Security Misconfiguration');
+  });
+
+  it('candidates() retains SQL Injection as a valid candidate for /api/products/search?q=', () => {
+    const features = extractFeatures(
+      surface({ url: 'http://app.test/api/products/search?q=test', method: 'GET', parameters: ['q'], authentication: false, risk: 'HIGH' }),
+      profile,
+    );
+    const summary = summarizeFindings([
+      finding({ message: 'SQL injection in search query', cwe: 'CWE-89' }),
+    ]);
+    const scored = scorer.score(features, summary);
+    expect(scored.candidateVulnerabilities).toContain('SQL Injection');
+  });
+
+  it('ensures generic static hypotheses do not displace high-confidence surface heuristics', () => {
+    const features = extractFeatures(
+      surface({ url: 'http://app.test/api/debug/config', method: 'GET', parameters: [], authentication: false, risk: 'MEDIUM' }),
+      profile,
+    );
+    const summary = summarizeFindings([
+      finding({ message: 'SQL injection', cwe: 'CWE-89' }),
+      finding({ message: 'XSS', cwe: 'CWE-79' }),
+      finding({ message: 'SSRF', cwe: 'CWE-918' }),
+      finding({ message: 'File upload', cwe: 'CWE-434' }),
+      finding({ message: 'Broken access control', cwe: 'CWE-284' }),
+    ]);
+    const candidates = scorer.candidates(features, summary);
+    expect(candidates[0]).toBe('Security Misconfiguration');
+    expect(candidates.length).toBeLessThanOrEqual(4);
+  });
+
+  it('categorizeFinding maps misconfig/debug findings to Security Misconfiguration', () => {
+    expect(categorizeFinding(finding({ type: 'security_misconfiguration', message: 'debug endpoint exposed' }))).toContain('Security Misconfiguration');
+    expect(categorizeFinding(finding({ message: 'information disclosure via config endpoint' }))).toContain('Security Misconfiguration');
+  });
 });
