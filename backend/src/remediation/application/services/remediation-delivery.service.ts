@@ -26,9 +26,25 @@ export interface RemediationDeliveryDependencies {
 }
 
 export class RemediationDeliveryService {
+  /** Deduplicates concurrent delivery events for the same patch in this worker. */
+  private readonly inFlightByPatchId = new Map<string, Promise<RemediationDeliveryResult>>();
+
   constructor(private readonly deps: RemediationDeliveryDependencies) {}
 
   async deliver(input: RemediationDeliveryInput): Promise<RemediationDeliveryResult> {
+    const inFlight = this.inFlightByPatchId.get(input.patchId);
+    if (inFlight) return inFlight;
+
+    const delivery = this.deliverOnce(input).finally(() => {
+      if (this.inFlightByPatchId.get(input.patchId) === delivery) {
+        this.inFlightByPatchId.delete(input.patchId);
+      }
+    });
+    this.inFlightByPatchId.set(input.patchId, delivery);
+    return delivery;
+  }
+
+  private async deliverOnce(input: RemediationDeliveryInput): Promise<RemediationDeliveryResult> {
     const { scanId, patchId } = input;
     logger.info({ scanId, patchId }, 'remediation_delivery:start');
 

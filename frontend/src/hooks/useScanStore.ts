@@ -100,6 +100,29 @@ export function createInitialCriticStages(): CriticStageState[] {
   return INITIAL_CRITIC_STAGES.map((s) => ({ ...s }));
 }
 
+/**
+ * Patch ids are the authoritative identity once a patch exists. Reject an
+ * event that names a different finding and patch instead of risking a
+ * cross-finding lifecycle update.
+ */
+function resolveRemediationRecordKey(
+  records: Record<string, FindingRecord>,
+  findingId: string | undefined,
+  patchId: string | undefined,
+): string | null {
+  const patchKey = patchId
+    ? Object.keys(records).find((key) => records[key].patch?.patchId === patchId)
+    : undefined;
+  const findingKey = findingId
+    ? Object.keys(records).find(
+        (key) => key === findingId || records[key].finding.id === findingId || records[key].target?.targetId === findingId,
+      )
+    : undefined;
+
+  if (patchKey && findingKey && patchKey !== findingKey) return null;
+  return patchKey ?? findingKey ?? null;
+}
+
 export function useScanStore(initialScanId: string | null = null) {
   const provider = getAMASSDataProvider();
 
@@ -110,6 +133,7 @@ export function useScanStore(initialScanId: string | null = null) {
 
   const [events, setEvents] = useState<AmassEvent[]>([]);
   const [lastSequence, setLastSequence] = useState<number>(0);
+  const processedEventKeysRef = useRef(new Set<string>());
   const [connectionStatus, setConnectionStatus] = useState<SseConnectionStatus>('CONNECTED');
 
   const [agents, setAgents] = useState<Record<AmassAgentType, AgentState>>(INITIAL_AGENTS);
@@ -179,11 +203,12 @@ export function useScanStore(initialScanId: string | null = null) {
   // Universal Event Handler — Single Reducer Authority
   const handleEvent = useCallback(
     (event: AmassEvent) => {
+      const eventKey = `${event.scanId}:${event.eventId}`;
+      if (processedEventKeysRef.current.has(eventKey)) return;
+      processedEventKeysRef.current.add(eventKey);
+
       // Append event & track monotonic sequence
       setEvents((prev) => {
-        if (prev.some((e) => e.eventId === event.eventId || e.sequence === event.sequence)) {
-          return prev;
-        }
         return [...prev, event];
       });
       setLastSequence(event.sequence);
@@ -638,9 +663,8 @@ export function useScanStore(initialScanId: string | null = null) {
               'Source code file context is unavailable and patch cannot be safely generated';
 
             setFindingsById((prev) => {
-              const key = Object.keys(prev).find(
-                (k) => k === targetFindingId || prev[k].finding.id === targetFindingId || prev[k].target?.targetId === targetFindingId
-              ) || targetFindingId;
+              const key = resolveRemediationRecordKey(prev, targetFindingId, event.metadata?.patchId as string | undefined);
+              if (!key) return prev;
               const record = prev[key];
               if (!record) return prev;
               return {
@@ -674,7 +698,8 @@ export function useScanStore(initialScanId: string | null = null) {
         case 'TESTS_COMPLETED':
         case 'EXPLOIT_RETEST_STARTED':
         case 'EXPLOIT_RETEST_COMPLETED': {
-          if (targetFindingId) {
+          if (targetFindingId || event.metadata?.patchId) {
+            const pId = event.metadata?.patchId as string | undefined;
             const keyMap: Record<string, CriticStageState['key']> = {
               BASELINE_CHECK_STARTED: 'baseline',
               BASELINE_CHECK_COMPLETED: 'baseline',
@@ -695,9 +720,8 @@ export function useScanStore(initialScanId: string | null = null) {
                 : 'IDLE';
 
             setFindingsById((prev) => {
-              const key = Object.keys(prev).find(
-                (k) => k === targetFindingId || prev[k].finding.id === targetFindingId || prev[k].target?.targetId === targetFindingId
-              ) || targetFindingId;
+              const key = resolveRemediationRecordKey(prev, targetFindingId, pId);
+              if (!key) return prev;
               const record = prev[key];
               if (!record) return prev;
               const nextStages = record.criticStages.map((s) =>
@@ -719,9 +743,8 @@ export function useScanStore(initialScanId: string | null = null) {
           if (targetFindingId || event.metadata?.patchId) {
             const pId = event.metadata?.patchId as string | undefined;
             setFindingsById((prev) => {
-              const key = Object.keys(prev).find(
-                (k) => (targetFindingId && (k === targetFindingId || prev[k].finding.id === targetFindingId || prev[k].target?.targetId === targetFindingId)) || (pId && prev[k].patch?.patchId === pId)
-              ) || targetFindingId || pId!;
+              const key = resolveRemediationRecordKey(prev, targetFindingId, pId);
+              if (!key) return prev;
               const record = prev[key];
               if (!record) return prev;
               const nextStages = record.criticStages.map((s) =>
@@ -745,11 +768,11 @@ export function useScanStore(initialScanId: string | null = null) {
 
         case 'CRITIC_REJECTED':
         case 'CRITIC_FAILED':
-          if (targetFindingId) {
+          if (targetFindingId || event.metadata?.patchId) {
+            const pId = event.metadata?.patchId as string | undefined;
             setFindingsById((prev) => {
-              const key = Object.keys(prev).find(
-                (k) => k === targetFindingId || prev[k].finding.id === targetFindingId || prev[k].target?.targetId === targetFindingId
-              ) || targetFindingId;
+              const key = resolveRemediationRecordKey(prev, targetFindingId, pId);
+              if (!key) return prev;
               const record = prev[key];
               if (!record) return prev;
               const nextStages = record.criticStages.map((s) =>
@@ -777,9 +800,8 @@ export function useScanStore(initialScanId: string | null = null) {
           const prStatus = (event.metadata?.prStatus as string) ?? 'OPEN';
 
           setFindingsById((prev) => {
-            const key = Object.keys(prev).find(
-              (k) => (targetFindingId && (k === targetFindingId || prev[k].finding.id === targetFindingId || prev[k].target?.targetId === targetFindingId)) || (pId && prev[k].patch?.patchId === pId)
-            ) || targetFindingId || pId!;
+            const key = resolveRemediationRecordKey(prev, targetFindingId, pId);
+            if (!key) return prev;
             const record = prev[key];
 
             if (!record) {
@@ -864,9 +886,8 @@ export function useScanStore(initialScanId: string | null = null) {
           const err = (event.metadata?.error as string) || event.message;
 
           setFindingsById((prev) => {
-            const key = Object.keys(prev).find(
-              (k) => k === targetFindingId || prev[k].patch?.patchId === pId || prev[k].finding.id === targetFindingId || prev[k].target?.targetId === targetFindingId
-            ) || targetFindingId;
+            const key = resolveRemediationRecordKey(prev, targetFindingId, pId);
+            if (!key) return prev;
             const record = prev[key];
             if (!record) return prev;
 
@@ -1140,6 +1161,7 @@ export function useScanStore(initialScanId: string | null = null) {
   fetchScanDataRef.current = fetchScanData;
 
   const resetLiveState = useCallback(() => {
+    processedEventKeysRef.current.clear();
     setAgents(INITIAL_AGENTS);
     setFindingsById({});
     setEvents([]);

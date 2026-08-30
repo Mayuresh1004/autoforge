@@ -107,6 +107,62 @@ describe('useScanStore hook', () => {
     expect(result.current.targets[0]?.status).toBe('PLANNED');
   });
 
+  it('keeps concurrent remediation lifecycle events isolated by matching patch and finding ids', async () => {
+    mockProvider.getScanResults.mockResolvedValueOnce({
+      success: true,
+      data: {
+        scanId: 'scan_1',
+        findings: [
+          {
+            id: 'vuln_1', findingId: 'vuln_1', title: 'SQL injection', severity: 'HIGH',
+            patch: { id: 'patch_1', filePath: 'src/search.ts', diffContent: 'diff-1', status: 'GENERATED' },
+          },
+          {
+            id: 'vuln_2', findingId: 'vuln_2', title: 'Access control', severity: 'HIGH',
+            patch: { id: 'patch_2', filePath: 'src/users.ts', diffContent: 'diff-2', status: 'GENERATED' },
+          },
+        ],
+      },
+    });
+    mockProvider.getPlanForScan.mockResolvedValueOnce({ success: true, data: { scanId: 'scan_1', targets: [] } });
+
+    const { result } = renderHook(() => useScanStore('scan_1'));
+    await waitFor(() => expect(result.current.patches).toHaveLength(2));
+
+    const event = (eventId: string, sequence: number, eventType: AmassEvent['eventType'], metadata: Record<string, unknown>): AmassEvent => ({
+      eventId,
+      scanId: 'scan_1',
+      sequence,
+      timestamp: new Date().toISOString(),
+      eventType,
+      agentType: eventType.startsWith('CRITIC') || eventType.includes('CHECK') ? 'CRITIC' : 'SYSTEM',
+      phase: 'remediation',
+      level: 'INFO',
+      status: 'COMPLETED',
+      message: eventType,
+      metadata,
+    } as AmassEvent);
+
+    act(() => {
+      sseHandler?.(event('critic-patch-1', 1, 'CRITIC_APPROVED', { patchId: 'patch_1', vulnerabilityId: 'vuln_1' }));
+      sseHandler?.(event('critic-patch-2-build', 2, 'BUILD_COMPLETED', { patchId: 'patch_2', vulnerabilityId: 'vuln_2' }));
+      // Conflicting identities must not attach patch_1's PR to vuln_2.
+      sseHandler?.(event('conflicting-pr', 3, 'REMEDIATION_PR_CREATED', { patchId: 'patch_1', vulnerabilityId: 'vuln_2', prNumber: 101 }));
+      sseHandler?.(event('pr-patch-2', 4, 'REMEDIATION_PR_CREATED', { patchId: 'patch_2', vulnerabilityId: 'vuln_2', prNumber: 202, prUrl: 'https://example.test/pr/202' }));
+      // A replay must be ignored even if its payload is inconsistent.
+      sseHandler?.(event('pr-patch-2', 5, 'REMEDIATION_PR_CREATED', { patchId: 'patch_2', vulnerabilityId: 'vuln_2', prNumber: 999 }));
+    });
+
+    const first = result.current.findings.find((finding) => finding.id === 'vuln_1');
+    const second = result.current.findings.find((finding) => finding.id === 'vuln_2');
+    expect(first?.patch?.status).toBe('APPROVED');
+    expect(first?.patch?.prNumber).toBeNull();
+    expect(second?.patch?.prNumber).toBe(202);
+    expect(second?.patch?.prUrl).toBe('https://example.test/pr/202');
+    expect(second?.patch?.prNumber).not.toBe(999);
+    expect(result.current.criticMatrix.vuln_2.find((stage) => stage.key === 'build')?.status).toBe('PASSED');
+  });
+
   it('processes SNIPER_NOT_TESTED event without converting target status to REJECTED', async () => {
     const { result } = renderHook(() => useScanStore('scan_1'));
 

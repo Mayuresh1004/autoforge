@@ -136,6 +136,30 @@ describe('RemediationDeliveryService', () => {
     expect(mockPrisma.patch.update).not.toHaveBeenCalled();
   });
 
+  it('coalesces concurrent delivery triggers for the same patch into one PR request', async () => {
+    let resolveGateway: ((result: { prNumber: number; prUrl: string; commitSha: string; headBranch: string; prStatus: string }) => void) | undefined;
+    mockGateway.createPullRequest = vi.fn().mockImplementation(
+      () => new Promise((resolve) => { resolveGateway = resolve; }),
+    );
+
+    const first = service.deliver({ scanId: SCAN_ID, patchId: PATCH_ID });
+    const second = service.deliver({ scanId: SCAN_ID, patchId: PATCH_ID });
+
+    await vi.waitFor(() => expect(mockGateway.createPullRequest).toHaveBeenCalledTimes(1));
+    resolveGateway?.({
+      prNumber: 42,
+      prUrl: 'https://github.com/Mayuresh1004/owasp-vuln-lab/pull/42',
+      commitSha: 'abc123def456',
+      headBranch: `amass/remediation/${PATCH_ID}`,
+      prStatus: 'OPEN',
+    });
+
+    await expect(Promise.all([first, second])).resolves.toEqual([
+      expect.objectContaining({ status: 'DELIVERED', prNumber: 42 }),
+      expect.objectContaining({ status: 'DELIVERED', prNumber: 42 }),
+    ]);
+  });
+
   it('refuses delivery for GENERATED patches', async () => {
     mockPrisma.patch.findUnique.mockResolvedValueOnce({
       ...sampleApprovedPatch,

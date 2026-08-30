@@ -139,7 +139,7 @@ export class DefaultCriticService implements CriticService {
         phase: 'validation',
         status: 'STARTED',
         message: 'reproducing the exploit baseline in the fresh sandbox',
-        metadata: { vulnerabilityId: context.finding.vulnerabilityId },
+        metadata: { patchId: patch.id, vulnerabilityId: context.finding.vulnerabilityId },
       });
       const baseline = await this.deps.steps.runBaseline(scanId, context, sandbox, checks, runId);
       this.bridge(scanId, {
@@ -148,7 +148,7 @@ export class DefaultCriticService implements CriticService {
         phase: 'validation',
         status: 'COMPLETED',
         message: baseline === 'CONFIRMED' ? 'baseline reproduces' : 'baseline differs',
-        metadata: { vulnerabilityId: context.finding.vulnerabilityId, result: baseline },
+        metadata: { patchId: patch.id, vulnerabilityId: context.finding.vulnerabilityId, result: baseline },
       });
       if (baseline !== 'CONFIRMED') {
         throw new BaselineInvalidError('offending exploit is not reproducible in the fresh sandbox');
@@ -160,7 +160,7 @@ export class DefaultCriticService implements CriticService {
         phase: 'validation',
         status: 'STARTED',
         message: `applying patch ${patch.id}`,
-        metadata: { patchId: patch.id, filePath: patch.filePath ?? undefined },
+        metadata: { patchId: patch.id, vulnerabilityId: context.finding.vulnerabilityId, filePath: patch.filePath ?? undefined },
       });
       await this.deps.steps.applyPatch(sandbox, patch, checks, runId);
       this.bridge(scanId, {
@@ -169,7 +169,7 @@ export class DefaultCriticService implements CriticService {
         phase: 'validation',
         status: 'SUCCEEDED',
         message: `patch ${patch.id} applied`,
-        metadata: { patchId: patch.id, filePath: patch.filePath ?? undefined },
+        metadata: { patchId: patch.id, vulnerabilityId: context.finding.vulnerabilityId, filePath: patch.filePath ?? undefined },
       });
 
       if (!(await this.deps.steps.waitHealthy(scanId, sandbox))) {
@@ -183,7 +183,7 @@ export class DefaultCriticService implements CriticService {
         phase: 'validation',
         status: 'STARTED',
         message: 'building patched application',
-        metadata: { patchId: patch.id },
+        metadata: { patchId: patch.id, vulnerabilityId: context.finding.vulnerabilityId },
       });
       await this.deps.steps.build(sandbox, patch.filePath!, checks, runId);
       this.bridge(scanId, {
@@ -192,7 +192,7 @@ export class DefaultCriticService implements CriticService {
         phase: 'validation',
         status: 'COMPLETED',
         message: 'build passed',
-        metadata: { check: 'build' },
+        metadata: { patchId: patch.id, vulnerabilityId: context.finding.vulnerabilityId, check: 'build' },
       });
 
       this.bridge(scanId, {
@@ -201,7 +201,7 @@ export class DefaultCriticService implements CriticService {
         phase: 'validation',
         status: 'STARTED',
         message: 'running regression tests',
-        metadata: { check: 'tests' },
+        metadata: { patchId: patch.id, vulnerabilityId: context.finding.vulnerabilityId, check: 'tests' },
       });
       await this.deps.steps.tests(sandbox, checks, runId);
       this.bridge(scanId, {
@@ -210,7 +210,7 @@ export class DefaultCriticService implements CriticService {
         phase: 'validation',
         status: 'COMPLETED',
         message: 'tests passed',
-        metadata: { check: 'tests' },
+        metadata: { patchId: patch.id, vulnerabilityId: context.finding.vulnerabilityId, check: 'tests' },
       });
 
       this.bridge(scanId, {
@@ -219,7 +219,7 @@ export class DefaultCriticService implements CriticService {
         phase: 'validation',
         status: 'STARTED',
         message: 're-attempting the exploit after the patch',
-        metadata: { patchId: patch.id },
+        metadata: { patchId: patch.id, vulnerabilityId: context.finding.vulnerabilityId },
       });
       const retest = await this.deps.steps.retest(scanId, context, sandbox, baseline, checks, runId);
       exploit = retest.exploit;
@@ -229,7 +229,7 @@ export class DefaultCriticService implements CriticService {
         phase: 'validation',
         status: 'COMPLETED',
         message: `retest verdict: ${retest.verdict}`,
-        metadata: { patchId: patch.id, result: retest.verdict },
+        metadata: { patchId: patch.id, vulnerabilityId: context.finding.vulnerabilityId, result: retest.verdict },
       });
       if (retest.verdict === 'SUCCEEDS') {
         throw new ExploitStillSucceedsError('the original SQL injection is still confirmed after the patch');
@@ -320,7 +320,7 @@ export class DefaultCriticService implements CriticService {
         phase: 'validation',
         status: 'REJECTED',
         message: `patch ${patch.id} rejected: ${failure.failureKind}`,
-        metadata: { patchId: patch.id, check: failure.failureKind, result: 'REJECTED' },
+        metadata: { patchId: patch.id, vulnerabilityId: context.finding.vulnerabilityId, check: failure.failureKind, result: 'REJECTED' },
       });
       this.emit('CRITIC_REJECTED', runId, failure.failureKind);
     } else {
@@ -331,7 +331,7 @@ export class DefaultCriticService implements CriticService {
         level: 'ERROR',
         status: 'FAILED',
         message: `patch ${patch.id} failed validation`,
-        metadata: { patchId: patch.id, check: failure.failureKind ?? undefined },
+        metadata: { patchId: patch.id, vulnerabilityId: context.finding.vulnerabilityId, check: failure.failureKind ?? undefined },
       });
     }
     return this.persist(

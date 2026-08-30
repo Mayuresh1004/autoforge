@@ -6,6 +6,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
+import type { AmassEventInput } from '../../../observability/domain/ports/event-bus';
 import { DefaultAgentExecutionService } from '../../../agent/application/services/agent-execution.service';
 import { MemoryAgentExecutionRepository } from '../../../../test/helpers/memory-agent-execution-repository';
 import { CriticSteps } from './critic-steps';
@@ -59,6 +60,7 @@ interface Env {
   readonly sniper: StubSniperService;
   readonly manager: ScriptedSandboxManager;
   readonly patch: ReturnType<typeof criticPatch>;
+  readonly bridgedEvents: AmassEventInput[];
 }
 
 function buildEnv(options: EnvOptions = {}): Env {
@@ -78,6 +80,7 @@ function buildEnv(options: EnvOptions = {}): Env {
   sniper.program(options.baseline ?? 'CONFIRMED', options.retest ?? 'NOT_CONFIRMED');
 
   const events = new MemoryCriticEventSink();
+  const bridgedEvents: AmassEventInput[] = [];
 
   const steps = new CriticSteps({
     runtimeService: runtime,
@@ -105,8 +108,16 @@ function buildEnv(options: EnvOptions = {}): Env {
   patches.seed(patch);
   findings.seed(patch.id, criticContext({ finding: confirmedFinding(options.findingNotConfirmed) }));
 
-  const critic = new DefaultCriticService({ patches, findings, steps, events, outcomes, results });
-  return { critic, patches, results, events, runtime, sniper, manager, patch };
+  const critic = new DefaultCriticService({
+    patches,
+    findings,
+    steps,
+    events,
+    outcomes,
+    results,
+    eventsBridge: { publish: (event) => { bridgedEvents.push(event); } },
+  });
+  return { critic, patches, results, events, runtime, sniper, manager, patch, bridgedEvents };
 }
 
 function confirmedFinding(notConfirmed = false) {
@@ -130,6 +141,14 @@ describe('DefaultCriticService', () => {
     expect(names[0]).toBe('SANDBOX_PROVISIONING');
     expect(names[names.length - 1]).toBe('SANDBOX_DESTROYED');
     expect(names).toContain('CRITIC_APPROVED');
+
+    const lifecycleEvents = env.bridgedEvents.filter((event) =>
+      ['BASELINE_CHECK_STARTED', 'PATCH_APPLY_STARTED', 'BUILD_COMPLETED', 'TESTS_COMPLETED', 'EXPLOIT_RETEST_COMPLETED', 'CRITIC_APPROVED'].includes(event.eventType),
+    );
+    expect(lifecycleEvents).not.toHaveLength(0);
+    for (const event of lifecycleEvents) {
+      expect(event.metadata).toMatchObject({ patchId: env.patch.id, vulnerabilityId: env.patch.vulnerabilityId });
+    }
 
     const row = await env.results.getById(`${env.patch.id}#1`);
     expect(row?.executionId).toBeTruthy();
