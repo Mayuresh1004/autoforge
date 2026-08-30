@@ -16,6 +16,7 @@
 export interface SecurityReviewInput {
   readonly filePath: string;
   readonly diff: string;
+  readonly vulnerabilityType?: string;
 }
 
 export interface SecurityReviewCheck {
@@ -58,6 +59,13 @@ const PARAMETERIZATION_HINTS = [
   /if\s*\(/i,
 ];
 
+const XSS_REMEDIATION_HINTS = [
+  /(?:escape|encode)(?:html|htmlspecialchars|output)?\s*\(/i,
+  /(?:htmlspecialchars|escapeHtml|encodeHtml|sanitizeHtml)\s*\(/i,
+  /\.textContent\s*=/,
+  /res\.type\s*\(\s*['"]text\/plain['"]\s*\)/i,
+];
+
 export class CriticSecurityReviewGate {
   run(input: SecurityReviewInput): { readonly passed: boolean; readonly checks: readonly SecurityReviewCheck[] } {
     const checks: SecurityReviewCheck[] = [];
@@ -97,11 +105,14 @@ export class CriticSecurityReviewGate {
     });
 
     // 5. remediation present (parameterization) in the NEW code
-    const hasRemediation = PARAMETERIZATION_HINTS.some((re) => re.test(addedLines.join('\n')));
+    const remediationHints = input.vulnerabilityType === 'XSS' ? XSS_REMEDIATION_HINTS : PARAMETERIZATION_HINTS;
+    const hasRemediation = remediationHints.some((re) => re.test(addedLines.join('\n')));
     checks.push({
       label: 'remediation-present',
       passed: hasRemediation,
-      detail: hasRemediation ? undefined : 'no SQL parameterization signal found in added lines',
+      detail: hasRemediation ? undefined : input.vulnerabilityType === 'XSS'
+        ? 'no output encoding or safe DOM binding signal found in added lines'
+        : 'no SQL parameterization signal found in added lines',
     });
 
     const failed = checks.filter((c) => !c.passed);

@@ -90,7 +90,7 @@ export class DefaultCriticService implements CriticService {
 
     const context = await this.deps.findings.resolveForPatch(input.patchId);
     if (!context) throw new UnsupportedVulnerabilityError(input.patchId, 'n/a', 'n/a');
-    const SUPPORTED_CRITIC_TYPES = ['SQL_INJECTION', 'SECURITY_MISCONFIGURATION', 'BROKEN_ACCESS_CONTROL'];
+    const SUPPORTED_CRITIC_TYPES = ['SQL_INJECTION', 'SECURITY_MISCONFIGURATION', 'XSS', 'BROKEN_ACCESS_CONTROL'];
     if (context.finding.status !== 'CONFIRMED' || !SUPPORTED_CRITIC_TYPES.includes(context.finding.type)) {
       throw new UnsupportedVulnerabilityError(input.patchId, context.finding.status, context.finding.type);
     }
@@ -238,7 +238,7 @@ export class DefaultCriticService implements CriticService {
         throw new ExploitInconclusiveError(`retest did not conclude (${retest.detail ?? 'no verifier verdict'})`);
       }
 
-      const gate = this.deps.steps.securityGate(patch.filePath!, patch.diffContent!);
+      const gate = this.deps.steps.securityGate(patch.filePath!, patch.diffContent!, context.finding.type);
       checks.push({
         name: 'security-review',
         status: gate.passed ? 'PASSED' : 'FAILED',

@@ -40,10 +40,15 @@ describe('engineer-selection', () => {
     expect(first?.vulnerabilityId).toBe(second?.vulnerabilityId);
   });
 
-  it('returns null when nothing is confirmed + SQL injection', () => {
+  it('returns null when nothing is confirmed', () => {
     const unconfirmed = confirmedFinding({ status: 'INCONCLUSIVE' as never });
-    const notSqli = confirmedFinding({ type: 'XSS' as never });
-    expect(selectConfirmedSqlInjection([unconfirmed, notSqli])).toBeNull();
+    expect(selectConfirmedSqlInjection([unconfirmed])).toBeNull();
+  });
+
+  it('accepts a confirmed XSS finding through the generic selection path', () => {
+    const xss = confirmedFinding({ vulnerabilityId: 'xss-1', type: 'XSS' as never });
+    expect(isSupportedConfirmedFinding(xss)).toBe(true);
+    expect(selectConfirmedSqlInjection([xss])?.vulnerabilityId).toBe('xss-1');
   });
 
   it('verifies NOT_CONFIRMED candidates are rejected up-front', () => {

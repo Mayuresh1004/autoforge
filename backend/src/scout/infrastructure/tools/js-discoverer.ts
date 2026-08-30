@@ -25,12 +25,12 @@ export function discoverEndpointsFromJs(jsContent: string): readonly JsDiscovere
     if (!parsed) continue;
 
     // Infer HTTP method if near a method call
-    const snippet = jsContent.slice(Math.max(0, match.index - 30), match.index).toLowerCase();
+    const matchWindow = jsContent.slice(Math.max(0, match.index - 30), match.index + match[0].length).toLowerCase();
     let method: HttpMethod = 'GET';
-    if (snippet.includes('post')) method = 'POST';
-    else if (snippet.includes('put')) method = 'PUT';
-    else if (snippet.includes('delete')) method = 'DELETE';
-    else if (snippet.includes('patch')) method = 'PATCH';
+    if (/\bpost\b|\.post/i.test(matchWindow)) method = 'POST';
+    else if (/\bput\b|\.put/i.test(matchWindow)) method = 'PUT';
+    else if (/\bdelete\b|\.delete/i.test(matchWindow)) method = 'DELETE';
+    else if (/\bpatch\b|\.patch/i.test(matchWindow)) method = 'PATCH';
 
     const normalizedPath = (!parsed.path.startsWith('/api/') && !parsed.path.startsWith('/v1/') && !parsed.path.startsWith('/v2/'))
       ? `/api${parsed.path.startsWith('/') ? '' : '/'}${parsed.path}`
@@ -42,7 +42,7 @@ export function discoverEndpointsFromJs(jsContent: string): readonly JsDiscovere
       const fullUrlPath = parsed.parameters.length > 0
         ? `${cPath}?${parsed.parameters.map((p) => `${p}=`).join('&')}`
         : cPath;
-      const existingIndex = endpoints.findIndex((e) => e.path.split('?')[0] === cPath);
+      const existingIndex = endpoints.findIndex((e) => e.path.split('?')[0] === cPath && e.method === method);
 
       if (existingIndex >= 0) {
         const existing = endpoints[existingIndex];
@@ -65,7 +65,7 @@ export function discoverEndpointsFromJs(jsContent: string): readonly JsDiscovere
   }
 
   // 2. Scan for specific axios/api/fetch method calls with payload objects: axios.post("/api/comments", { author, body })
-  const methodCallRegex = /(?:axios|api|fetch)\s*\.\s*(post|put|patch|get)\s*\(\s*["'`](\/(?:api|v[0-9]+|graphql|products|comments|users|auth|search|admin|login|register)[^"'`\s]*)["'`]\s*,\s*(?:\{[\s\S]*?(?:params|body)\s*:\s*)?\{([^}]+)\}/gi;
+  const methodCallRegex = /(?:[a-zA-Z0-9_$]+)\s*\.\s*(post|put|patch|get)\s*\(\s*["'`](\/(?:api|v[0-9]+|graphql|products|comments|users|auth|search|admin|login|register)[^"'`\s]*)["'`]\s*,\s*(?:\{[\s\S]*?(?:params|body)\s*:\s*)?\{([^}]+)\}/gi;
   while ((match = methodCallRegex.exec(jsContent)) !== null) {
     const methodStr = match[1].toUpperCase() as HttpMethod;
     const rawUrl = match[2];
@@ -86,7 +86,7 @@ export function discoverEndpointsFromJs(jsContent: string): readonly JsDiscovere
       const fullUrlPath = combinedParams.length > 0
         ? `${cPath}?${combinedParams.map((p) => `${p}=`).join('&')}`
         : cPath;
-      const existingIndex = endpoints.findIndex((e) => e.path.split('?')[0] === cPath);
+      const existingIndex = endpoints.findIndex((e) => e.path.split('?')[0] === cPath && e.method === methodStr);
 
       if (existingIndex >= 0) {
         const existing = endpoints[existingIndex];

@@ -44,6 +44,18 @@ describe('prompt-assembler', () => {
     expect(all.toLowerCase()).toContain('untrusted');
   });
 
+  it('uses XSS-specific remediation context without changing the generic prompt contract', async () => {
+    const registry = new FileSystemPromptRegistry(ROOT);
+    const assembly = await assembleEngineerRequest(registry, {
+      finding: confirmedFinding({ type: 'XSS' as never, cwe: 'CWE-79', message: 'unescaped query reflection' }),
+      repository: {},
+      source: { filePath: 'src/search.ts', lines: ['res.send(req.query.q)'], offset: 1, truncated: false, byteLength: 22 },
+      ragAdvisory: '',
+      ragDocsUsed: 0,
+    });
+    expect(assembly.messages.map((message) => message.content).join('\n')).toContain('cross-site scripting (XSS)');
+  });
+
   it('tells the model to refuse when context is insufficient and RAG is empty', async () => {
     const registry = new FileSystemPromptRegistry(ROOT);
     const assembly = await assembleEngineerRequest(registry, {

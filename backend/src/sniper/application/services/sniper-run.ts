@@ -504,7 +504,9 @@ function bestFindingFor(
     const resolved = f.vulnType ? resolveVulnerabilityType(f.vulnType) : null;
     const cweMatches =
       (type === 'SQL_INJECTION' && /89/.test(f.cwe ?? '')) ||
-      (type === 'NOSQL_INJECTION' && /943/.test(f.cwe ?? ''));
+      (type === 'NOSQL_INJECTION' && /943/.test(f.cwe ?? '')) ||
+      (type === 'XSS' && /79/.test(f.cwe ?? '')) ||
+      (type === 'SECURITY_MISCONFIGURATION' && /(16|200)/.test(f.cwe ?? ''));
     if (resolved === type || cweMatches) {
       if (!best || f.confidence > best.confidence) best = f;
     }

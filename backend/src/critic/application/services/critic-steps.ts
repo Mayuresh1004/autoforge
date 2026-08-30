@@ -237,8 +237,8 @@ export class CriticSteps {
   // defense-in-depth: deterministic checklist + optional advisory LLM
   // -------------------------------------------------------------------------
 
-  securityGate(filePath: string, diff: string): { readonly failedLabels: readonly string[]; readonly passed: boolean } {
-    const gate = this.deps.securityGate.run({ filePath, diff });
+  securityGate(filePath: string, diff: string, vulnerabilityType?: string): { readonly failedLabels: readonly string[]; readonly passed: boolean } {
+    const gate = this.deps.securityGate.run({ filePath, diff, vulnerabilityType });
     return {
       passed: gate.passed,
       failedLabels: gate.checks.filter((c) => !c.passed).map((c) => c.label),

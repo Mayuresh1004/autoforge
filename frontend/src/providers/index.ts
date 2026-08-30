@@ -7,7 +7,7 @@
  *   - Everything else -> Real Production NON-DEMO Backend Run
  */
 
-import type { AMASSDataProvider, StartScanOptions } from './types';
+import type { AMASSDataProvider, StartScanOptions, DemoTargetId } from './types';
 import type { AmassEvent } from '../types/amass-events';
 import type { ApiResponse, ScanModel, FindingModel, ScanStatistics, PlanModel } from '../types/api-types';
 import { realDataProvider } from './RealDataProvider';
@@ -22,11 +22,13 @@ export class SmartAMASSDataProvider implements AMASSDataProvider {
   }
 
   async startScan(options: StartScanOptions): Promise<ApiResponse<ScanModel>> {
-    // Only route to demoDataProvider if explicitly requested via demoTargetId option.
-    // Standard scan path routes through realDataProvider (Real Production Backend).
-    if (options.demoTargetId) {
-      const target = options.demoTargetId;
-      demoDataProvider.setDemoConfig(target, options.scenarioId ?? 'full_approved', options.speedMultiplier ?? 1.0);
+    const repoUrl = options.repositoryUrl ?? '';
+    const isAskBitUrl = /askbit/i.test(repoUrl);
+    const isGeoSpyUrl = /geospy/i.test(repoUrl);
+    const demoTarget: DemoTargetId | undefined = options.demoTargetId || (isAskBitUrl ? 'AskBit' : isGeoSpyUrl ? 'GeoSpy' : undefined);
+
+    if (demoTarget) {
+      demoDataProvider.setDemoConfig(demoTarget, options.scenarioId ?? 'full_approved', options.speedMultiplier ?? 1.0);
       this.currentProvider = demoDataProvider;
       const res = await demoDataProvider.startScan(options);
       if (res.success && res.data) {

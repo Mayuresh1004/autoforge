@@ -103,7 +103,7 @@ export class SecurityReviewGate {
     );
 
     // 2) Supported type class.
-    const SUPPORTED_ENGINEER_TYPES = ['SQL_INJECTION', 'SECURITY_MISCONFIGURATION', 'BROKEN_ACCESS_CONTROL'];
+    const SUPPORTED_ENGINEER_TYPES = ['SQL_INJECTION', 'SECURITY_MISCONFIGURATION', 'XSS', 'BROKEN_ACCESS_CONTROL'];
     const isSupported = SUPPORTED_ENGINEER_TYPES.includes(input.finding.type);
     checks.push(
       check(

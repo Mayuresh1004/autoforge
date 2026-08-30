@@ -191,6 +191,23 @@ describe.skipIf(!ENABLED)('OWASP Vuln Lab Workspace Monorepo Scan E2E', () => {
     expect(confirmedSqli, 'Vulnerable SQLi endpoint /api/products/search?q=laptop must reach CONFIRMED status').toBeDefined();
     expect(confirmedSqli?.exploit.parameter).toBe('q');
 
+    const xssResults = sniperReport.results.filter((r) => r.exploit.type === 'XSS');
+    console.log('=== XSS SNIPER RESULTS ===');
+    for (const r of xssResults) {
+      console.log(JSON.stringify({
+        endpoint: r.exploit.endpoint,
+        method: r.exploit.method,
+        status: r.exploit.status,
+        parameter: r.exploit.parameter,
+        reason: r.exploit.reason,
+        evidence: r.exploit.evidence,
+      }, null, 2));
+    }
+
+    const confirmedXss = xssResults.find((r) => r.exploit.status === 'CONFIRMED');
+    expect(confirmedXss, 'Vulnerable XSS endpoint /api/comments must reach CONFIRMED status').toBeDefined();
+    expect(confirmedXss?.exploit.parameter).toMatch(/body|author|q/);
+
     // Stage 5: Engineer (Dynamic Source Resolution & Remediation Patch Generation)
     const { DefaultEngineerService } = await import('../src/engineer/application/services/engineer.service');
     const { PrismaConfirmedFindingRepository } = await import('../src/engineer/infrastructure/repositories/prisma-confirmed-finding-repository');

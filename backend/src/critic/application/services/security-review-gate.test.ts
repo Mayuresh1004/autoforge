@@ -59,4 +59,13 @@ describe('CriticSecurityReviewGate', () => {
     expect(remediation?.passed).toBe(false);
     expect(result.passed).toBe(false);
   });
+
+  it('accepts output encoding for XSS but does not accept a SQL-only remediation signal', () => {
+    const xssDiff = [
+      '--- a/src/search.ts', '+++ b/src/search.ts', '@@ -1,1 +1,1 @@',
+      '-res.send(req.query.q);', '+res.send(escapeHtml(req.query.q));',
+    ].join('\n');
+    expect(gate.run({ filePath: 'src/search.ts', diff: xssDiff, vulnerabilityType: 'XSS' }).passed).toBe(true);
+    expect(gate.run({ filePath: 'src/search.ts', diff: goodDiff(), vulnerabilityType: 'XSS' }).passed).toBe(false);
+  });
 });

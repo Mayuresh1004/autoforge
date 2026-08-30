@@ -51,4 +51,10 @@ describe('mapConfirmedFinding', () => {
     const result = mapConfirmedFinding(row);
     expect(result.type).toBe('SECURITY_MISCONFIGURATION');
   });
+
+  it('preserves XSS vulnerability type', () => {
+    const row = createMockRow('XSS');
+    const result = mapConfirmedFinding(row);
+    expect(result.type).toBe('XSS');
+  });
 });

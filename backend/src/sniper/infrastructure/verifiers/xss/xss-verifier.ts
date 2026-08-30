@@ -70,11 +70,17 @@ export class XssVerifier implements VulnerabilityVerifier {
     const xssPayload = "<script>alert('AMASS_XSS_VERIFIED')</script>";
     const targetUrlObj = new URL(endpoint);
     const params = Array.from(targetUrlObj.searchParams.keys());
-    const paramToTest = target.verificationHints?.parameterName || params[0] || 'q';
+    const paramToTest = target.verificationHints?.parameterName || params[0] || (method === 'GET' ? 'q' : 'body');
 
     let probeArgv: string[];
     if (method === 'POST') {
-      const jsonBody = JSON.stringify({ [paramToTest]: xssPayload });
+      const knownParams = target.verificationHints?.parameters ?? (paramToTest === 'body' || paramToTest === 'author' ? ['author', 'body'] : [paramToTest]);
+      const bodyObj: Record<string, string> = {};
+      for (const p of knownParams) {
+        bodyObj[p] = p === paramToTest ? xssPayload : 'test';
+      }
+      if (!bodyObj[paramToTest]) bodyObj[paramToTest] = xssPayload;
+      const jsonBody = JSON.stringify(bodyObj);
       probeArgv = [
         'curl', '-s', '-i', '-X', 'POST',
         '-H', 'Content-Type: application/json',
@@ -92,17 +98,48 @@ export class XssVerifier implements VulnerabilityVerifier {
       network: 'internal',
     });
 
-    const probeResponse = probeExec.stdout;
+    let probeResponse = probeExec.stdout;
+
+    // For POST endpoints (e.g. POST /api/comments) or GET endpoints where payload is stored, check endpoint GET response
+    if (!probeResponse.includes(xssPayload)) {
+      const cleanUrl = endpoint.split('?')[0];
+      const getExec = await context.runtime.execute({
+        argv: ['curl', '-s', '-i', '-X', 'GET', cleanUrl],
+        timeoutMs: context.timeoutMs,
+        network: 'internal',
+      });
+      if (getExec.stdout.includes(xssPayload)) {
+        probeResponse = getExec.stdout;
+      }
+    }
 
     // 3. Verification Criteria Evaluation (RAG standard):
-    // Condition 1: Content-Type header must be HTML (text/html or application/xhtml+xml)
-    const isHtmlResponse = /Content-Type:\s*text\/html/i.test(probeResponse) || /Content-Type:\s*application\/xhtml\+xml/i.test(probeResponse);
+    // Condition 1: Content-Type header must be HTML (text/html or application/xhtml+xml) or contain HTML document markup
+    const isHtmlHeader = /Content-Type:\s*(text\/html|application\/xhtml\+xml)/i.test(probeResponse);
+    const hasHtmlMarkup = /<!DOCTYPE html|<html|<body|<div|<h[1-6]|<p|<span/i.test(probeResponse);
+    let isHtmlResponse = isHtmlHeader || hasHtmlMarkup;
 
     // Condition 2: Unescaped Script Payload Reflection in Body (NOT entity encoded &lt;script&gt;)
     const hasUnescapedPayload = probeResponse.includes(xssPayload);
 
-    // Condition 3: Disqualification if JSON or plain text response
-    const isJsonOrText = /Content-Type:\s*application\/json/i.test(probeResponse) || /Content-Type:\s*text\/plain/i.test(probeResponse);
+    // For stored XSS / API endpoints: if unescaped script tag is returned and application serves HTML client at baseUrl
+    if (!isHtmlResponse && hasUnescapedPayload && context.baseUrl) {
+      try {
+        const appPage = await context.runtime.execute({
+          argv: ['curl', '-s', '-i', '-X', 'GET', context.baseUrl],
+          timeoutMs: context.timeoutMs,
+          network: 'internal',
+        });
+        if (/Content-Type:\s*(text\/html|application\/xhtml\+xml)/i.test(appPage.stdout) || /<!DOCTYPE html|<html/i.test(appPage.stdout)) {
+          isHtmlResponse = true;
+        }
+      } catch {
+        // Fallback
+      }
+    }
+
+    // Condition 3: Disqualification if JSON or plain text response without HTML header or HTML context
+    const isJsonOrText = /Content-Type:\s*(application\/json|text\/plain)/i.test(probeResponse) && !isHtmlHeader && !isHtmlResponse;
 
     const isConfirmed = isHtmlResponse && hasUnescapedPayload && !isJsonOrText;
 

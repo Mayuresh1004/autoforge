@@ -28,7 +28,7 @@ const SEVERITY_RANK: Readonly<Record<string, number>> = {
 export function isSupportedConfirmedFinding(f: ConfirmedVulnerabilityFinding): boolean {
   return (
     f.status === 'CONFIRMED' &&
-    (f.type === 'SQL_INJECTION' || f.type === 'SECURITY_MISCONFIGURATION' || f.type === 'BROKEN_ACCESS_CONTROL')
+    (f.type === 'SQL_INJECTION' || f.type === 'SECURITY_MISCONFIGURATION' || f.type === 'XSS' || f.type === 'BROKEN_ACCESS_CONTROL')
   );
 }
 

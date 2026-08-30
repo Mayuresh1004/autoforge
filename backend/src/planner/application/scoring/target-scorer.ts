@@ -117,10 +117,16 @@ export class TargetScorer {
     if (features.isUpload) {
       out.push('Insecure File Upload');
     }
-    if (features.isDbRelated && inputDriven) {
+    if (/(comment|forum|message|feedback|review)/i.test(features.url)) {
+      out.push('Cross-Site Scripting');
+    }
+    if (features.isDbRelated && (inputDriven || features.isSearch)) {
       out.push('SQL Injection');
     }
-    if (features.isSearch || (features.hasQuery && features.isApi)) {
+    if (
+      (features.isSearch || (inputDriven && features.isApi)) &&
+      !out.includes('Cross-Site Scripting')
+    ) {
       out.push('Cross-Site Scripting');
     }
     if (
@@ -136,19 +142,19 @@ export class TargetScorer {
     // 2. Static scanner findings correlation (broad category matches)
     for (const cat of summary.categories) {
       if (cat === 'SQL Injection' && (inputDriven || features.isDbRelated || features.isApi)) {
-        out.push('SQL Injection');
+        if (!out.includes('SQL Injection')) out.push('SQL Injection');
       }
       if (cat === 'Cross-Site Scripting' && (inputDriven || features.isSearch || features.isApi)) {
-        out.push('Cross-Site Scripting');
+        if (!out.includes('Cross-Site Scripting')) out.push('Cross-Site Scripting');
       }
       if (cat === 'Insecure File Upload' && (features.isUpload || features.isApi)) {
-        out.push('Insecure File Upload');
+        if (!out.includes('Insecure File Upload')) out.push('Insecure File Upload');
       }
       if (cat === 'Server-Side Request Forgery' && (inputDriven || features.isApi)) {
-        out.push('Server-Side Request Forgery');
+        if (!out.includes('Server-Side Request Forgery')) out.push('Server-Side Request Forgery');
       }
       if ((cat === 'Authentication Bypass' || cat === 'Broken Access Control') && (features.authentication || features.isLogin || features.isApi)) {
-        out.push('Broken Access Control');
+        if (!out.includes('Broken Access Control')) out.push('Broken Access Control');
       }
     }
 

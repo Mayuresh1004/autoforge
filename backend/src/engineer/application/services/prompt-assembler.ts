@@ -70,6 +70,8 @@ export async function assembleEngineerRequest(
   const typeLabel =
     f.type === 'SECURITY_MISCONFIGURATION'
       ? 'security misconfiguration'
+      : f.type === 'XSS'
+        ? 'cross-site scripting (XSS)'
       : f.type === 'BROKEN_ACCESS_CONTROL'
         ? 'broken access control'
         : 'SQL injection';

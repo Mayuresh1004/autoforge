@@ -10,6 +10,7 @@ import type { ConfirmedFindingPayload } from '../models/confirmed-finding';
 export const REMEDIATION_SUPPORTED_TYPES = [
   'SQL_INJECTION',
   'SECURITY_MISCONFIGURATION',
+  'XSS',
   'BROKEN_ACCESS_CONTROL',
 ] as const;
 export const REMEDIATION_CONFIRMED_STATUS = 'CONFIRMED';
