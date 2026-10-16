@@ -603,56 +603,68 @@ export function useScanStore(initialScanId: string | null = null) {
             const rawDiff =
               (event.metadata?.diffContent as string) ||
               (event.metadata?.diff as string) ||
+              ((event.metadata?.patch as any)?.diffContent as string) ||
+              ((event.metadata?.patch as any)?.diff as string) ||
+              (typeof event.message === 'string' && event.message.startsWith('---') ? event.message : '') ||
               '';
             const rawPath =
               (event.metadata?.filePath as string) ||
               (event.metadata?.file as string) ||
+              ((event.metadata?.patch as any)?.filePath as string) ||
               '';
 
-            if (rawDiff && rawPath) {
+            setFindingsById((prev) => {
+              const key = Object.keys(prev).find(
+                (k) => k === targetFindingId || prev[k].finding.id === targetFindingId || prev[k].target?.targetId === targetFindingId || (event.metadata?.patchId && prev[k].patch?.patchId === event.metadata.patchId)
+              ) || targetFindingId;
+              const record = prev[key];
+              const resolvedPath = rawPath || record?.finding?.filePath || record?.patch?.filePath || '';
+              const resolvedDiff = rawDiff || record?.patch?.diffContent || '';
+
+              if (!resolvedDiff && !resolvedPath) {
+                return prev;
+              }
+
               const patchMeta: PatchModel = {
-                patchId: (event.metadata?.patchId as string) ?? `patch_${targetFindingId}`,
+                patchId: (event.metadata?.patchId as string) ?? record?.patch?.patchId ?? `patch_${targetFindingId}`,
                 findingId: targetFindingId,
                 scanId: event.scanId,
-                filePath: rawPath,
-                diffContent: rawDiff,
+                filePath: resolvedPath,
+                diffContent: resolvedDiff,
                 status: 'GENERATED',
-                explanation: (event.metadata?.explanation as string) ?? 'Automated defensive code patch.',
+                explanation: (event.metadata?.explanation as string) ?? record?.patch?.explanation ?? 'Automated defensive code patch.',
               };
 
-              setFindingsById((prev) => {
-                const key = Object.keys(prev).find(
-                  (k) => k === targetFindingId || prev[k].finding.id === targetFindingId || prev[k].target?.targetId === targetFindingId || (event.metadata?.patchId && prev[k].patch?.patchId === event.metadata.patchId)
-                ) || targetFindingId;
-                const record = prev[key];
-                if (!record) {
-                  const fallbackFinding: FindingModel = {
-                    id: key,
-                    findingId: key,
-                    title: `Defensive Fix for ${rawPath}`,
-                    severity: 'HIGH',
-                    status: 'PATCHED',
-                    isConfirmed: true,
-                  };
-                  return {
-                    ...prev,
-                    [key]: {
-                      finding: fallbackFinding,
-                      patch: patchMeta,
-                      criticStages: createInitialCriticStages(),
-                    },
-                  };
-                }
+              if (!record) {
+                const fallbackFinding: FindingModel = {
+                  id: key,
+                  findingId: key,
+                  title: `Defensive Fix for ${resolvedPath}`,
+                  severity: 'HIGH',
+                  status: 'PATCHED',
+                  isConfirmed: true,
+                };
                 return {
                   ...prev,
                   [key]: {
-                    ...record,
+                    finding: fallbackFinding,
                     patch: patchMeta,
-                    finding: { ...record.finding, status: 'PATCHED' },
+                    criticStages: createInitialCriticStages(),
                   },
                 };
-              });
-            }
+              }
+              return {
+                ...prev,
+                [key]: {
+                  ...record,
+                  patch: {
+                    ...record.patch,
+                    ...patchMeta,
+                  },
+                  finding: { ...record.finding, status: 'PATCHED' },
+                },
+              };
+            });
           }
           break;
 
@@ -852,12 +864,28 @@ export function useScanStore(initialScanId: string | null = null) {
               };
             }
 
+            const incomingDiff =
+              (event.metadata?.diffContent as string) ||
+              (event.metadata?.diff as string) ||
+              ((event.metadata?.patch as any)?.diffContent as string) ||
+              '';
+            const incomingPath =
+              (event.metadata?.filePath as string) ||
+              (event.metadata?.file as string) ||
+              ((event.metadata?.patch as any)?.filePath as string) ||
+              '';
+            const incomingExplanation =
+              (event.metadata?.explanation as string) ||
+              ((event.metadata?.patch as any)?.explanation as string) ||
+              '';
+
             const existingPatch = record.patch ?? {
               patchId: pId || `patch_${key}`,
               findingId: key,
               scanId: event.scanId,
-              filePath: (event.metadata?.filePath as string) || record.finding.filePath || '',
-              diffContent: (event.metadata?.diffContent as string) || '',
+              filePath: incomingPath || record.finding.filePath || '',
+              diffContent: incomingDiff || '',
+              explanation: incomingExplanation || 'Defensive remediation patch.',
               status: 'APPROVED',
             };
 
@@ -867,6 +895,9 @@ export function useScanStore(initialScanId: string | null = null) {
                 ...record,
                 patch: {
                   ...existingPatch,
+                  filePath: existingPatch.filePath || incomingPath || record.finding.filePath || '',
+                  diffContent: existingPatch.diffContent || incomingDiff || '',
+                  explanation: existingPatch.explanation || incomingExplanation || 'Defensive remediation patch.',
                   status: 'APPROVED',
                   prNumber: prNum ?? existingPatch.prNumber,
                   prUrl: prUrl ?? existingPatch.prUrl,

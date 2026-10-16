@@ -450,6 +450,7 @@ export class DemoRunner {
             findingId: fId,
             filePath: patch.filePath,
             explanation: patch.explanation,
+            diffContent: patch.diffContent,
             patch: patch as unknown as Record<string, unknown>,
           },
         },
@@ -678,6 +679,9 @@ export class DemoRunner {
             metadata: {
               findingId: fId,
               patchId: patch.patchId,
+              filePath: patch.filePath,
+              diffContent: patch.diffContent,
+              explanation: patch.explanation,
               prNumber: patch.prNumber || 42,
               prUrl: finalPrUrl,
               prBranch: patch.prBranch || `amass/remediation/${patch.patchId}`,

@@ -212,7 +212,7 @@ export class DemoDataProvider implements AMASSDataProvider {
         if (findingId) {
           this.revealedFindings = this.revealedFindings.map((f) => {
             if (f.id === findingId || f.findingId === findingId) {
-              return { ...f, status: 'PATCHED' };
+              return { ...f, status: 'PATCHED', patch: matchPatch };
             }
             return f;
           });
@@ -225,7 +225,52 @@ export class DemoDataProvider implements AMASSDataProvider {
         if (findingId) {
           this.revealedFindings = this.revealedFindings.map((f) => {
             if (f.id === findingId || f.findingId === findingId) {
-              return { ...f, status: 'CRITIC_VERIFIED' };
+              const updatedPatch = f.patch ? { ...f.patch, status: 'APPROVED' } : undefined;
+              return { ...f, status: 'CRITIC_VERIFIED', patch: updatedPatch };
+            }
+            return f;
+          });
+        }
+        break;
+      }
+
+      case 'REMEDIATION_PR_CREATED': {
+        const findingId = (event.metadata?.findingId || event.metadata?.vulnerabilityId) as string | undefined;
+        const patchId = event.metadata?.patchId as string | undefined;
+        const prNumber = event.metadata?.prNumber as number | undefined;
+        const prUrl = event.metadata?.prUrl as string | undefined;
+        const prBranch = event.metadata?.prBranch as string | undefined;
+        const prStatus = (event.metadata?.prStatus as string | undefined) ?? 'OPEN';
+
+        this.revealedPatches = this.revealedPatches.map((p) => {
+          if (p.patchId === patchId || (findingId && p.findingId === findingId)) {
+            return {
+              ...p,
+              status: 'APPROVED',
+              prNumber: prNumber ?? p.prNumber,
+              prUrl: prUrl ?? p.prUrl,
+              prBranch: prBranch ?? p.prBranch,
+              prStatus,
+            };
+          }
+          return p;
+        });
+
+        if (findingId) {
+          this.revealedFindings = this.revealedFindings.map((f) => {
+            if (f.id === findingId || f.findingId === findingId) {
+              const existingPatch = f.patch ?? this.revealedPatches.find((p) => p.patchId === patchId || p.findingId === findingId);
+              const updatedPatch = existingPatch
+                ? {
+                    ...existingPatch,
+                    status: 'APPROVED',
+                    prNumber: prNumber ?? existingPatch.prNumber,
+                    prUrl: prUrl ?? existingPatch.prUrl,
+                    prBranch: prBranch ?? existingPatch.prBranch,
+                    prStatus,
+                  }
+                : undefined;
+              return { ...f, patch: updatedPatch };
             }
             return f;
           });

@@ -716,4 +716,108 @@ describe('useScanStore hook', () => {
     expect(result.current.agents.REMEDIATION_DELIVERY.status).toBe('COMPLETED');
     expect(result.current.agents.REMEDIATION_DELIVERY.prNumber).toBe(7);
   });
+
+  it('preserves patch diffContent from ENGINEER_PATCH_GENERATED through REMEDIATION_PR_CREATED', async () => {
+    const { result } = renderHook(() => useScanStore('scan_1'));
+
+    await waitFor(() => {
+      expect(result.current.findings.length).toBeGreaterThan(0);
+    });
+
+    const diffSample = '--- a/src/ProfileUpload.java\n+++ b/src/ProfileUpload.java\n@@ -1,1 +1,1 @@\n-vulnerable\n+sanitized\n';
+
+    // 1. Emit ENGINEER_PATCH_GENERATED
+    const patchEvt: AmassEvent = {
+      eventId: 'evt_patch_gen_1',
+      scanId: 'scan_1',
+      sequence: 20,
+      timestamp: new Date().toISOString(),
+      eventType: 'ENGINEER_PATCH_GENERATED',
+      agentType: 'ENGINEER',
+      phase: 'remediation',
+      level: 'INFO',
+      status: 'COMPLETED',
+      message: diffSample,
+      metadata: {
+        findingId: 'vuln_1',
+        patchId: 'patch_vuln_1',
+        filePath: 'src/ProfileUpload.java',
+        explanation: 'Path traversal sanitization',
+        patch: {
+          patchId: 'patch_vuln_1',
+          diffContent: diffSample,
+          filePath: 'src/ProfileUpload.java',
+        },
+      },
+    };
+
+    act(() => {
+      sseHandler?.(patchEvt);
+    });
+
+    const patchAfterGen = result.current.patches.find((p) => p.patchId === 'patch_vuln_1');
+    expect(patchAfterGen).toBeDefined();
+    expect(patchAfterGen?.diffContent).toBe(diffSample);
+    expect(patchAfterGen?.filePath).toBe('src/ProfileUpload.java');
+    expect(patchAfterGen?.status).toBe('GENERATED');
+
+    // 2. Emit CRITIC_APPROVED
+    const criticApprovedEvt: AmassEvent = {
+      eventId: 'evt_critic_app_1',
+      scanId: 'scan_1',
+      sequence: 21,
+      timestamp: new Date().toISOString(),
+      eventType: 'CRITIC_APPROVED',
+      agentType: 'CRITIC',
+      phase: 'validation',
+      level: 'INFO',
+      status: 'COMPLETED',
+      message: 'Critic APPROVED patch',
+      metadata: {
+        findingId: 'vuln_1',
+        patchId: 'patch_vuln_1',
+      },
+    };
+
+    act(() => {
+      sseHandler?.(criticApprovedEvt);
+    });
+
+    const patchAfterCritic = result.current.patches.find((p) => p.patchId === 'patch_vuln_1');
+    expect(patchAfterCritic?.status).toBe('APPROVED');
+    expect(patchAfterCritic?.diffContent).toBe(diffSample);
+
+    // 3. Emit REMEDIATION_PR_CREATED
+    const prCreatedEvt: AmassEvent = {
+      eventId: 'evt_pr_created_1',
+      scanId: 'scan_1',
+      sequence: 22,
+      timestamp: new Date().toISOString(),
+      eventType: 'REMEDIATION_PR_CREATED',
+      agentType: 'SYSTEM',
+      phase: 'remediation',
+      level: 'INFO',
+      status: 'SUCCEEDED',
+      message: 'GitHub Pull Request #1 created',
+      metadata: {
+        findingId: 'vuln_1',
+        patchId: 'patch_vuln_1',
+        prNumber: 1,
+        prUrl: 'https://github.com/Mayuresh1004/WebGoat/pull/1',
+        prBranch: 'amass/remediation/patch_vuln_1',
+        prStatus: 'OPEN',
+      },
+    };
+
+    act(() => {
+      sseHandler?.(prCreatedEvt);
+    });
+
+    const patchAfterPr = result.current.patches.find((p) => p.patchId === 'patch_vuln_1');
+    expect(patchAfterPr).toBeDefined();
+    expect(patchAfterPr?.prNumber).toBe(1);
+    expect(patchAfterPr?.prUrl).toBe('https://github.com/Mayuresh1004/WebGoat/pull/1');
+    expect(patchAfterPr?.diffContent).toBe(diffSample);
+    expect(patchAfterPr?.filePath).toBe('src/ProfileUpload.java');
+  });
 });

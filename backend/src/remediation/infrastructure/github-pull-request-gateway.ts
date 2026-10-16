@@ -86,6 +86,11 @@ export class GitHubPullRequestGateway implements PullRequestGateway {
         throw new Error('Patch application resulted in no working tree modifications');
       }
 
+      const workingDiff = git(['diff', input.filePath]).trim();
+      if (!workingDiff) {
+        throw new Error('Patch application resulted in no working tree modifications');
+      }
+
       const changedFiles = statusOutput
         .split('\n')
         .map((line) => line.slice(2).trim().replace(/^"|"$/g, ''))
@@ -119,18 +124,6 @@ export class GitHubPullRequestGateway implements PullRequestGateway {
         };
       }
 
-      // Check if PR already exists remotely for this head branch (Case A recovery)
-      if (this.token) {
-        const existingPr = await this.findExistingPR(owner, repo, input.headBranch);
-        if (existingPr) {
-          logger.info({ patchId: input.patchId, prNumber: existingPr.prNumber }, 'github_delivery: recovered existing remote PR metadata');
-          return {
-            ...existingPr,
-            commitSha,
-          };
-        }
-      }
-
       let pushUrl = identity.cloneUrl;
       if (this.token && isHttpUrl) {
         pushUrl = `https://x-access-token:${encodeURIComponent(this.token)}@github.com/${owner}/${repo}.git`;
@@ -141,6 +134,18 @@ export class GitHubPullRequestGateway implements PullRequestGateway {
       } catch (err) {
         const sanitizedMsg = this.sanitizeError(err);
         throw new Error(`Failed to push remediation branch ${input.headBranch}: ${sanitizedMsg}`);
+      }
+
+      // Check if PR already exists remotely for this head branch (Case A recovery)
+      if (this.token) {
+        const existingPr = await this.findExistingPR(owner, repo, input.headBranch);
+        if (existingPr) {
+          logger.info({ patchId: input.patchId, prNumber: existingPr.prNumber }, 'github_delivery: recovered existing remote PR metadata');
+          return {
+            ...existingPr,
+            commitSha,
+          };
+        }
       }
 
       // 7. Create or Recover GitHub PR via REST API (Case A & C)

@@ -109,6 +109,10 @@ export default function App() {
                 patches={store.patches}
                 activeFinding={activeFocusFinding}
                 onSelectFindingId={handleSelectFindingId}
+                criticStages={store.criticStages}
+                criticMatrix={store.criticMatrix}
+                engineerStatus={store.agents.ENGINEER.status}
+                isLoading={store.isLoading}
               />
             )}
 

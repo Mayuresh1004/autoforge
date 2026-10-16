@@ -978,7 +978,8 @@ export const WEBGOAT_FIXTURE: DemoTargetFixture = {
        @CurrentUsername String username) {
 -    return super.execute(file, fullName, username);
 +    return super.execute(file, fullName != null ? fullName.replace("../", "") : "", username);
-   }`,
+   }
+`,
     },
   ],
 };
