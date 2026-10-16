@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import type { SandboxNetworkPolicy, SandboxSpec } from '../../domain/models/sandbox';
-
+import path from 'node:path';
 const execFileAsync = promisify(execFile);
 
 export interface CliOutput {
@@ -105,28 +105,32 @@ export function buildCreateCommand(
     spec.appCommand !== undefined && spec.appCommand.length === 0;
 
   if (spec.mountRepository !== false) {
-    // Repo tree is the only host writable path; workdir inside it. The host
-    // source MUST be an absolute path: analysis sandboxes either pass a real
-    // host path or (via the DockerSandboxBackend) request a backend-owned
-    // ephemeral workspace, which is substituted with an absolute path before
-    // this builder runs. A bare relative value (e.g. the synthetic
-    // 'in-sandbox' marker) must never become an arbitrary host mount.
-    if (!spec.repositoryPath.startsWith('/')) {
+    const repositoryPath = spec.repositoryPath;
+
+    // Accept absolute paths on Linux/macOS and Windows.
+    const isAbsolutePath =
+      path.posix.isAbsolute(repositoryPath) ||
+      path.win32.isAbsolute(repositoryPath);
+
+    if (!isAbsolutePath) {
       throw new Error(
-        `refusing to bind-mount non-absolute repositoryPath '${spec.repositoryPath}'`
+        `refusing to bind-mount non-absolute repositoryPath '${repositoryPath}'`,
       );
     }
+
+    // Docker Desktop handles Windows paths more reliably with forward slashes.
+    const hostPath = path.win32.isAbsolute(repositoryPath)
+      ? repositoryPath.replace(/\\/g, '/')
+      : repositoryPath;
+
     command.push(
-      '--volume',
-      `${spec.repositoryPath}:${mountPath}`,
+      '--mount',
+      `type=bind,source=${hostPath},target=${mountPath}`,
       '--workdir',
-      mountPath
+      mountPath,
     );
-  } else {
-    // Host filesystem stays out. No --workdir: the image's own WORKDIR
-    // governs so a relative image CMD (e.g. `python app.py`) resolves
-    // inside the app's directory, not an arbitrary host-ish /tmp.
   }
+
 
   command.push(spec.image);
   if (spec.appCommand === undefined) {

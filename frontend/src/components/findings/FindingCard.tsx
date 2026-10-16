@@ -35,7 +35,9 @@ export function FindingCard({ finding, isSelected = false, onSelect }: FindingCa
         {finding.patch?.prUrl || finding.patch?.prNumber ? (
           <div className="flex flex-col items-end gap-1">
             <Badge variant="success" size="sm" className="text-[10px]">
-              ✓ PR CREATED {finding.patch.prNumber ? `#${finding.patch.prNumber}` : ''}
+              {finding.patch.prUrl
+                ? `✓ PR CREATED ${finding.patch.prNumber ? `#${finding.patch.prNumber}` : ''}`
+                : `✓ SIMULATED PR ${finding.patch.prNumber ? `#${finding.patch.prNumber}` : ''}`}
             </Badge>
             {finding.patch.prUrl && (
               <a

@@ -12,8 +12,8 @@ import type {
   PlanModel,
 } from '../types/api-types';
 
-export type DemoTargetId = 'AskBit' | 'GeoSpy';
-export type DemoScenarioId = 'full_approved' | 'critic_rejected';
+export type DemoTargetId = 'AskBit' | 'GeoSpy' | 'WebGoat';
+export type DemoScenarioId = 'full_approved' | 'critic_rejected' | 'baseline_failed';
 
 export interface StartScanOptions {
   repositoryUrl?: string;

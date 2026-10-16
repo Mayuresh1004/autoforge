@@ -156,9 +156,9 @@ export function ValidationMatrix({
                       </td>
 
                       <td className="p-2.5 text-center font-mono text-[11px]">
-                        {f.patch?.prUrl || f.patch?.prNumber ? (
+                        {f.patch?.prUrl ? (
                           <a
-                            href={f.patch.prUrl ?? undefined}
+                            href={f.patch.prUrl}
                             target="_blank"
                             rel="noreferrer"
                             onClick={(e) => e.stopPropagation()}
@@ -166,6 +166,10 @@ export function ValidationMatrix({
                           >
                             ✓ PR #{f.patch.prNumber ?? ''} ↗
                           </a>
+                        ) : f.patch?.prNumber ? (
+                          <span className="font-bold text-zinc-300" title="Simulated demo PR fixture">
+                            ✓ PR #{f.patch.prNumber} (demo)
+                          </span>
                         ) : f.patch?.prError ? (
                           <span className="font-bold text-rose-400 text-[10px]">FAILED</span>
                         ) : (

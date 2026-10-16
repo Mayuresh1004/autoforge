@@ -56,6 +56,10 @@ export function AgentCard({ label, state, isLast = false }: AgentCardProps) {
             >
               View PR ↗
             </a>
+          ) : state.isSimulated || (!state.prUrl && state.prNumber) ? (
+            <span className="font-mono text-[9px] uppercase tracking-wider text-zinc-400">
+              simulated
+            </span>
           ) : (
             <span className="font-mono text-[9px] uppercase tracking-wider opacity-75">
               {state.status}

@@ -119,13 +119,25 @@ export class GitHubPullRequestGateway implements PullRequestGateway {
         };
       }
 
+      // Check if PR already exists remotely for this head branch (Case A recovery)
+      if (this.token) {
+        const existingPr = await this.findExistingPR(owner, repo, input.headBranch);
+        if (existingPr) {
+          logger.info({ patchId: input.patchId, prNumber: existingPr.prNumber }, 'github_delivery: recovered existing remote PR metadata');
+          return {
+            ...existingPr,
+            commitSha,
+          };
+        }
+      }
+
       let pushUrl = identity.cloneUrl;
       if (this.token && isHttpUrl) {
         pushUrl = `https://x-access-token:${encodeURIComponent(this.token)}@github.com/${owner}/${repo}.git`;
       }
 
       try {
-        git(['push', pushUrl, `${input.headBranch}:${input.headBranch}`]);
+        git(['push', '--force', pushUrl, `${input.headBranch}:${input.headBranch}`]);
       } catch (err) {
         const sanitizedMsg = this.sanitizeError(err);
         throw new Error(`Failed to push remediation branch ${input.headBranch}: ${sanitizedMsg}`);
@@ -140,16 +152,6 @@ export class GitHubPullRequestGateway implements PullRequestGateway {
           commitSha,
           headBranch: input.headBranch,
           prStatus: 'OPEN',
-        };
-      }
-
-      // Check if PR already exists remotely for this head branch (Case A recovery)
-      const existingPr = await this.findExistingPR(owner, repo, input.headBranch);
-      if (existingPr) {
-        logger.info({ patchId: input.patchId, prNumber: existingPr.prNumber }, 'github_delivery: recovered existing remote PR metadata');
-        return {
-          ...existingPr,
-          commitSha,
         };
       }
 

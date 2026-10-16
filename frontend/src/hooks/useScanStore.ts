@@ -32,6 +32,7 @@ export interface AgentState {
   updatedAt?: string;
   prNumber?: number;
   prUrl?: string;
+  isSimulated?: boolean;
 }
 
 export interface CriticStageState {
@@ -713,11 +714,13 @@ export function useScanStore(initialScanId: string | null = null) {
               EXPLOIT_RETEST_COMPLETED: 'retest',
             };
             const stageKey = keyMap[event.eventType];
-            const stageStatus: CriticStageState['status'] = event.eventType.endsWith('_STARTED')
-              ? 'RUNNING'
-              : event.eventType.endsWith('_COMPLETED') || event.eventType === 'PATCH_APPLIED'
-                ? 'PASSED'
-                : 'IDLE';
+            const stageStatus: CriticStageState['status'] = event.status === 'FAILED'
+              ? 'FAILED'
+              : event.eventType.endsWith('_STARTED')
+                ? 'RUNNING'
+                : event.eventType.endsWith('_COMPLETED') || event.eventType === 'PATCH_APPLIED'
+                  ? 'PASSED'
+                  : 'IDLE';
 
             setFindingsById((prev) => {
               const key = resolveRemediationRecordKey(prev, targetFindingId, pId);
@@ -770,14 +773,21 @@ export function useScanStore(initialScanId: string | null = null) {
         case 'CRITIC_FAILED':
           if (targetFindingId || event.metadata?.patchId) {
             const pId = event.metadata?.patchId as string | undefined;
+            const failStage = event.metadata?.failureStage as string | undefined;
             setFindingsById((prev) => {
               const key = resolveRemediationRecordKey(prev, targetFindingId, pId);
               if (!key) return prev;
               const record = prev[key];
               if (!record) return prev;
-              const nextStages = record.criticStages.map((s) =>
-                s.key === 'approval' ? { ...s, status: 'FAILED' as const, message: event.message } : s
-              );
+              const nextStages = record.criticStages.map((s) => {
+                if (failStage && s.key === failStage) {
+                  return { ...s, status: 'FAILED' as const, message: event.message };
+                }
+                if (s.key === 'approval') {
+                  return { ...s, status: 'FAILED' as const, message: event.message };
+                }
+                return s;
+              });
               return {
                 ...prev,
                 [key]: {
@@ -796,8 +806,10 @@ export function useScanStore(initialScanId: string | null = null) {
           const prNum = event.metadata?.prNumber as number | undefined;
           const prUrl = event.metadata?.prUrl as string | undefined;
           const prBranch = event.metadata?.prBranch as string | undefined;
+          const prBaseBranch = (event.metadata?.prBaseBranch as string | undefined) ?? 'main';
           const prCommitSha = event.metadata?.prCommitSha as string | undefined;
           const prStatus = (event.metadata?.prStatus as string) ?? 'OPEN';
+          const isSimulated = (event.metadata?.isSimulated as boolean | undefined) ?? (prUrl ? false : Boolean(prNum));
 
           setFindingsById((prev) => {
             const key = resolveRemediationRecordKey(prev, targetFindingId, pId);
@@ -823,10 +835,12 @@ export function useScanStore(initialScanId: string | null = null) {
                 prNumber: prNum ?? null,
                 prUrl: prUrl ?? null,
                 prBranch: prBranch ?? null,
+                prBaseBranch: prBaseBranch,
                 prCommitSha: prCommitSha ?? null,
                 prStatus: prStatus ?? 'OPEN',
                 prDeliveredAt: event.timestamp,
                 prError: null,
+                isSimulated: isSimulated,
               };
               return {
                 ...prev,
@@ -857,10 +871,12 @@ export function useScanStore(initialScanId: string | null = null) {
                   prNumber: prNum ?? existingPatch.prNumber,
                   prUrl: prUrl ?? existingPatch.prUrl,
                   prBranch: prBranch ?? existingPatch.prBranch,
+                  prBaseBranch: prBaseBranch ?? existingPatch.prBaseBranch,
                   prCommitSha: prCommitSha ?? existingPatch.prCommitSha,
                   prStatus: prStatus ?? existingPatch.prStatus,
                   prDeliveredAt: event.timestamp,
                   prError: null,
+                  isSimulated: isSimulated ?? existingPatch.isSimulated,
                 },
                 finding: { ...record.finding, status: 'CRITIC_VERIFIED' },
               },
@@ -876,6 +892,7 @@ export function useScanStore(initialScanId: string | null = null) {
               updatedAt: event.timestamp,
               prNumber: prNum,
               prUrl: prUrl,
+              isSimulated: isSimulated,
             },
           }));
           break;

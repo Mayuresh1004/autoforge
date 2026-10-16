@@ -43,42 +43,55 @@ export class SqlInjectionVerifier implements VulnerabilityVerifier {
     return type === SQL_INJECTION;
   }
 
-  async verify(target: VerificationTarget, context: VerificationContext): Promise<VerificationOutcome> {
-    const adapter = new SqlMapAdapter(context.runtime);
-    const body = derivePostBody(target);
+async verify(target: VerificationTarget, context: VerificationContext): Promise<VerificationOutcome> {
+  const adapter = new SqlMapAdapter(context.runtime);
+  const body = derivePostBody(target);
 
-    // SQLMAP SEMANTICS: Do not run sqlmap on parameterless GET/POST endpoints.
-    // Parameterless endpoints must return NOT_TESTED.
-    const urlObj = new URL(target.endpoint);
-    const hasQueryParams = urlObj.searchParams.size > 0;
-    const hasBodyParams = Boolean(body);
+  const urlObj = new URL(target.endpoint);
+  const hasQueryParams = urlObj.searchParams.size > 0;
+  const hasBodyParams = Boolean(body);
 
-    if (!hasQueryParams && !hasBodyParams) {
-      logger.info(
-        { targetId: target.targetId, url: target.endpoint, method: target.method },
-        'SQLMAP_SKIPPED_NO_PARAMETERS'
-      );
-      return {
-        status: 'NOT_TESTED',
-        confidence: { score: 0, weighted: false, factors: [] },
-        evidence: [],
-        verifier: this.id,
-        tool: this.tool,
-        toolSummary: 'Skipped: endpoint has no query or body parameters to test',
-        toolStderr: '',
-        reason: 'no parameters available to test for SQL injection',
-        retryable: false,
-      };
+  // NEW: for GET/other non-body methods, pull hinted param names onto the URL
+  // when the raw crawled URL didn't already carry a query string.
+  let probeEndpoint = target.endpoint;
+  if (!hasQueryParams && !hasBodyParams) {
+    const hinted = target.verificationHints?.parameters?.length
+      ? target.verificationHints.parameters
+      : target.verificationHints?.parameterName
+        ? [target.verificationHints.parameterName]
+        : [];
+    if (hinted.length > 0) {
+      for (const p of hinted) urlObj.searchParams.set(p, '1');
+      probeEndpoint = urlObj.toString();
     }
+  }
 
-    const sqlmapOptions = {
-      url: target.endpoint,
-      method: target.method,
-      body,
-      cookie: target.credentials?.cookie,
-      authHeader: target.credentials?.header,
-      timeoutMs: context.timeoutMs,
+  const hasHintedParams = probeEndpoint !== target.endpoint;
+
+  if (!hasQueryParams && !hasBodyParams && !hasHintedParams) {
+    logger.info({ targetId: target.targetId, url: target.endpoint, method: target.method }, 'SQLMAP_SKIPPED_NO_PARAMETERS');
+    return {
+      status: 'NOT_TESTED',
+      confidence: { score: 0, weighted: false, factors: [] },
+      evidence: [],
+      verifier: this.id,
+      tool: this.tool,
+      toolSummary: 'Skipped: endpoint has no query or body parameters to test',
+      toolStderr: '',
+      reason: 'no parameters available to test for SQL injection',
+      retryable: false,
     };
+  }
+
+  const sqlmapOptions = {
+    url: probeEndpoint,          // <-- was target.endpoint
+    method: target.method,
+    body,
+    cookie: target.credentials?.cookie,
+    authHeader: target.credentials?.header,
+    timeoutMs: context.timeoutMs,
+  };
+  // ...rest unchanged
     const { argv } = adapter.buildArgv(sqlmapOptions);
 
     logger.info(

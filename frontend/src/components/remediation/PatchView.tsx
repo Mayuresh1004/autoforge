@@ -162,7 +162,11 @@ export function PatchView({ patches, activeFinding, onSelectFindingId }: PatchVi
                 <div className={`rounded-lg border p-3 text-xs font-mono space-y-1.5 ${activePatch.prError ? 'border-amber-500/40 bg-amber-500/10 text-amber-200' : 'border-emerald-500/40 bg-emerald-500/10 text-emerald-100'}`}>
                   <div className="flex items-center justify-between">
                     <span className="font-bold uppercase tracking-wider text-[11px] flex items-center gap-1.5">
-                      {activePatch.prError ? '⚠️ Remediation Delivery Warning' : '🚀 GitHub Pull Request Created'}
+                      {activePatch.prError
+                        ? '⚠️ Remediation Delivery Warning'
+                        : activePatch.prUrl
+                        ? '🚀 GitHub Pull Request Created'
+                        : '🧪 Simulated Pull Request (Demo)'}
                     </span>
                     {activePatch.prStatus && (
                       <span className="px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 text-[9px] font-bold">
@@ -181,6 +185,10 @@ export function PatchView({ patches, activeFinding, onSelectFindingId }: PatchVi
                       >
                         View Pull Request #{activePatch.prNumber} ↗
                       </a>
+                    </div>
+                  ) : activePatch.prNumber ? (
+                    <div className="text-xs text-zinc-400">
+                      Simulated PR #{activePatch.prNumber} (demo fixture — no upstream PR created)
                     </div>
                   ) : null}
 

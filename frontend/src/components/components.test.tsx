@@ -200,4 +200,117 @@ describe('Frontend UI Components', () => {
     expect(screen.getByText('Broken Access Control')).toBeInTheDocument();
     expect(screen.getByText('APPROVED')).toBeInTheDocument();
   });
+
+  it('renders PullRequestPanel with simulated demo PR without clickable external link', () => {
+    const mockPatches: PatchModel[] = [
+      {
+        patchId: 'patch-fnd-webgoat-pathtraversal',
+        scanId: 'scan_wg8e12f0',
+        filePath: 'src/main/java/org/owasp/webgoat/lessons/pathtraversal/ProfileUpload.java',
+        diffContent: '+ targetPath.startsWith',
+        status: 'APPROVED',
+        prNumber: 102,
+        prUrl: null,
+        isSimulated: true,
+        prBranch: 'amass/remediation/fix-path-traversal-profile-upload',
+        prCommitSha: '9b3c41a2e5d7f8c1234567890abcdef123456790',
+        prStatus: 'OPEN',
+      },
+    ];
+
+    render(<PullRequestPanel patches={mockPatches} />);
+    expect(screen.getByText('✓ SIMULATED PR #102')).toBeInTheDocument();
+    expect(screen.getByText('Simulated Pull Request Generated (Demo Fixture)')).toBeInTheDocument();
+    expect(screen.getByText('Simulated Demo PR (No Upstream PR)')).toBeInTheDocument();
+
+    // Verify there are no clickable external links to upstream PR 102
+    const links = screen.queryAllByRole('link');
+    const pr102Link = links.find((l) => l.getAttribute('href')?.includes('102'));
+    expect(pr102Link).toBeUndefined();
+  });
+
+  it('renders ValidationMatrix with simulated demo PR as non-clickable badge', () => {
+    const mockFindings: FindingModel[] = [
+      {
+        id: 'fnd-webgoat-pathtraversal',
+        title: 'Path Traversal',
+        severity: 'HIGH',
+        filePath: 'src/main/java/org/owasp/webgoat/lessons/pathtraversal/ProfileUpload.java',
+        status: 'CRITIC_VERIFIED',
+        patch: {
+          patchId: 'patch-fnd-webgoat-pathtraversal',
+          scanId: 'scan_wg8e12f0',
+          filePath: 'src/main/java/org/owasp/webgoat/lessons/pathtraversal/ProfileUpload.java',
+          diffContent: '+ test',
+          status: 'APPROVED',
+          prNumber: 102,
+          prUrl: null,
+          isSimulated: true,
+        },
+      },
+    ];
+
+    const mockStages: CriticStageState[] = [
+      { name: 'Final Security Verdict', key: 'approval', status: 'PASSED' },
+    ];
+
+    render(<ValidationMatrix findings={mockFindings} stages={mockStages} />);
+    expect(screen.getByText('✓ PR #102 (demo)')).toBeInTheDocument();
+
+    // Verify no anchor link for PR 102
+    const links = screen.queryAllByRole('link');
+    const pr102Link = links.find((l) => l.getAttribute('href')?.includes('102'));
+    expect(pr102Link).toBeUndefined();
+  });
+
+  it('renders PullRequestPanel and ValidationMatrix with real WebGoat PR delivery on Mayuresh1004/WebGoat', () => {
+    const mockWebGoatPatch: PatchModel = {
+      patchId: 'patch-fnd-webgoat-pathtraversal',
+      findingId: 'fnd-webgoat-pathtraversal',
+      scanId: 'scan_wg8e12f0',
+      filePath: 'src/main/java/org/owasp/webgoat/lessons/pathtraversal/ProfileUpload.java',
+      diffContent: '+ fullName.replace("../", "")',
+      status: 'APPROVED',
+      prNumber: 1,
+      prUrl: 'https://github.com/Mayuresh1004/WebGoat/pull/1',
+      prBranch: 'amass/remediation/fix-path-traversal-profile-upload',
+      prBaseBranch: 'main',
+      prCommitSha: 'bde003e5114759d7453a26ee6716372dd1f1f0b8',
+      prStatus: 'OPEN',
+      isSimulated: false,
+    };
+
+    const { unmount } = render(<PullRequestPanel patches={[mockWebGoatPatch]} />);
+    expect(screen.getByText('✓ PR CREATED #1')).toBeInTheDocument();
+    expect(screen.getByText('GitHub Pull Request Delivered')).toBeInTheDocument();
+    expect(screen.getByText('amass/remediation/fix-path-traversal-profile-upload')).toBeInTheDocument();
+    expect(screen.getByText('main')).toBeInTheDocument();
+    expect(screen.queryByText(/SIMULATED/i)).not.toBeInTheDocument();
+
+    const prLink = screen.getByText('View Pull Request ↗');
+    expect(prLink).toHaveAttribute('href', 'https://github.com/Mayuresh1004/WebGoat/pull/1');
+    expect(prLink).toHaveAttribute('target', '_blank');
+
+    unmount();
+
+    const mockFinding: FindingModel = {
+      id: 'fnd-webgoat-pathtraversal',
+      title: 'Path Traversal',
+      severity: 'HIGH',
+      filePath: 'src/main/java/org/owasp/webgoat/lessons/pathtraversal/ProfileUpload.java',
+      status: 'CRITIC_VERIFIED',
+      patch: mockWebGoatPatch,
+    };
+
+    render(
+      <ValidationMatrix
+        findings={[mockFinding]}
+        stages={[{ name: 'Final Security Verdict', key: 'approval', status: 'PASSED' }]}
+      />
+    );
+    const matrixLink = screen.getByText('✓ PR #1 ↗');
+    expect(matrixLink).toHaveAttribute('href', 'https://github.com/Mayuresh1004/WebGoat/pull/1');
+    expect(matrixLink).toHaveAttribute('target', '_blank');
+  });
 });
+

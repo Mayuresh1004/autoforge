@@ -6,6 +6,7 @@
  * 
  * GeoSpy domain: Generative Engine Optimization (GEO) platform (Python/FastAPI).
  * AskBit domain: TypeScript/React Q&A Platform (Node.js/Express).
+ * WebGoat domain: OWASP Insecure Training & Benchmark Application (Java/Spring Boot).
  * Stable ID linkages bind Findings, Scout Endpoints, Targets, Exploits, and Patches.
  */
 
@@ -20,7 +21,7 @@ import type {
 } from '../types/api-types';
 
 export interface DemoTargetFixture {
-  readonly id: 'AskBit' | 'GeoSpy';
+  readonly id: 'AskBit' | 'GeoSpy' | 'WebGoat';
   readonly name: string;
   readonly repositoryUrl: string;
   readonly techStack: string;
@@ -313,6 +314,7 @@ export const ASKBIT_FIXTURE: DemoTargetFixture = {
       prNumber: 1,
       prUrl: 'https://github.com/Mayuresh1004/AskBit/pull/1',
       prBranch: 'amass/remediation/fix-security-remediation',
+      prBaseBranch: 'main',
       prCommitSha: '64d4089c1234567890abcdef',
       prStatus: 'OPEN',
       prDeliveredAt: new Date().toISOString(),
@@ -339,6 +341,7 @@ export const ASKBIT_FIXTURE: DemoTargetFixture = {
       prNumber: 1,
       prUrl: 'https://github.com/Mayuresh1004/AskBit/pull/1',
       prBranch: 'amass/remediation/fix-security-remediation',
+      prBaseBranch: 'main',
       prCommitSha: '64d4089c1234567890abcdef',
       prStatus: 'OPEN',
       prDeliveredAt: new Date().toISOString(),
@@ -683,7 +686,305 @@ export const GEOSPY_FIXTURE: DemoTargetFixture = {
   ],
 };
 
+// ============================================================================
+// 3. WEBGOAT TARGET FIXTURES (OWASP Insecure Application Lab)
+// Domain: Spring Boot lessons, SQL Injection, Path Traversal, XSS, SSRF
+// ============================================================================
+
+export const WEBGOAT_FIXTURE: DemoTargetFixture = {
+  id: 'WebGoat',
+  name: 'WebGoat (OWASP Insecure Application Lab)',
+  repositoryUrl: 'https://github.com/Mayuresh1004/WebGoat',
+  techStack: 'Java 17, Spring Boot 3, Spring Security, H2 Database, Maven',
+  description: 'OWASP WebGoat deliberately insecure application for security benchmarks and vulnerability training.',
+
+  scan: {
+    scanId: 'scan_wg8e12f0',
+    repositoryUrl: 'https://github.com/Mayuresh1004/WebGoat',
+    commitHash: 'v2023.4',
+    status: 'COMPLETED',
+    startedAt: new Date().toISOString(),
+    completedAt: new Date().toISOString(),
+    targetUrl: 'http://webgoat-sandbox.internal:8080/WebGoat',
+    isDemo: true,
+  },
+
+  sandbox: {
+    id: 'sbx-webgoat-8e12',
+    sandboxId: 'sbx-webgoat-8e12',
+    scanId: 'scan_wg8e12f0',
+    status: 'READY',
+    runtime: 'docker-isolated',
+    targetUrl: 'http://webgoat-sandbox.internal:8080/WebGoat',
+    internalHost: '172.28.0.12',
+    internalPort: 8080,
+    createdAt: new Date().toISOString(),
+    repository: {
+      name: 'WebGoat',
+      url: 'https://github.com/Mayuresh1004/WebGoat',
+      path: '/workspace/webgoat',
+    },
+  },
+
+  findings: [
+    {
+      id: 'fnd-webgoat-sqli',
+      findingId: 'fnd-webgoat-sqli',
+      scanId: 'scan_wg8e12f0',
+      ruleId: 'OWASP-A03-SQL-INJECTION',
+      title: 'A03: SQL Injection in Account Lookup',
+      severity: 'CRITICAL',
+      cwe: 'CWE-89',
+      filePath: 'src/main/java/org/owasp/webgoat/lessons/sqlinjection/introduction/SqlInjectionLesson5a.java',
+      lineStart: 42,
+      lineEnd: 58,
+      endpoint: '/WebGoat/SqlInjection/assignment5a',
+      parameter: 'account',
+      isConfirmed: false,
+      status: 'DISCOVERED',
+      isDemo: true,
+      description: 'Dynamic SQL query constructed via unescaped string concatenation with account parameter in SqlInjectionLesson5a.',
+      evidence: "POST /WebGoat/SqlInjection/assignment5a with account=\"Smith' OR '1'='1\" returns unauthorized account records.",
+    },
+    {
+      id: 'fnd-webgoat-pathtraversal',
+      findingId: 'fnd-webgoat-pathtraversal',
+      scanId: 'scan_wg8e12f0',
+      ruleId: 'OWASP-A01-PATH-TRAVERSAL',
+      title: 'A01: Path Traversal in Profile Upload',
+      severity: 'HIGH',
+      cwe: 'CWE-22',
+      filePath: 'src/main/java/org/owasp/webgoat/lessons/pathtraversal/ProfileUpload.java',
+      lineStart: 32,
+      lineEnd: 46,
+      endpoint: '/WebGoat/PathTraversal/profile-upload',
+      parameter: 'fullName',
+      isConfirmed: false,
+      status: 'DISCOVERED',
+      isDemo: true,
+      description: 'User-controlled fullName parameter concatenated directly into file destination path without directory normalization or traversal sequence validation.',
+      evidence: 'POST /WebGoat/PathTraversal/profile-upload with fullName="../test" writes uploaded file outside intended user directory.',
+    },
+    {
+      id: 'fnd-webgoat-xss',
+      findingId: 'fnd-webgoat-xss',
+      scanId: 'scan_wg8e12f0',
+      ruleId: 'OWASP-A03-CROSS-SITE-SCRIPTING',
+      title: 'A03: Reflected Cross-Site Scripting in Credit Card Search',
+      severity: 'HIGH',
+      cwe: 'CWE-79',
+      filePath: 'src/main/java/org/owasp/webgoat/plugin/CrossSiteScriptingLesson.java',
+      lineStart: 28,
+      lineEnd: 42,
+      endpoint: '/WebGoat/CrossSiteScripting/attack5a',
+      parameter: 'field1',
+      isConfirmed: false,
+      status: 'DISCOVERED',
+      isDemo: true,
+      description: 'Unsanitized user input field1 reflected directly into DOM response context without HTML entity encoding.',
+      evidence: 'POST /WebGoat/CrossSiteScripting/attack5a field1="<script>alert(1)</script>" reflected unescaped in response payload.',
+    },
+    {
+      id: 'fnd-webgoat-ssrf',
+      findingId: 'fnd-webgoat-ssrf',
+      scanId: 'scan_wg8e12f0',
+      ruleId: 'OWASP-A10-SERVER-SIDE-REQUEST-FORGERY',
+      title: 'A10: Server-Side Request Forgery in Image Fetcher',
+      severity: 'HIGH',
+      cwe: 'CWE-918',
+      filePath: 'src/main/java/org/owasp/webgoat/lessons/ssrf/SSRFTask1.java',
+      lineStart: 25,
+      lineEnd: 39,
+      endpoint: '/WebGoat/SSRF/task1',
+      parameter: 'url',
+      isConfirmed: false,
+      status: 'DISCOVERED',
+      isDemo: true,
+      description: 'Remote image fetcher executes HTTP client requests to arbitrary user-supplied URLs without restricting private or loopback IP ranges.',
+      evidence: 'POST /WebGoat/SSRF/task1 url="http://127.0.0.1:8080/WebGoat/images/jerry.png" connects to internal loopback service.',
+    },
+  ],
+
+  endpoints: [
+    {
+      findingId: 'fnd-webgoat-sqli',
+      path: '/WebGoat/SqlInjection/assignment5a',
+      method: 'POST',
+      description: 'SQL Injection assignment handler in SqlInjectionLesson5a.java',
+      evidence: 'Identified POST route /WebGoat/SqlInjection/assignment5a passing parameter account to raw SQL query string.',
+      isAuthRequired: true,
+    },
+    {
+      findingId: 'fnd-webgoat-pathtraversal',
+      path: '/WebGoat/PathTraversal/profile-upload',
+      method: 'POST',
+      description: 'Profile upload multipart handler in ProfileUpload.java',
+      evidence: 'Identified POST route /WebGoat/PathTraversal/profile-upload taking fullName without path sanitization.',
+      isAuthRequired: true,
+    },
+    {
+      findingId: 'fnd-webgoat-xss',
+      path: '/WebGoat/CrossSiteScripting/attack5a',
+      method: 'POST',
+      description: 'Cross-site scripting search handler in CrossSiteScriptingLesson.java',
+      evidence: 'Identified POST route /WebGoat/CrossSiteScripting/attack5a reflecting unescaped string parameter.',
+      isAuthRequired: true,
+    },
+    {
+      findingId: 'fnd-webgoat-ssrf',
+      path: '/WebGoat/SSRF/task1',
+      method: 'POST',
+      description: 'SSRF image fetcher handler in SSRFTask1.java',
+      evidence: 'Identified POST route /WebGoat/SSRF/task1 fetching remote resource with unvalidated URL.',
+      isAuthRequired: true,
+    },
+  ],
+
+  targets: [
+    {
+      targetId: 'fnd-webgoat-sqli',
+      findingId: 'fnd-webgoat-sqli',
+      scanId: 'scan_wg8e12f0',
+      endpoint: '/WebGoat/SqlInjection/assignment5a',
+      method: 'POST',
+      vulnerabilityType: 'A03 SQL Injection',
+      priorityScore: 9.8,
+      rationale: 'Scout mapped unparameterized dynamic SQL string interpolation on account assignment endpoint.',
+      estimatedRisk: 'CRITICAL',
+    },
+    {
+      targetId: 'fnd-webgoat-pathtraversal',
+      findingId: 'fnd-webgoat-pathtraversal',
+      scanId: 'scan_wg8e12f0',
+      endpoint: '/WebGoat/PathTraversal/profile-upload',
+      method: 'POST',
+      vulnerabilityType: 'A01 Path Traversal',
+      priorityScore: 9.2,
+      rationale: 'Scout verified unvalidated fullName parameter controlling uploaded file filesystem destination.',
+      estimatedRisk: 'HIGH',
+    },
+    {
+      targetId: 'fnd-webgoat-xss',
+      findingId: 'fnd-webgoat-xss',
+      scanId: 'scan_wg8e12f0',
+      endpoint: '/WebGoat/CrossSiteScripting/attack5a',
+      method: 'POST',
+      vulnerabilityType: 'A03 Reflected Cross-Site Scripting',
+      priorityScore: 8.6,
+      rationale: 'Scout identified unescaped reflection in search response.',
+      estimatedRisk: 'HIGH',
+    },
+    {
+      targetId: 'fnd-webgoat-ssrf',
+      findingId: 'fnd-webgoat-ssrf',
+      scanId: 'scan_wg8e12f0',
+      endpoint: '/WebGoat/SSRF/task1',
+      method: 'POST',
+      vulnerabilityType: 'A10 Server-Side Request Forgery',
+      priorityScore: 8.3,
+      rationale: 'Scout confirmed unvalidated remote URL handler allowing internal loopback communication.',
+      estimatedRisk: 'HIGH',
+    },
+  ],
+
+  exploits: [
+    {
+      exploitId: 'exp-fnd-webgoat-sqli',
+      targetId: 'fnd-webgoat-sqli',
+      findingId: 'fnd-webgoat-sqli',
+      scanId: 'scan_wg8e12f0',
+      confirmed: true,
+      endpoint: '/WebGoat/SqlInjection/assignment5a',
+      method: 'POST',
+      parameter: 'account',
+      httpStatusCode: 200,
+      payload: "account=Smith' OR '1'='1",
+      responseSnippet: '{"lessonCompleted": true, "output": "User Smith, User Admin, User Dave retrieved"}',
+      verificationNotes: 'SNIPER CONFIRMED: SQL query string injection returned all database user accounts.',
+    },
+    {
+      exploitId: 'exp-fnd-webgoat-pathtraversal',
+      targetId: 'fnd-webgoat-pathtraversal',
+      findingId: 'fnd-webgoat-pathtraversal',
+      scanId: 'scan_wg8e12f0',
+      confirmed: true,
+      endpoint: '/WebGoat/PathTraversal/profile-upload',
+      method: 'POST',
+      parameter: 'fullName',
+      httpStatusCode: 200,
+      payload: 'fullName=../test&uploadedFile=test.jpg',
+      responseSnippet: '{"lessonCompleted": true, "message": "File uploaded to /workspace/test"}',
+      verificationNotes: 'SNIPER CONFIRMED: Path traversal bypassed profile directory and wrote to parent directory.',
+    },
+  ],
+
+  patches: [
+    {
+      patchId: 'patch-fnd-webgoat-sqli',
+      findingId: 'fnd-webgoat-sqli',
+      scanId: 'scan_wg8e12f0',
+      filePath: 'src/main/java/org/owasp/webgoat/lessons/sqlinjection/introduction/SqlInjectionLesson5a.java',
+      status: 'APPROVED',
+      ragContextCount: 4,
+      explanation: 'Replaced dynamic SQL string concatenation with parameterized PreparedStatement to prevent SQL injection.',
+      prNumber: 2,
+      prUrl: 'https://github.com/Mayuresh1004/WebGoat/pull/2',
+      isSimulated: false,
+      prBranch: 'amass/remediation/fix-sqli-assignment5a',
+      prBaseBranch: 'main',
+      prCommitSha: 'b02336c27e96359d755f18e88f843aa2d75442eb',
+      prStatus: 'OPEN',
+      prDeliveredAt: new Date().toISOString(),
+      diffContent: `--- a/src/main/java/org/owasp/webgoat/lessons/sqlinjection/introduction/SqlInjectionLesson5a.java
++++ b/src/main/java/org/owasp/webgoat/lessons/sqlinjection/introduction/SqlInjectionLesson5a.java
+@@ -45,11 +45,10 @@ protected AttackResult injectableQuery(String accountName) {
+     String query = "";
+     try (Connection connection = dataSource.getConnection()) {
+       query =
+-          "SELECT * FROM user_data WHERE first_name = 'John' and last_name = '" + accountName + "'";
+-      try (Statement statement =
+-          connection.createStatement(
+-              ResultSet.TYPE_SCROLL_INSENSITIVE, ResultSet.CONCUR_UPDATABLE)) {
+-        ResultSet results = statement.executeQuery(query);
++          "SELECT * FROM user_data WHERE first_name = 'John' and last_name = ?";
++      try (PreparedStatement statement = connection.prepareStatement(query, ResultSet.TYPE_SCROLL_INSENSITIVE, ResultSet.CONCUR_UPDATABLE)) {
++        statement.setString(1, accountName);
++        ResultSet results = statement.executeQuery();
+
+         if ((results != null) && (results.first())) {
+           ResultSetMetaData resultsMetaData = results.getMetaData();`,
+    },
+    {
+      patchId: 'patch-fnd-webgoat-pathtraversal',
+      findingId: 'fnd-webgoat-pathtraversal',
+      scanId: 'scan_wg8e12f0',
+      filePath: 'src/main/java/org/owasp/webgoat/lessons/pathtraversal/ProfileUpload.java',
+      status: 'APPROVED',
+      ragContextCount: 3,
+      explanation: 'Sanitized user-supplied upload path to eliminate directory traversal sequences.',
+      prNumber: 1,
+      prUrl: 'https://github.com/Mayuresh1004/WebGoat/pull/1',
+      isSimulated: false,
+      prBranch: 'amass/remediation/fix-path-traversal-profile-upload',
+      prBaseBranch: 'main',
+      prCommitSha: 'bde003e5114759d7453a26ee6716372dd1f1f0b8',
+      prStatus: 'OPEN',
+      prDeliveredAt: new Date().toISOString(),
+      diffContent: `--- a/src/main/java/org/owasp/webgoat/lessons/pathtraversal/ProfileUpload.java
++++ b/src/main/java/org/owasp/webgoat/lessons/pathtraversal/ProfileUpload.java
+@@ -40,5 +40,5 @@
+       @RequestParam("uploadedFile") MultipartFile file,
+       @RequestParam(value = "fullName", required = false) String fullName,
+       @CurrentUsername String username) {
+-    return super.execute(file, fullName, username);
++    return super.execute(file, fullName != null ? fullName.replace("../", "") : "", username);
+   }`,
+    },
+  ],
+};
+
 export const DEMO_FIXTURES: Record<string, DemoTargetFixture> = {
   AskBit: ASKBIT_FIXTURE,
   GeoSpy: GEOSPY_FIXTURE,
+  WebGoat: WEBGOAT_FIXTURE,
 };

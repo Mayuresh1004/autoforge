@@ -25,7 +25,8 @@ export class SmartAMASSDataProvider implements AMASSDataProvider {
     const repoUrl = options.repositoryUrl ?? '';
     const isAskBitUrl = /askbit/i.test(repoUrl);
     const isGeoSpyUrl = /geospy/i.test(repoUrl);
-    const demoTarget: DemoTargetId | undefined = options.demoTargetId || (isAskBitUrl ? 'AskBit' : isGeoSpyUrl ? 'GeoSpy' : undefined);
+    const isWebGoatUrl = /webgoat/i.test(repoUrl);
+    const demoTarget: DemoTargetId | undefined = options.demoTargetId || (isAskBitUrl ? 'AskBit' : isGeoSpyUrl ? 'GeoSpy' : isWebGoatUrl ? 'WebGoat' : undefined);
 
     if (demoTarget) {
       demoDataProvider.setDemoConfig(demoTarget, options.scenarioId ?? 'full_approved', options.speedMultiplier ?? 1.0);

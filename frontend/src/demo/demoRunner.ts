@@ -45,6 +45,7 @@ export class DemoRunner {
     const scanId = this.config.fixture.scan.scanId;
     const findings = this.config.fixture.findings;
     const isRejectedScenario = this.config.scenarioId === 'critic_rejected';
+    const isBaselineFailedScenario = this.config.scenarioId === 'baseline_failed';
 
     // 1. SCAN_STARTED
     eventsToSchedule.push({
@@ -488,10 +489,15 @@ export class DemoRunner {
     this.config.fixture.patches.forEach((patch, idx) => {
       const fId = patch.findingId || findings[idx]?.id;
       const cTime = criticStartTime + 1.0 + idx * 4.0;
-      // In rejected scenario, reject second finding (e.g. SQL Injection / fnd-askbit-a03 or fnd-geospy-a03)
-      const isThisFindingRejected = isRejectedScenario && (fId.includes('a03') || idx === 1);
+      // In rejected scenario, reject second finding (e.g. SQL Injection / fnd-askbit-a03, fnd-geospy-a03, or fnd-webgoat-sqli)
+      const isThisFindingRejected = isRejectedScenario && (fId.includes('a03') || fId.includes('sqli') || idx === 1);
+      const isThisFindingBaselineFailed = isBaselineFailedScenario && (fId.includes('a03') || fId.includes('sqli') || idx === 1);
 
-      // Baseline check
+      const matchingExploit = this.config.fixture.exploits.find(
+        (e) => e.findingId === fId || e.targetId === fId || e.exploitId === `exp-${fId}`
+      );
+
+      // Baseline check (reusing Sniper's exact deterministic verification recipe)
       eventsToSchedule.push({
         delaySec: cTime + 0.0,
         event: {
@@ -501,10 +507,42 @@ export class DemoRunner {
           phase: 'validation',
           level: 'INFO',
           status: 'IN_PROGRESS',
-          message: `Baseline Check [${fId}]: Confirming vulnerable state before patch application`,
-          metadata: { findingId: fId },
+          message: `Baseline Check [${fId}]: Confirming vulnerable state before patch application with verification recipe (${matchingExploit?.method ?? 'POST'} ${matchingExploit?.endpoint ?? ''})`,
+          metadata: { findingId: fId, patchId: patch.patchId, recipe: matchingExploit as unknown as Record<string, unknown> },
         },
       });
+
+      if (isThisFindingBaselineFailed) {
+        // Deterministic baseline failure: an unconfirmed or inconclusive baseline must NEVER produce approval
+        eventsToSchedule.push({
+          delaySec: cTime + 0.8,
+          event: {
+            scanId,
+            eventType: 'BASELINE_CHECK_COMPLETED',
+            agentType: 'CRITIC',
+            phase: 'validation',
+            level: 'ERROR',
+            status: 'FAILED',
+            message: `Baseline Check ✗ [${fId}]: Failed to reproduce vulnerable state in sandbox (inconclusive / failed baseline)`,
+            metadata: { findingId: fId, patchId: patch.patchId, failureStage: 'baseline' },
+          },
+        });
+        eventsToSchedule.push({
+          delaySec: cTime + 1.4,
+          event: {
+            scanId,
+            eventType: 'CRITIC_REJECTED',
+            agentType: 'CRITIC',
+            phase: 'validation',
+            level: 'ERROR',
+            status: 'REJECTED',
+            message: `Critic REJECTED [${fId}]: Baseline verification failed. A failed or inconclusive baseline cannot produce a Critic approval.`,
+            metadata: { findingId: fId, patchId: patch.patchId, failureStage: 'baseline' },
+          },
+        });
+        return;
+      }
+
       eventsToSchedule.push({
         delaySec: cTime + 0.6,
         event: {
@@ -514,8 +552,8 @@ export class DemoRunner {
           phase: 'validation',
           level: 'INFO',
           status: 'COMPLETED',
-          message: `Baseline Check ✓ [${fId}]: Vulnerable behavior reproduced in sandbox`,
-          metadata: { findingId: fId },
+          message: `Baseline Check ✓ [${fId}]: Vulnerable behavior reproduced in sandbox using deterministic recipe (${matchingExploit?.method ?? 'GET'} ${matchingExploit?.endpoint ?? ''})`,
+          metadata: { findingId: fId, patchId: patch.patchId, recipe: matchingExploit as unknown as Record<string, unknown> },
         },
       });
 
@@ -601,7 +639,7 @@ export class DemoRunner {
             level: 'INFO',
             status: 'COMPLETED',
             message: `Exploit Retest ✓ [${fId}]: Exploit payload no longer succeeds against patched sandbox`,
-            metadata: { findingId: fId },
+            metadata: { findingId: fId, patchId: patch.patchId, recipe: matchingExploit as unknown as Record<string, unknown> },
           },
         });
         eventsToSchedule.push({
@@ -617,6 +655,16 @@ export class DemoRunner {
             metadata: { findingId: fId, patchId: patch.patchId },
           },
         });
+
+        const isSimulatedPr = Boolean(patch.isSimulated || patch.prUrl === null);
+        const fallbackPrUrl = isSimulatedPr
+          ? null
+          : `${this.config.fixture.repositoryUrl}/pull/${patch.prNumber || 42}`;
+        const finalPrUrl = isSimulatedPr ? null : (patch.prUrl || fallbackPrUrl);
+        const prMessage = isSimulatedPr
+          ? `Simulated Pull Request #${patch.prNumber || 42} generated (demo fixture)`
+          : `GitHub Pull Request #${patch.prNumber || 42} created: ${finalPrUrl}`;
+
         eventsToSchedule.push({
           delaySec: cTime + 4.2,
           event: {
@@ -626,15 +674,17 @@ export class DemoRunner {
             phase: 'remediation',
             level: 'INFO',
             status: 'SUCCEEDED',
-            message: `GitHub Pull Request #${patch.prNumber || 42} created: ${patch.prUrl || 'https://github.com/Mayuresh1004/AskBit/pull/42'}`,
+            message: prMessage,
             metadata: {
               findingId: fId,
               patchId: patch.patchId,
               prNumber: patch.prNumber || 42,
-              prUrl: patch.prUrl || 'https://github.com/Mayuresh1004/AskBit/pull/42',
+              prUrl: finalPrUrl,
               prBranch: patch.prBranch || `amass/remediation/${patch.patchId}`,
+              prBaseBranch: patch.prBaseBranch || 'main',
               prCommitSha: patch.prCommitSha || 'a7b3c9f1234567890abcdef',
               prStatus: 'OPEN',
+              isSimulated: isSimulatedPr,
             },
           },
         });
@@ -657,18 +707,21 @@ export class DemoRunner {
     });
 
     // 10. SCAN_COMPLETED
+    const isAnyFailure = isRejectedScenario || isBaselineFailedScenario;
     eventsToSchedule.push({
       delaySec: criticDoneTime,
       event: {
         scanId,
-        eventType: isRejectedScenario ? 'SCAN_FAILED' : 'SCAN_COMPLETED',
+        eventType: isAnyFailure ? 'SCAN_FAILED' : 'SCAN_COMPLETED',
         agentType: 'SYSTEM',
         phase: 'scan',
-        level: isRejectedScenario ? 'WARN' : 'INFO',
-        status: isRejectedScenario ? 'FAILED' : 'COMPLETED',
-        message: isRejectedScenario
-          ? 'Scan completed with Critic Rejection on one or more patches'
-          : 'Scan completed successfully across all vulnerability pipelines',
+        level: isAnyFailure ? 'WARN' : 'INFO',
+        status: isAnyFailure ? 'FAILED' : 'COMPLETED',
+        message: isBaselineFailedScenario
+          ? 'Scan completed with Critic Rejection due to failed baseline check'
+          : isRejectedScenario
+            ? 'Scan completed with Critic Rejection on one or more patches'
+            : 'Scan completed successfully across all vulnerability pipelines',
       },
     });
 

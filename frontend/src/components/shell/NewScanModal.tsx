@@ -63,10 +63,34 @@ export function NewScanModal({ isOpen, onClose, onScanCreated, onStartScan }: Ne
             type="text"
             value={targetUrl}
             onChange={(e) => setTargetUrl(e.target.value)}
-            placeholder="e.g. https://github.com/Mayuresh1004/AskBit"
+            placeholder="e.g. https://github.com/Mayuresh1004/WebGoat or https://github.com/Mayuresh1004/AskBit"
             className="w-full rounded-lg border border-zinc-800 bg-zinc-900 px-3 py-2 text-sm text-zinc-100 placeholder-zinc-500 focus:border-sky-500 focus:outline-hidden"
             required
           />
+          <div className="flex items-center gap-1.5 mt-2">
+            <span className="text-[11px] text-zinc-500">Demo Presets:</span>
+            <button
+              type="button"
+              onClick={() => setTargetUrl('https://github.com/Mayuresh1004/AskBit')}
+              className="text-[11px] font-mono px-2 py-0.5 rounded bg-zinc-800 text-zinc-300 hover:bg-zinc-700 transition-colors"
+            >
+              AskBit
+            </button>
+            <button
+              type="button"
+              onClick={() => setTargetUrl('https://github.com/Mayuresh1004/geospy')}
+              className="text-[11px] font-mono px-2 py-0.5 rounded bg-zinc-800 text-zinc-300 hover:bg-zinc-700 transition-colors"
+            >
+              GeoSpy
+            </button>
+            <button
+              type="button"
+              onClick={() => setTargetUrl('https://github.com/Mayuresh1004/WebGoat')}
+              className="text-[11px] font-mono px-2 py-0.5 rounded bg-zinc-800 text-zinc-300 hover:bg-zinc-700 transition-colors"
+            >
+              WebGoat
+            </button>
+          </div>
         </div>
 
         <div className="rounded-lg border border-zinc-800 bg-zinc-900/50 p-3 text-xs text-zinc-400 space-y-1">

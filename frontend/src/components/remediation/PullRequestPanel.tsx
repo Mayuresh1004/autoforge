@@ -127,9 +127,13 @@ export function PullRequestPanel({
                   </span>
                 </div>
 
-                {activePatch.prUrl || activePatch.prNumber ? (
+                {activePatch.prUrl ? (
                   <Badge variant="success" size="md">
                     ✓ PR CREATED #{activePatch.prNumber}
+                  </Badge>
+                ) : activePatch.prNumber ? (
+                  <Badge variant="success" size="md">
+                    ✓ SIMULATED PR #{activePatch.prNumber}
                   </Badge>
                 ) : activePatch.prError ? (
                   <Badge variant="danger" size="md">
@@ -147,7 +151,7 @@ export function PullRequestPanel({
                 <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-4 font-mono text-xs space-y-3">
                   <div className="flex items-center justify-between border-b border-emerald-500/20 pb-2">
                     <span className="font-bold text-emerald-300 text-sm flex items-center gap-2">
-                      <span>✓</span> GitHub Pull Request Delivered
+                      <span>✓</span> {activePatch.prUrl ? 'GitHub Pull Request Delivered' : 'Simulated Pull Request Generated (Demo Fixture)'}
                     </span>
                     <span className="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 text-[10px] font-bold uppercase">
                       {activePatch.prStatus || 'OPEN'}
@@ -162,10 +166,15 @@ export function PullRequestPanel({
 
                     {activePatch.prBranch && (
                       <div>
-                        <span className="text-zinc-400 text-[10px] block uppercase">Remediation Branch:</span>
+                        <span className="text-zinc-400 text-[10px] block uppercase">Source Branch:</span>
                         <span className="text-sky-300 font-bold truncate block">{activePatch.prBranch}</span>
                       </div>
                     )}
+
+                    <div>
+                      <span className="text-zinc-400 text-[10px] block uppercase">Base Branch:</span>
+                      <span className="text-zinc-200 font-bold truncate block">{activePatch.prBaseBranch || 'main'}</span>
+                    </div>
 
                     {activePatch.prCommitSha && (
                       <div>
@@ -184,16 +193,24 @@ export function PullRequestPanel({
 
                   <div className="pt-2 border-t border-emerald-500/20 flex items-center justify-between">
                     <span className="text-[10px] text-zinc-400">
-                      AMASS submitted code fix for human review.
+                      {activePatch.prUrl
+                        ? 'AMASS submitted code fix for human review.'
+                        : 'Simulated PR fixture; no upstream pull request was submitted.'}
                     </span>
-                    <a
-                      href={activePatch.prUrl ?? undefined}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="inline-flex items-center gap-1.5 rounded-lg bg-sky-500 px-3 py-1.5 text-xs font-semibold text-white shadow hover:bg-sky-400 transition-colors"
-                    >
-                      View Pull Request ↗
-                    </a>
+                    {activePatch.prUrl ? (
+                      <a
+                        href={activePatch.prUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center gap-1.5 rounded-lg bg-sky-500 px-3 py-1.5 text-xs font-semibold text-white shadow hover:bg-sky-400 transition-colors"
+                      >
+                        View Pull Request ↗
+                      </a>
+                    ) : (
+                      <span className="inline-flex items-center gap-1.5 rounded-lg bg-zinc-800 px-3 py-1.5 text-xs font-semibold text-zinc-400 cursor-not-allowed">
+                        Simulated Demo PR (No Upstream PR)
+                      </span>
+                    )}
                   </div>
                 </div>
               ) : activePatch.prError ? (

@@ -175,10 +175,12 @@ export interface PatchModel {
   readonly prNumber?: number | null;
   readonly prUrl?: string | null;
   readonly prBranch?: string | null;
+  readonly prBaseBranch?: string | null;
   readonly prCommitSha?: string | null;
   readonly prStatus?: string | null;
   readonly prDeliveredAt?: string | null;
   readonly prError?: string | null;
+  readonly isSimulated?: boolean;
 }
 
 export interface CriticValidationStage {
